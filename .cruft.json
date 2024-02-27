@@ -1,0 +1,31 @@
+{
+  "template": "https://github.com/sunpy/package-template",
+  "commit": "31e62add7400477edda83fa5ac399a5df0b86c89",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "package_name": "pyAMPP",
+      "module_name": "pyampp",
+      "short_description": "Automatic Model Suff",
+      "author_name": "suncast-org",
+      "author_email": "",
+      "project_url": "",
+      "license": "BSD 3-Clause",
+      "minimum_python_version": "3.9",
+      "use_compiled_extensions": "y",
+      "enable_dynamic_dev_versions": "y",
+      "include_example_code": "n",
+      "include_cruft_update_github_workflow": "y",
+      "_sphinx_theme": "alabaster",
+      "_parent_project": "",
+      "_install_requires": "",
+      "_copy_without_render": [
+        "docs/_templates",
+        "docs/_static",
+        ".github/workflows/sub_package_update.yml"
+      ],
+      "_template": "https://github.com/sunpy/package-template"
+    }
+  },
+  "directory": null
+}
