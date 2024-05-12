@@ -12,12 +12,14 @@ def setup_directories():
     # Define subdirectories within the base directory
     sample_data_dir = os.path.join(base_dir, 'sample')
     download_dir = os.path.join(base_dir, 'download')
+    gxmodel_dir = os.path.join(base_dir, 'gx_models')
 
     # Ensure these directories exist
     os.makedirs(sample_data_dir, exist_ok=True)
     os.makedirs(download_dir, exist_ok=True)
+    os.makedirs(gxmodel_dir, exist_ok=True)
 
-    return sample_data_dir, download_dir
+    return sample_data_dir, download_dir, gxmodel_dir
 
 def aia_euv_passbands():
     """ Return the passbands for the SDO/AIA instrument. """
@@ -40,7 +42,7 @@ def hmi_b_products():
     return ['br', 'bp', 'bt']
 
 # Set up the directories when this module is imported
-SAMPLE_DATA_DIR, DOWNLOAD_DIR = setup_directories()
+SAMPLE_DATA_DIR, DOWNLOAD_DIR, GXMODEL_DIR = setup_directories()
 AIA_EUV_PASSBANDS = aia_euv_passbands()
 AIA_UV_PASSBANDS = aia_uv_passbands()
 JSOC_NOTIFY_EMAIL = jsoc_notify_email()

@@ -13,7 +13,11 @@ import glob
 from pyampp.util.config import *
 from pyampp.data import downloader
 from pyampp.gxbox.boxutils import hmi_disambig, hmi_b2ptr
-from matplotlib.widgets import Button
+import sys
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout,QHBoxLayout, QWidget, QComboBox, QLabel
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+
 
 
 ## todo rsun need to be unified across the code. Ask Gelu to provide a value for rsun.
@@ -216,7 +220,7 @@ class Box:
         return self._box_dims
 
 
-class GxBox:
+class GxBox(QMainWindow):
     def __init__(self, time, observer, box_origin, box_dimensions=u.Quantity([100, 100, 100]) * u.Mm,
                  box_res=1.4 * u.Mm):
         """
@@ -233,6 +237,7 @@ class GxBox:
         :param box_res: Spatial resolution of the box, defaults to 1.4 Mm.
         :type box_res: u.Quantity
         """
+        super(GxBox, self).__init__()
         self.time = time
         self.observer = observer
         self.box_dimensions = box_dimensions
@@ -246,6 +251,8 @@ class GxBox:
         self.edge_coords = []
         self.axes = None
         self.fig = None
+        self.init_map_context_name = '171'
+        self.init_map_bottom_name = 'br'
 
         ## this is a dummy map. it should be replaced by a real map from inputs.
         self.instrument_map = self.make_dummy_map(self.box_origin.transform_to(self.frame_obs))
@@ -267,13 +274,14 @@ class GxBox:
 
         self.bottom_wcs_header = self.simbox.bottom_cea_header
         self.fov_coords = self.simbox.bl_tr_pad_coords
-        self.sdomaps['171'] = self.loadmap('171')
-        self.map_context = self.sdomaps['171']
+        self.sdomaps[self.init_map_context_name] = self.loadmap(self.init_map_context_name)
+        self.map_context = self.sdomaps[self.init_map_context_name]
         self.bottom_wcs_header['rsun_ref'] = self.map_context.meta['rsun_ref']
-        self.sdomaps['br'] = self.loadmap('br')
+        self.sdomaps[self.init_map_bottom_name] = self.loadmap(self.init_map_bottom_name)
 
-        self.map_bottom = self.sdomaps['br'].reproject_to(self.bottom_wcs_header, algorithm="adaptive",
+        self.map_bottom = self.sdomaps[self.init_map_bottom_name].reproject_to(self.bottom_wcs_header, algorithm="adaptive",
                                                           roundtrip_coords=False)
+        self.init_ui()
 
     @property
     def avaliable_maps(self):
@@ -307,6 +315,7 @@ class GxBox:
             return self.sdomaps[mapname]
 
         loaded_map = Map(self.sdofitsfiles[mapname]).submap(fov_coords[0], top_right=fov_coords[1])
+        # loaded_map = loaded_map.rotate(order=3)
         if mapname in ['azimuth']:
             if 'disambig' not in self.sdomaps.keys():
                 self.sdomaps['disambig'] = Map(self.sdofitsfiles['disambig']).submap(fov_coords[0],
@@ -370,41 +379,102 @@ class GxBox:
 
         self.simbox = Box(frame_obs, box_origin, box_center, box_dimensions, box_res)
 
-    def plot(self):
-        fig = plt.figure()
-        # ax = fig.add_subplot(projection=self.instrument_map)
-        # self.instrument_map.plot(axes=ax)
-        # self.instrument_map.draw_grid(axes=ax, color='k', lw=0.5)
-        # self.instrument_map.draw_limb(axes=ax, color='k', lw=1.0)
-        ax = fig.add_subplot(projection=self.map_context)
-        self.map_context.plot(axes=ax, cmap='gray')
-        self.map_context.draw_grid(axes=ax, color='w', lw=0.5)
-        self.map_context.draw_limb(axes=ax, color='w', lw=1.0)
-        # for edge in self.simbox.bottom_edges:
-        #     ax.plot_coord(edge, color='r', ls='-', marker='', lw=1.0)
-        # for edge in self.simbox.non_bottom_edges:
-        #     ax.plot_coord(edge, color='r', ls='--', marker='', lw=0.5)
-        for edge in self.simbox.bottom_edges:
-            ax.plot_coord(edge, color='tab:red', ls='--', marker='', lw=0.5)
-        for edge in self.simbox.non_bottom_edges:
-            ax.plot_coord(edge, color='tab:red', ls='-', marker='', lw=1.0)
-        # ax.plot_coord(self.box_center, color='r', marker='+')
-        # ax.plot_coord(self.box_origin, mec='r', mfc='none', marker='o')
-        self.map_context.draw_quadrangle(
-            self.simbox.bounds_coords,
-            axes=ax,
-            edgecolor="tab:blue",
-            linestyle="--",
-            linewidth=0.5,
-        )
-        self.map_bottom.plot(axes=ax, autoalign=True)
-        # ax.set_xlim(-20, 70)
-        # ax.set_ylim(-20, 70)
-        # ax.set_title("")
-        ax.set_title(ax.get_title(), pad=45)
-        self.axes = ax
-        self.fig = fig
-        self.fig.tight_layout()
+    def init_ui(self):
+        self.setWindowTitle('GxBox Map Viewer')
+        # self.setGeometry(100, 100, 800, 600)
+        # Create a central widget
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
+
+        # Layout
+        main_layout = QVBoxLayout(central_widget)
+
+        # Horizontal layout for dropdowns and labels
+        dropdown_layout = QHBoxLayout()
+
+        # Dropdown for bottom map selection
+        self.map_bottom_selector = QComboBox()
+        self.map_bottom_selector.addItems(list(self.avaliable_maps))
+        self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index(self.init_map_bottom_name))
+        self.map_bottom_selector_label = QLabel("Select Bottom Map:")
+        dropdown_layout.addWidget(self.map_bottom_selector_label)
+        dropdown_layout.addWidget(self.map_bottom_selector)
+
+        # Dropdown for context map selection
+        self.map_context_selector = QComboBox()
+        self.map_context_selector.addItems(list(self.avaliable_maps))
+        self.map_context_selector.setCurrentIndex(self.avaliable_maps.index(self.init_map_context_name))
+        self.map_context_selector_label = QLabel("Select Context Map:")
+        dropdown_layout.addWidget(self.map_context_selector_label)
+        dropdown_layout.addWidget(self.map_context_selector)
+
+        main_layout.addLayout(dropdown_layout)
+
+        # Connect dropdowns to their respective handlers
+        self.map_bottom_selector.currentTextChanged.connect(self.update_bottom_map)
+        self.map_context_selector.currentTextChanged.connect(self.update_context_map)
+
+
+        # Matplotlib Figure
+        self.fig = plt.Figure()
+        self.canvas = FigureCanvas(self.fig)
+        main_layout.addWidget(self.canvas)
+
+        # Add Matplotlib Navigation Toolbar
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        main_layout.addWidget(self.toolbar)
+
+        self.update_plot()
+
+        map_context_aspect_ratio = (self.map_context.dimensions[1] / self.map_context.dimensions[0]).value
+        window_width = 800
+        window_height = int(window_width * map_context_aspect_ratio)
+
+        # Adjust for padding, toolbar, and potential high DPI scaling
+        window_width += 0  # Adjust based on your UI needs
+        window_height += 150  # Includes space for toolbar and dropdowns
+
+        self.setGeometry(100, 100, int(window_width), int(window_height))
+
+    def update_bottom_map(self, map_name):
+        map_bottom = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
+        self.map_bottom = map_bottom.reproject_to(self.bottom_wcs_header, algorithm="adaptive",
+                                                          roundtrip_coords=False)
+        self.update_plot()
+
+    def update_context_map(self, map_name):
+        self.map_context = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
+        self.update_plot()
+
+    def update_plot(self):
+            self.fig.clear()
+            self.axes = self.fig.add_subplot(projection=self.map_context)
+            ax = self.axes
+            self.map_context.plot(axes=ax, cmap='gray')
+            self.map_context.draw_grid(axes=ax, color='w', lw=0.5)
+            self.map_context.draw_limb(axes=ax, color='w', lw=1.0)
+            # for edge in self.simbox.bottom_edges:
+            #     ax.plot_coord(edge, color='r', ls='-', marker='', lw=1.0)
+            # for edge in self.simbox.non_bottom_edges:
+            #     ax.plot_coord(edge, color='r', ls='--', marker='', lw=0.5)
+            for edge in self.simbox.bottom_edges:
+                ax.plot_coord(edge, color='tab:red', ls='--', marker='', lw=0.5)
+            for edge in self.simbox.non_bottom_edges:
+                ax.plot_coord(edge, color='tab:red', ls='-', marker='', lw=1.0)
+            # ax.plot_coord(self.box_center, color='r', marker='+')
+            # ax.plot_coord(self.box_origin, mec='r', mfc='none', marker='o')
+            self.map_context.draw_quadrangle(
+                self.simbox.bounds_coords,
+                axes=ax,
+                edgecolor="tab:blue",
+                linestyle="--",
+                linewidth=0.5,
+            )
+            self.map_bottom.plot(axes=ax, autoalign=True)
+            ax.set_title(ax.get_title(), pad=45)
+            self.fig.tight_layout()
+            # Refresh canvas
+            self.canvas.draw()
 
     def create_lines_of_sight(self):
         # The rest of the code for creating lines of sight goes here
@@ -414,3 +484,31 @@ class GxBox:
         # The rest of the code for visualization goes here
         pass
 
+if __name__ == '__main__':
+    import astropy.time
+    import sunpy.sun.constants
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import Heliocentric, Helioprojective, get_earth
+    import astropy.units as u
+    from pyampp.gxbox.gxbox_factory import GxBox
+
+    # time = astropy.time.Time('2024-05-09T17:12:00')
+    # box_origin = SkyCoord(450 * u.arcsec, -256 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
+    time = astropy.time.Time('2014-11-01T16:40:00')
+    # box_origin = SkyCoord(lon=30 * u.deg, lat=20 * u.deg,
+    #                       radius=sunpy.sun.constants.radius,
+    #                       frame='heliographic_stonyhurst')
+    ## dots source
+    # box_origin = SkyCoord(-475 * u.arcsec, -330 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
+    ## flare AR
+    box_origin = SkyCoord(-632 * u.arcsec, -135 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
+    observer = get_earth(time)
+    box_dimensions = u.Quantity([150, 150, 100]) * u.Mm
+    # box_dimensions = u.Quantity([200, 200, 200]) * u.Mm
+    box_res = 0.6 * u.Mm
+
+    app = QApplication(sys.argv)
+    gxbox = GxBox(time, observer, box_origin, box_dimensions,box_res)
+    gxbox.show()
+
+    # sys.exit(app.exec_())

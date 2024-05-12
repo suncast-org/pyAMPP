@@ -18,8 +18,9 @@ observer = get_earth(time)
 box_dimensions = u.Quantity([150, 150, 100]) * u.Mm
 box_res = 1.4 * u.Mm
 
+
 gxbox = GxBox(time, observer, box_origin, box_dimensions)
-gxbox.plot()
+gxbox.show()
 
 
 # ## process hmi map
