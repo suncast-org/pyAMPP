@@ -48,22 +48,22 @@ html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 
 # The suffix(es) of source filenames.
-# You can specify multiple suffix as a list of string:
-source_suffix = ".rst"
-
-# The master toctree document.
-master_doc = "index"
+# # You can specify multiple suffix as a list of string:
+# source_suffix = ".rst"
+#
+# # The master toctree document.
+# master_doc = "index"
 
 # -- Options for intersphinx extension ---------------------------------------
 
 # Example configuration for intersphinx: refer to the Python standard library.
-intersphinx_mapping = {"python": ("https://docs.python.org/", None)}
+# intersphinx_mapping = {"python": ("https://docs.python.org/", None)}
 
 # -- Options for HTML output -------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
-html_theme = "alabaster"
+# html_theme = "alabaster"
 
 
 # Custom sidebar templates, must be a dictionary that maps document names
