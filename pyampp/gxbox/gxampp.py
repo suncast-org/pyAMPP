@@ -177,12 +177,10 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the specified directory path.
 
-        Parameters
-        ----------
-        new_path : str
-            The new directory path.
-        default_path : str
-            The default directory path.
+        :param new_path: The new directory path.
+        :type new_path: str
+        :param default_path: The default directory path.
+        :type default_path: str
         """
         if new_path != default_path:
             # Normalize the path whether it's absolute or relative
@@ -461,10 +459,8 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the UI when Helioprojective coordinates are selected.
 
-        Parameters
-        ----------
-        checked : bool
-            Whether the Helioprojective radio button is checked.
+        :param checked: Whether the Helioprojective radio button is checked.
+        :type checked: bool
         """
         if checked:
             self.coord_x_edit.setToolTip("Solar X coordinate of the model center in arcsec")
@@ -478,10 +474,8 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the UI when Heliographic Stonyhurst coordinates are selected.
 
-        Parameters
-        ----------
-        checked : bool
-            Whether the Heliographic Stonyhurst radio button is checked.
+        :param checked: Whether the Heliographic Stonyhurst radio button is checked.
+        :type checked: bool
         """
         if checked:
             self.coord_x_edit.setToolTip("Heliographic Stonyhurst Longitude of the model center in deg")
