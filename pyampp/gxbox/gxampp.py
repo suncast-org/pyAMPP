@@ -177,12 +177,10 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the specified directory path.
 
-        Parameters
-        ----------
-        new_path : str
-            The new directory path.
-        default_path : str
-            The default directory path.
+        :param new_path: The new directory path.
+        :type new_path: str
+        :param default_path: The default directory path.
+        :type default_path: str
         """
         if new_path != default_path:
             # Normalize the path whether it's absolute or relative
@@ -461,10 +459,8 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the UI when Helioprojective coordinates are selected.
 
-        Parameters
-        ----------
-        checked : bool
-            Whether the Helioprojective radio button is checked.
+        :param checked: Whether the Helioprojective radio button is checked.
+        :type checked: bool
         """
         if checked:
             self.coord_x_edit.setToolTip("Solar X coordinate of the model center in arcsec")
@@ -478,10 +474,8 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the UI when Heliographic Stonyhurst coordinates are selected.
 
-        Parameters
-        ----------
-        checked : bool
-            Whether the Heliographic Stonyhurst radio button is checked.
+        :param checked: Whether the Heliographic Stonyhurst radio button is checked.
+        :type checked: bool
         """
         if checked:
             self.coord_x_edit.setToolTip("Heliographic Stonyhurst Longitude of the model center in deg")
@@ -553,7 +547,24 @@ class PyAmppGUI(QMainWindow):
 
 def main():
     """
-    Main function to run the PyAmppGUI application.
+    Entry point for the PyAmppGUI application.
+
+    This function initializes the PyQt application, sets up and displays the main GUI window for the Solar Data Model.
+    It pre-configures some of the GUI elements with default values for the model time and coordinates.
+
+    No parameters are taken directly by this function. All configurations are done within the GUI or passed through the
+    global environment.
+
+    Examples
+    --------
+    To run the GUI application, execute the script from the command line in the project directory:
+
+    .. code-block:: bash
+
+        python pyAMPP/pyampp/gxbox/gxampp.py
+
+    This command initializes the PyQt application loop and opens the main window of the PyAmppGUI, where all interactions
+    occur. Default values for date and coordinates are set programmatically before the event loop starts.
     """
     app = QApplication(sys.argv)
     pyampp = PyAmppGUI()
@@ -568,12 +579,3 @@ def main():
 if __name__ == '__main__':
     main()
 
-    """
-    Calling Example
-    ---------------
-    To run the GUI application, use the following command in your terminal:
-
-    .. code-block:: python
-
-        python pyAMPP/pyampp/gxbox/gxampp.py
-    """

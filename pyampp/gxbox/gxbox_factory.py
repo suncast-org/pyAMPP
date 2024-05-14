@@ -634,7 +634,7 @@ def main():
 
     .. code-block:: bash
 
-        pyAMPP/pyampp/gxboxox_factory.py --time 2014-11-01T16:40:00 --coords -632 -135 --hpc --box_dims 64 64 64 --box_res 1.400 --pad_frac 0.25 --data_dir /Users/fisher/pyampp/download --gxmodel_dir /Users/fisher/pyampp/gx_models --external_box /Users/fisher/myworkspace
+        pyAMPP/pyampp/gxboxox_factory.py --time 2014-11-01T16:40:00 --coords -632 -135 --hpc --box_dims 64 64 64 --box_res 1.400 --pad_frac 0.25
     """
     parser = argparse.ArgumentParser(description="Run GxBox with specified parameters.")
     parser.add_argument('--time', required=True, help='Observation time in ISO format, e.g., "2024-05-12T00:00:00"')
