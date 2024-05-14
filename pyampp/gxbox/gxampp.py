@@ -16,12 +16,77 @@ svg_dir = base_dir / 'gxbox' / 'UI'
 
 
 class PyAmppGUI(QMainWindow):
-    def __init__(self):
-        super().__init__()
+    """
+    Main application GUI for the Solar Data Model.
 
+    This class creates the main window and sets up the user interface for managing solar data and model configurations.
+
+    Attributes
+    ----------
+    central_widget : QWidget
+        The central widget of the main window.
+    main_layout : QVBoxLayout
+        The main layout for the central widget.
+
+    Methods
+    -------
+    initUI():
+        Initializes the user interface.
+    add_data_repository_section():
+        Adds the data repository section to the UI.
+    update_sdo_data_dir():
+        Updates the SDO data directory path.
+    update_gxmodel_dir():
+        Updates the GX model directory path.
+    update_external_box_dir():
+        Updates the external box directory path.
+    update_dir(new_path, default_path):
+        Updates the specified directory path.
+    open_sdo_file_dialog():
+        Opens a file dialog for selecting the SDO data directory.
+    open_gx_file_dialog():
+        Opens a file dialog for selecting the GX model directory.
+    open_external_file_dialog():
+        Opens a file dialog for selecting the external box directory.
+    add_model_configuration_section():
+        Adds the model configuration section to the UI.
+    add_options_section():
+        Adds the options section to the UI.
+    add_cmd_display():
+        Adds the command display section to the UI.
+    add_cmd_buttons():
+        Adds command buttons to the UI.
+    add_status_log():
+        Adds the status log section to the UI.
+    update_command_display():
+        Updates the command display with the current command.
+    update_hpc_state(checked):
+        Updates the UI when Helioprojective coordinates are selected.
+    update_hgs_state(checked):
+        Updates the UI when Heliographic Stonyhurst coordinates are selected.
+    get_command():
+        Constructs the command based on the current UI settings.
+    execute_command():
+        Executes the constructed command.
+    save_command():
+        Saves the current command.
+    refresh_command():
+        Refreshes the current session.
+    clear_command():
+        Clears the status log.
+    """
+
+    def __init__(self):
+        """
+        Initializes the PyAmppGUI class.
+        """
+        super().__init__()
         self.initUI()
 
     def initUI(self):
+        """
+        Sets up the initial user interface for the main window.
+        """
         # Main widget and layout
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -42,7 +107,9 @@ class PyAmppGUI(QMainWindow):
         self.show()
 
     def add_data_repository_section(self):
-        # Group box for data repositories
+        """
+        Adds the data repository section to the main layout.
+        """
         group_box = QGroupBox("Data Repositories")
         layout = QGridLayout()
 
@@ -83,21 +150,40 @@ class PyAmppGUI(QMainWindow):
         self.main_layout.addWidget(group_box)
 
     def update_sdo_data_dir(self):
+        """
+        Updates the SDO data directory path based on the user input.
+        """
         new_path = self.sdo_data_edit.text()
         self.update_dir(new_path, DOWNLOAD_DIR)
         self.update_command_display()
 
     def update_gxmodel_dir(self):
+        """
+        Updates the GX model directory path based on the user input.
+        """
         new_path = self.gx_model_edit.text()
         self.update_dir(new_path, GXMODEL_DIR)
         self.update_command_display()
 
     def update_external_box_dir(self):
+        """
+        Updates the external box directory path based on the user input.
+        """
         new_path = self.external_box_edit.text()
         self.update_dir(new_path, os.getcwd())
         self.update_command_display()
 
     def update_dir(self, new_path, default_path):
+        """
+        Updates the specified directory path.
+
+        Parameters
+        ----------
+        new_path : str
+            The new directory path.
+        default_path : str
+            The default directory path.
+        """
         if new_path != default_path:
             # Normalize the path whether it's absolute or relative
             if not os.path.isabs(new_path):
@@ -125,6 +211,9 @@ class PyAmppGUI(QMainWindow):
         #     QMessageBox.warning(self, "Invalid Path", "The specified path is not a valid absolute path.")
 
     def open_sdo_file_dialog(self):
+        """
+        Opens a file dialog for selecting the SDO data directory.
+        """
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
         file_name = QFileDialog.getExistingDirectory(self, "Select Directory", DOWNLOAD_DIR)
@@ -132,6 +221,9 @@ class PyAmppGUI(QMainWindow):
             self.sdo_data_edit.setText(file_name)
 
     def open_gx_file_dialog(self):
+        """
+        Opens a file dialog for selecting the GX model directory.
+        """
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
         file_name = QFileDialog.getExistingDirectory(self, "Select Directory", GXMODEL_DIR)
@@ -139,6 +231,9 @@ class PyAmppGUI(QMainWindow):
             self.gx_model_edit.setText(file_name)
 
     def open_external_file_dialog(self):
+        """
+        Opens a file dialog for selecting the external box directory.
+        """
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
         file_name = QFileDialog.getExistingDirectory(self, "Select Directory", os.getcwd())
@@ -146,6 +241,9 @@ class PyAmppGUI(QMainWindow):
             self.external_box_edit.setText(file_name)
 
     def add_model_configuration_section(self):
+        """
+        Adds the model configuration section to the main layout.
+        """
         group_box = QGroupBox("Model Configuration")
         main_layout = QVBoxLayout()
 
@@ -189,9 +287,9 @@ class PyAmppGUI(QMainWindow):
         self.coord_y_edit = QLineEdit("0.0")
         self.coord_y_edit.setToolTip("Solar Y coordinate of the model center in arcsec")
         self.coord_y_edit.returnPressed.connect(self.update_command_display)
-        self.coord_x_label.setFixedWidth(30)  # Adjust the width as necessary
-        self.coord_y_label.setFixedWidth(30)  # Adjust the width as necessary
-        self.coord_label.setFixedWidth(150)  # Adjust the width for "Center Coords in deg"
+        self.coord_x_label.setFixedWidth(30)
+        self.coord_y_label.setFixedWidth(30)
+        self.coord_label.setFixedWidth(150)
         self.coord_x_edit.setFixedWidth(100)
         self.coord_y_edit.setFixedWidth(100)
         coords_layout.addWidget(self.coord_y_edit)
@@ -206,9 +304,8 @@ class PyAmppGUI(QMainWindow):
         self.hgs_radio_button.setToolTip("Use Heliographic Stonyhurst coordinates frame to define the model center")
         self.hgs_radio_button.toggled.connect(self.update_hgs_state)
         coords_layout.addWidget(self.hgs_radio_button)
-        coords_layout.addStretch()  # Add stretch
+        coords_layout.addStretch()
         main_layout.addLayout(coords_layout)
-        coords_layout.addStretch(1)  # Adds stretchable space at the end of the layout
 
         # Model Gridpoints
         grid_layout = QHBoxLayout()
@@ -231,7 +328,7 @@ class PyAmppGUI(QMainWindow):
         self.grid_z_edit.returnPressed.connect(self.update_command_display)
         self.grid_z_edit.setFixedWidth(100)
         grid_layout.addWidget(self.grid_z_edit)
-        grid_layout.addStretch()  # Add stretch
+        grid_layout.addStretch()
         main_layout.addLayout(grid_layout)
 
         # Resolution and Padding Zone Size
@@ -258,6 +355,9 @@ class PyAmppGUI(QMainWindow):
         self.main_layout.addWidget(group_box)
 
     def add_options_section(self):
+        """
+        Adds the options section to the main layout.
+        """
         group_box = QGroupBox("Options")
         layout = QGridLayout()
 
@@ -285,6 +385,9 @@ class PyAmppGUI(QMainWindow):
         self.main_layout.addWidget(group_box)
 
     def add_cmd_display(self):
+        """
+        Adds the command display section to the main layout.
+        """
         # Command Line Equivalent Display
         self.cmd_display_edit = QTextEdit()
         self.cmd_display_edit.setReadOnly(True)
@@ -297,6 +400,9 @@ class PyAmppGUI(QMainWindow):
         self.main_layout.addWidget(self.cmd_display_edit)
 
     def add_cmd_buttons(self):
+        """
+        Adds the command buttons to the main layout.
+        """
         # Command Buttons
         cmd_button_layout = QHBoxLayout()
         self.execute_button = QPushButton("Execute")
@@ -334,6 +440,9 @@ class PyAmppGUI(QMainWindow):
         self.main_layout.addLayout(cmd_button_layout)
 
     def add_status_log(self):
+        """
+        Adds the status log section to the main layout.
+        """
         # Status Log
         self.status_log_edit = QTextEdit()
         self.status_log_edit.setReadOnly(True)
@@ -341,11 +450,22 @@ class PyAmppGUI(QMainWindow):
         self.main_layout.addWidget(self.status_log_edit)
 
     def update_command_display(self):
+        """
+        Updates the command display with the current command.
+        """
         command = self.get_command()
         self.cmd_display_edit.clear()
         self.cmd_display_edit.append(" ".join(command))
 
     def update_hpc_state(self, checked):
+        """
+        Updates the UI when Helioprojective coordinates are selected.
+
+        Parameters
+        ----------
+        checked : bool
+            Whether the Helioprojective radio button is checked.
+        """
         if checked:
             self.coord_x_edit.setToolTip("Solar X coordinate of the model center in arcsec")
             self.coord_y_edit.setToolTip("Solar Y coordinate of the model center in arcsec")
@@ -355,6 +475,14 @@ class PyAmppGUI(QMainWindow):
             self.update_command_display()
 
     def update_hgs_state(self, checked):
+        """
+        Updates the UI when Heliographic Stonyhurst coordinates are selected.
+
+        Parameters
+        ----------
+        checked : bool
+            Whether the Heliographic Stonyhurst radio button is checked.
+        """
         if checked:
             self.coord_x_edit.setToolTip("Heliographic Stonyhurst Longitude of the model center in deg")
             self.coord_y_edit.setToolTip("Heliographic Stonyhurst Latitude of the model center in deg")
@@ -364,6 +492,14 @@ class PyAmppGUI(QMainWindow):
             self.update_command_display()
 
     def get_command(self):
+        """
+        Constructs the command based on the current UI settings.
+
+        Returns
+        -------
+        list
+            The command as a list of strings.
+        """
         import astropy.time
         import astropy.units as u
         command = ['python', os.path.join(base_dir, 'gxbox', 'gxbox_factory.py')]
@@ -385,25 +521,40 @@ class PyAmppGUI(QMainWindow):
         return command
 
     def execute_command(self):
+        """
+        Executes the constructed command.
+        """
         self.status_log_edit.append("Command executed")
         import subprocess
         command = self.get_command()
         subprocess.run(command, check=True)
 
     def save_command(self):
+        """
+        Saves the current command.
+        """
         # Placeholder for saving command
         self.status_log_edit.append("Command saved")
 
     def refresh_command(self):
+        """
+        Refreshes the current session.
+        """
         # Placeholder for refreshing command
         self.status_log_edit.append("Command refreshed")
 
     def clear_command(self):
+        """
+        Clears the status log.
+        """
         # Placeholder for clearing command
         self.status_log_edit.clear()
 
 
 def main():
+    """
+    Main function to run the PyAmppGUI application.
+    """
     app = QApplication(sys.argv)
     pyampp = PyAmppGUI()
     pyampp.model_time_edit.setDateTime(QDateTime(2014, 11, 1, 16, 40))
@@ -413,5 +564,16 @@ def main():
     sys.exit(app.exec_())
 
 
+
 if __name__ == '__main__':
     main()
+
+    """
+    Calling Example
+    ---------------
+    To run the GUI application, use the following command in your terminal:
+
+    .. code-block:: python
+
+        python pyAMPP/pyampp/gxbox/gxampp.py
+    """

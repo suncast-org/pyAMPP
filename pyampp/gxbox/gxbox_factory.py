@@ -36,9 +36,48 @@ locale.setlocale(locale.LC_ALL, "C");
 
 ## todo rsun need to be unified across the code. Ask Gelu to provide a value for rsun.
 class Box:
-    '''
-    Represents a 3D box defined by its origin and dimensions. It calculates and stores the coordinates of the box's edges, distinguishing between bottom edges and other edges.
-    '''
+    """
+    Represents a 3D box in solar or observer coordinates defined by its origin, center, dimensions, and resolution.
+
+    This class calculates and stores the coordinates of the box's edges, differentiating between bottom edges and other edges.
+    It is designed to integrate with solar physics data analysis frameworks such as SunPy and Astropy.
+
+    :param frame_obs: The observer's frame of reference as a `SkyCoord` object.
+    :param box_origin: The origin point of the box in the specified coordinate frame as a `SkyCoord`.
+    :param box_center: The geometric center of the box as a `SkyCoord`.
+    :param box_dims: The dimensions of the box specified as an `astropy.units.Quantity` array-like in the order (x, y, z).
+    :param box_res: The resolution of the box, given as an `astropy.units.Quantity` typically in units of megameters.
+
+    Attributes
+    ----------
+    corners : list of tuple
+        List containing tuples representing the corner points of the box in the specified units.
+    edges : list of tuple
+        List containing tuples that represent the edges of the box by connecting the corners.
+    bottom_edges : list of `SkyCoord`
+        A list containing the bottom edges of the box calculated based on the minimum z-coordinate value.
+    non_bottom_edges : list of `SkyCoord`
+        A list containing all edges of the box that are not classified as bottom edges.
+
+    Methods
+    -------
+    bl_tr_coords(pad_frac=0.0)
+        Calculates and returns the bottom left and top right coordinates of the box in the observer frame.
+        Optionally applies a padding factor to expand the box dimensions symmetrically.
+
+    Example
+    -------
+    >>> from astropy.coordinates import SkyCoord
+    >>> from astropy.time import Time
+    >>> import astropy.units as u
+    >>> time = Time('2024-05-09T17:12:00')
+    >>> box_origin = SkyCoord(450 * u.arcsec, -256 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
+    >>> box_center = SkyCoord(500 * u.arcsec, -200 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
+    >>> box_dims = u.Quantity([100, 100, 50], u.Mm)
+    >>> box_res = 1.4 * u.Mm
+    >>> box = Box(frame_obs=box_origin.frame, box_origin=box_origin, box_center=box_center, box_dims=box_dims, box_res=box_res)
+    >>> print(box.bl_tr_coords())
+    """
 
     def __init__(self, frame_obs, box_origin, box_center, box_dims, box_res):
         '''
@@ -67,18 +106,28 @@ class Box:
         self._calculate_edge_types()  # Categorize edges upon initialization
 
     def _get_edge_coords(self, edges, box_origin):
-        '''
+        """
         Translates edge corner points to their corresponding SkyCoord based on the box's origin.
 
-        :param edges: list of tuples, each tuple contains two corner points defining an edge.
-        :return: list of SkyCoord, coordinates of edges in the box's frame.
-        '''
+        :param edges: List of tuples, each tuple contains two corner points defining an edge.
+        :type edges: list of tuple
+        :param box_origin: The origin point of the box in the specified coordinate frame as a `SkyCoord`.
+        :type box_origin: `~astropy.coordinates.SkyCoord`
+        :return: List of `SkyCoord` coordinates of edges in the box's frame.
+        :rtype: list of `~astropy.coordinates.SkyCoord`
+        """
         return [SkyCoord(x=box_origin.x + u.Quantity([edge[0][0], edge[1][0]]),
                          y=box_origin.y + u.Quantity([edge[0][1], edge[1][1]]),
                          z=box_origin.z + u.Quantity([edge[0][2], edge[1][2]]),
                          frame=box_origin.frame) for edge in edges]
 
     def _get_bottom_cea_header(self):
+        """
+        Generates a CEA header for the bottom of the box.
+
+        :return: The FITS WCS header for the bottom of the box.
+        :rtype: dict
+        """
         origin = self._box_origin.transform_to(HeliographicStonyhurst)
         shape = self._box_dims[:-1][::-1] / self._box_res.to(self._box_dims.unit)
         shape = list(shape.value)
@@ -91,9 +140,9 @@ class Box:
         return bottom_cea_header
 
     def _calculate_edge_types(self):
-        '''
+        """
         Separates the box's edges into bottom edges and non-bottom edges. This is done in a single pass to improve efficiency.
-        '''
+        """
         min_z = min(corner[2] for corner in self.corners)
         bottom_edges, non_bottom_edges = [], []
         for edge in self.edges:
@@ -105,20 +154,19 @@ class Box:
         self._non_bottom_edges = self._get_edge_coords(non_bottom_edges, self._box_center)
 
     def _get_bounds_coords(self, edges, bltr=False, pad_frac=0.0):
-
-        '''
+        """
         Provides the bounding box of the edges in solar x and y.
 
-        :param edges: list of tuples, each tuple contains two corner points defining an edge.
-        :type edges: list
-        :param bltr: boolean, if True, returns bottom left and top right coordinates, otherwise returns minimum and maximum coordinates.
+        :param edges: List of tuples, each tuple contains two corner points defining an edge.
+        :type edges: list of tuple
+        :param bltr: If True, returns bottom left and top right coordinates, otherwise returns minimum and maximum coordinates.
         :type bltr: bool, optional
-        :param pad_frac: fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.0.
+        :param pad_frac: Fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.0.
         :type pad_frac: float, optional
 
-        :return: tuple of SkyCoord, the coordinates of the box's bounds.
-        :rtype: list of SkyCoord
-        '''
+        :return: Coordinates of the box's bounds.
+        :rtype: list of `~astropy.coordinates.SkyCoord`
+        """
         xx = []
         yy = []
         for edge in edges:
@@ -145,85 +193,95 @@ class Box:
             return coords
 
     def bl_tr_coords(self, pad_frac=0.0):
-        '''
-        Provides access to the box's bottom left and top right bounds in the observer frame.
-        :param pad_frac: fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.0.
-        :type pad_frac: float, optional
+        """
+        Calculates and returns the bottom left and top right coordinates of the box in the observer frame.
+        Optionally applies a padding factor to expand the box dimensions symmetrically.
 
-        :return: list of SkyCoord, the bounds of the box's bottom edges in the observer frame.
-        '''
+        :param pad_frac: Fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.0.
+        :type pad_frac: float, optional
+        :return: Bottom left and top right coordinates of the box in the observer frame.
+        :rtype: list of `~astropy.coordinates.SkyCoord`
+        """
         return self._get_bounds_coords(self.all_edges, bltr=True, pad_frac=pad_frac)
 
     @property
     def bounds_coords(self):
-        '''
-        Provides access to the box's bottom bounds in the observer frame.
+        """
+        Provides access to the box's bounds in the observer frame.
 
-        :return: SkyCoord, the bounds of the box's bottom edges in the observer frame.
-        '''
+        :return: Coordinates of the box's bounds.
+        :rtype: `~astropy.coordinates.SkyCoord`
+        """
         return self._get_bounds_coords(self.all_edges)
 
     @property
     def bottom_bounds_coords(self):
-        '''
+        """
         Provides access to the box's bottom bounds in the observer frame.
 
-        :return: SkyCoord, the bounds of the box's bottom edges in the observer frame.
-        '''
+        :return: Coordinates of the box's bottom bounds.
+        :rtype: `~astropy.coordinates.SkyCoord`
+        """
         return self._get_bounds_coords(self.bottom_edges)
 
     @property
     def bottom_cea_header(self):
-        '''
+        """
         Provides access to the box's bottom WCS CEA header.
 
-        :return: WCS CEA header, the WCS CEA header for the box's bottom.
-        '''
+        :return: The WCS CEA header for the box's bottom.
+        :rtype: dict
+        """
         return self._get_bottom_cea_header()
 
     @property
     def bottom_edges(self):
-        '''
+        """
         Provides access to the box's bottom edge coordinates.
 
-        :return: list of SkyCoord, coordinates of the box's bottom edges.
-        '''
+        :return: Coordinates of the box's bottom edges.
+        :rtype: list of `~astropy.coordinates.SkyCoord`
+        """
         return self._bottom_edges
 
     @property
     def non_bottom_edges(self):
-        '''
+        """
         Provides access to the box's non-bottom edge coordinates.
 
-        :return: list of SkyCoord, coordinates of the box's non-bottom edges.
-        '''
+        :return: Coordinates of the box's non-bottom edges.
+        :rtype: list of `~astropy.coordinates.SkyCoord`
+        """
         return self._non_bottom_edges
 
     @property
     def all_edges(self):
-        '''
+        """
         Provides access to all the edge coordinates of the box, combining both bottom and non-bottom edges.
 
-        :return: list of SkyCoord, coordinates of all the edges of the box.
-        '''
+        :return: Coordinates of all the edges of the box.
+        :rtype: list of `~astropy.coordinates.SkyCoord`
+        """
         return self._bottom_edges + self._non_bottom_edges
 
     @property
     def box_origin(self):
-        '''
+        """
         Provides read-only access to the box's origin coordinates.
 
-        :return: SkyCoord, the origin of the box in the specified frame.
-        '''
+        :return: The origin of the box in the specified frame.
+        :rtype: `~astropy.coordinates.SkyCoord`
+        """
         return self._box_center
 
     @property
     def box_dims(self):
-        '''
+        """
         Provides read-only access to the box's dimensions.
 
-        :return: u.Quantity, the dimensions of the box (length, width, height) in specified units.
-        '''
+        :return: The dimensions of the box (length, width, height) in specified units.
+        :rtype: `~astropy.units.Quantity`
+        """
         return self._box_dims
 
 
@@ -231,25 +289,57 @@ class GxBox(QMainWindow):
     def __init__(self, time, observer, box_orig, box_dims=u.Quantity([100, 100, 100]) * u.Mm,
                  box_res=1.4 * u.Mm, pad_frac=0.25, data_dir=DOWNLOAD_DIR, gxmodel_dir=GXMODEL_DIR, external_box=None):
         """
-        Initialize the GxBox object
+        Main application window for visualizing and interacting with solar data in a 3D box.
 
         :param time: Observation time.
-        :type time: astropy.time.Time
+        :type time: `~astropy.time.Time`
         :param observer: Observer location.
-        :type observer: astropy.coordinates.SkyCoord
+        :type observer: `~astropy.coordinates.SkyCoord`
         :param box_orig: The origin of the box (center of the box bottom).
-        :type box_orig: astropy.coordinates.SkyCoord
+        :type box_orig: `~astropy.coordinates.SkyCoord`
         :param box_dims: Dimensions of the box in heliocentric coordinates, defaults to 100x100x100 Mm.
-        :type box_dims: u.Quantity
+        :type box_dims: `~astropy.units.Quantity`
         :param box_res: Spatial resolution of the box, defaults to 1.4 Mm.
-        :type box_res: u.Quantity
-        :param Fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.25.
-                      For example, a pad_frac of 0.25 increases each dimension of the box by 25% on all sides.
+        :type box_res: `~astropy.units.Quantity`
+        :param pad_frac: Fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.25.
         :type pad_frac: float
         :param data_dir: Directory for storing data.
         :type data_dir: str
         :param gxmodel_dir: Directory for storing model outputs.
         :type gxmodel_dir: str
+        :param external_box: Path to external box file (optional).
+        :type external_box: str
+
+        Methods
+        -------
+        loadmap(mapname, fov_coords=None)
+            Loads a map from the available data.
+        init_ui()
+            Initializes the user interface.
+        update_bottom_map(map_name)
+            Updates the bottom map displayed in the UI.
+        update_context_map(map_name)
+            Updates the context map displayed in the UI.
+        update_plot()
+            Updates the plot with the current data and settings.
+        create_lines_of_sight()
+            Creates lines of sight for the visualization.
+        visualize()
+            Visualizes the data in the UI.
+
+        Example
+        -------
+        >>> from astropy.time import Time
+        >>> from astropy.coordinates import SkyCoord
+        >>> import astropy.units as u
+        >>> from pyampp.gxbox import GxBox
+        >>> time = Time('2024-05-09T17:12:00')
+        >>> observer = SkyCoord(0 * u.deg, 0 * u.deg, obstime=time, frame='heliographic_stonyhurst')
+        >>> box_orig = SkyCoord(450 * u.arcsec, -256 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
+        >>> box_dims = u.Quantity([100, 100, 100], u.Mm)
+        >>> box_res = 1.4 * u.Mm
+        >>> gxbox = GxBox(time, observer, box_orig, box_dims, box_res)
+        >>> gxbox.show()
         """
         super(GxBox, self).__init__()
         self.time = time
@@ -385,6 +475,14 @@ class GxBox(QMainWindow):
         return self.sdomaps[mapname]
 
     def make_dummy_map(self, ref_coord):
+        """
+        Creates a dummy map for initialization purposes.
+
+        :param ref_coord: Reference coordinate for the map.
+        :type ref_coord: `~astropy.coordinates.SkyCoord`
+        :return: The created dummy map.
+        :rtype: sunpy.map.Map
+        """
         instrument_data = np.nan * np.ones((50, 50))
         instrument_header = make_fitswcs_header(instrument_data,
                                                 ref_coord,
@@ -392,6 +490,9 @@ class GxBox(QMainWindow):
         return Map(instrument_data, instrument_header)
 
     def init_ui(self):
+        """
+        Initializes the user interface for the GxBox application.
+        """
         self.setWindowTitle('GxBox Map Viewer')
         # self.setGeometry(100, 100, 800, 600)
         # Create a central widget
@@ -452,16 +553,31 @@ class GxBox(QMainWindow):
         self.setGeometry(100, 100, int(window_width), int(window_height))
 
     def update_bottom_map(self, map_name):
+        """
+        Updates the bottom map displayed in the UI.
+
+        :param map_name: Name of the map to be updated.
+        :type map_name: str
+        """
         map_bottom = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
         self.map_bottom = map_bottom.reproject_to(self.bottom_wcs_header, algorithm="adaptive",
                                                   roundtrip_coords=False)
         self.update_plot()
 
     def update_context_map(self, map_name):
+        """
+        Updates the context map displayed in the UI.
+
+        :param map_name: Name of the map to be updated.
+        :type map_name: str
+        """
         self.map_context = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
         self.update_plot()
 
     def update_plot(self):
+        """
+        Updates the plot with the current data and settings.
+        """
         self.fig.clear()
         self.axes = self.fig.add_subplot(projection=self.map_context)
         ax = self.axes
@@ -492,16 +608,34 @@ class GxBox(QMainWindow):
         self.canvas.draw()
 
     def create_lines_of_sight(self):
+        """
+        Creates lines of sight for the visualization.
+        """
         # The rest of the code for creating lines of sight goes here
         pass
 
     def visualize(self):
+        """
+        Visualizes the data in the UI.
+        """
         # The rest of the code for visualization goes here
         pass
 
 
 def main():
-    # Setting up Argument Parser
+    """
+    Main function to run the GxBox application.
+
+    This function sets up the argument parser, processes the input arguments, and starts the GxBox application.
+
+    Example
+    -------
+    To run the GxBox application from the command line, use the following command:
+
+    .. code-block:: bash
+
+        pyAMPP/pyampp/gxboxox_factory.py --time 2014-11-01T16:40:00 --coords -632 -135 --hpc --box_dims 64 64 64 --box_res 1.400 --pad_frac 0.25 --data_dir /Users/fisher/pyampp/download --gxmodel_dir /Users/fisher/pyampp/gx_models --external_box /Users/fisher/myworkspace
+    """
     parser = argparse.ArgumentParser(description="Run GxBox with specified parameters.")
     parser.add_argument('--time', required=True, help='Observation time in ISO format, e.g., "2024-05-12T00:00:00"')
     parser.add_argument('--coords', nargs=2, type=float, required=True,
