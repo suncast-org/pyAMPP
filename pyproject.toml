@@ -15,9 +15,9 @@ build-backend = "setuptools.build_meta"
 name = "pyampp"
 description = "Automatic Model Suff"
 readme = "README.rst"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { file = "licenses/LICENSE.rst", content-type = "text/plain" }
-dependencies = [sunpy[all]]
+dependencies = ["sunpy[all]"]
 dynamic = ["version"]
 
 [project.optional-dependencies]

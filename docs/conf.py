@@ -8,8 +8,7 @@
 # -- Project information -----------------------------------------------------
 
 # The full version, including alpha/beta/rc tags
-from pyampp import __version__
-release = __version__
+release = "0.1.1.1"
 
 project = "pyAMPP"
 copyright = "2022, suncast-org"
