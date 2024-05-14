@@ -19,7 +19,7 @@ class SDOImageDownloader:
     :type hmi: bool, optional
     """
 
-    def __init__(self, time, uv=True, euv=True, hmi=True):
+    def __init__(self, time, uv=True, euv=True, hmi=True, data_dir = DOWNLOAD_DIR):
         """
         Initializes the downloader with specified configurations and prepares the download directory.
         """
@@ -27,7 +27,7 @@ class SDOImageDownloader:
         self.uv = uv
         self.euv = euv
         self.hmi = hmi
-        self.path = os.path.join(DOWNLOAD_DIR, time.datetime.strftime('%Y%m%d'))
+        self.path = os.path.join(data_dir, time.datetime.strftime('%Y%m%d'))
         self._prepare_directory()
         self.existence_report = self._check_files_exist(self.path)
 

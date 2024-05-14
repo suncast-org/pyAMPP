@@ -3,10 +3,11 @@ import astropy.units as u
 import astropy.time
 import numpy as np
 import matplotlib.pyplot as plt
-from sunpy.map import Map, make_fitswcs_header, all_pixel_indices_from_map
+from sunpy.map import Map, make_fitswcs_header, all_pixel_indices_from_map, coordinate_is_on_solar_disk
 import sunpy.sun.constants
 from astropy.coordinates import SkyCoord
-from sunpy.coordinates import Heliocentric, Helioprojective, get_earth, HeliographicStonyhurst, HeliographicCarrington
+from sunpy.coordinates import Heliocentric, Helioprojective, get_earth, HeliographicStonyhurst, HeliographicCarrington, \
+    sun
 from datetime import datetime, timedelta
 import os
 import glob
@@ -14,11 +15,24 @@ from pyampp.util.config import *
 from pyampp.data import downloader
 from pyampp.gxbox.boxutils import hmi_disambig, hmi_b2ptr
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout,QHBoxLayout, QWidget, QComboBox, QLabel
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QLabel
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+import argparse
+from astropy.time import Time
+from pathlib import Path
+import locale
+import pyampp
+from pyampp.util.lff import mf_lfff
+from pyampp.util.MagFieldWrapper import MagFieldWrapper
+from pyampp.util.radio import GXRadioImageComputing
 
+base_dir = Path(pyampp.__file__).parent
+nlfff_libpath = Path(base_dir / 'lib' / 'nlfff' / 'binaries' / 'WWNLFFFReconstruction.so').resolve()
+radio_libpath = Path(base_dir / 'lib' / 'grff' / 'binaries' / 'RenderGRFF.so').resolve()
 
+os.environ['OMP_NUM_THREADS']='16' # number of parallel threads
+locale.setlocale(locale.LC_ALL, "C");
 
 ## todo rsun need to be unified across the code. Ask Gelu to provide a value for rsun.
 class Box:
@@ -34,8 +48,9 @@ class Box:
         :param box_dims: u.Quantity, the dimensions of the box (x, y, z) in specified units. x and y are in the solar frame, z is the height above the solar surface.
         '''
         self._frame_obs = frame_obs
-        self._box_origin = box_origin
-        self._box_center = box_center
+        with Helioprojective.assume_spherical_screen(box_origin.observer):
+            self._box_origin = box_origin
+            self._box_center = box_center
         self._box_dims = box_dims
         self._box_res = box_res
         # Generate corner points based on the dimensions
@@ -89,7 +104,7 @@ class Box:
         self._bottom_edges = self._get_edge_coords(bottom_edges, self._box_center)
         self._non_bottom_edges = self._get_edge_coords(non_bottom_edges, self._box_center)
 
-    def _get_bounds_coords(self, edges, bltr=False, pad=False):
+    def _get_bounds_coords(self, edges, bltr=False, pad_frac=0.0):
 
         '''
         Provides the bounding box of the edges in solar x and y.
@@ -98,8 +113,8 @@ class Box:
         :type edges: list
         :param bltr: boolean, if True, returns bottom left and top right coordinates, otherwise returns minimum and maximum coordinates.
         :type bltr: bool, optional
-        :param pad: boolean, if True, adds padding to the bounding box.
-        :type pad: bool, optional
+        :param pad_frac: fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.0.
+        :type pad_frac: float, optional
 
         :return: tuple of SkyCoord, the coordinates of the box's bounds.
         :rtype: list of SkyCoord
@@ -110,42 +125,34 @@ class Box:
             xx.append(edge.transform_to(self._frame_obs).Tx)
             yy.append(edge.transform_to(self._frame_obs).Ty)
         unit = xx[0][0].unit
+        min_x = np.min(xx)
+        max_x = np.max(xx)
+        min_y = np.min(yy)
+        max_y = np.max(yy)
+        if pad_frac > 0:
+            _pad = pad_frac * np.max([max_x - min_x, max_y - min_y, 20])
+            min_x -= _pad
+            max_x += _pad
+            min_y -= _pad
+            max_y += _pad
         if bltr:
-            min_x = np.min(xx)
-            max_x = np.max(xx)
-            min_y = np.min(yy)
-            max_y = np.max(yy)
-            if pad:
-                _pad = 0.3 * np.max([max_x - min_x, max_y - min_y, 20])
-                min_x -= _pad
-                max_x += _pad
-                min_y -= _pad
-                max_y += _pad
             bottom_left = SkyCoord(min_x * unit, min_y * unit, frame=self._frame_obs)
             top_right = SkyCoord(max_x * unit, max_y * unit, frame=self._frame_obs)
             return [bottom_left, top_right]
         else:
-            coords = SkyCoord(Tx=[np.min(xx), np.max(xx)] * unit, Ty=[np.min(yy), np.max(yy)] * unit,
+            coords = SkyCoord(Tx=[min_x, max_x] * unit, Ty=[min_y, max_y] * unit,
                               frame=self._frame_obs)
             return coords
 
-    @property
-    def bl_tr_pad_coords(self):
+    def bl_tr_coords(self, pad_frac=0.0):
         '''
         Provides access to the box's bottom left and top right bounds in the observer frame.
+        :param pad_frac: fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.0.
+        :type pad_frac: float, optional
 
         :return: list of SkyCoord, the bounds of the box's bottom edges in the observer frame.
         '''
-        return self._get_bounds_coords(self.all_edges, bltr=True, pad=True)
-
-    @property
-    def bl_tr_coords(self):
-        '''
-        Provides access to the box's bottom left and top right bounds in the observer frame.
-
-        :return: list of SkyCoord, the bounds of the box's bottom edges in the observer frame.
-        '''
-        return self._get_bounds_coords(self.all_edges, bltr=True)
+        return self._get_bounds_coords(self.all_edges, bltr=True, pad_frac=pad_frac)
 
     @property
     def bounds_coords(self):
@@ -221,8 +228,8 @@ class Box:
 
 
 class GxBox(QMainWindow):
-    def __init__(self, time, observer, box_origin, box_dimensions=u.Quantity([100, 100, 100]) * u.Mm,
-                 box_res=1.4 * u.Mm):
+    def __init__(self, time, observer, box_orig, box_dims=u.Quantity([100, 100, 100]) * u.Mm,
+                 box_res=1.4 * u.Mm, pad_frac=0.25, data_dir=DOWNLOAD_DIR, gxmodel_dir=GXMODEL_DIR, external_box=None):
         """
         Initialize the GxBox object
 
@@ -230,20 +237,28 @@ class GxBox(QMainWindow):
         :type time: astropy.time.Time
         :param observer: Observer location.
         :type observer: astropy.coordinates.SkyCoord
-        :param box_origin: The origin of the box (center of the box bottom).
-        :type box_origin: astropy.coordinates.SkyCoord
-        :param box_dimensions: Dimensions of the box in heliocentric coordinates, defaults to 100x100x100 Mm.
-        :type box_dimensions: u.Quantity
+        :param box_orig: The origin of the box (center of the box bottom).
+        :type box_orig: astropy.coordinates.SkyCoord
+        :param box_dims: Dimensions of the box in heliocentric coordinates, defaults to 100x100x100 Mm.
+        :type box_dims: u.Quantity
         :param box_res: Spatial resolution of the box, defaults to 1.4 Mm.
         :type box_res: u.Quantity
+        :param Fractional padding applied to each side of the box, expressed as a decimal, defaults to 0.25.
+                      For example, a pad_frac of 0.25 increases each dimension of the box by 25% on all sides.
+        :type pad_frac: float
+        :param data_dir: Directory for storing data.
+        :type data_dir: str
+        :param gxmodel_dir: Directory for storing model outputs.
+        :type gxmodel_dir: str
         """
         super(GxBox, self).__init__()
         self.time = time
         self.observer = observer
-        self.box_dimensions = box_dimensions
+        self.box_dimensions = box_dims
         self.box_res = box_res
+        self.pad_frac = pad_frac
         ## this is the origin of the box, i.e., the center of the box bottom
-        self.box_origin = box_origin
+        self.box_origin = box_orig
         self.sdofitsfiles = None
         self.frame_hcc = Heliocentric(observer=self.box_origin, obstime=self.time)
         self.frame_obs = Helioprojective(observer=self.observer, obstime=self.time)
@@ -257,30 +272,36 @@ class GxBox(QMainWindow):
         ## this is a dummy map. it should be replaced by a real map from inputs.
         self.instrument_map = self.make_dummy_map(self.box_origin.transform_to(self.frame_obs))
 
-        box_center = box_origin.transform_to(self.frame_hcc)
+        box_center = box_orig.transform_to(self.frame_hcc)
         box_center = SkyCoord(x=box_center.x,
                               y=box_center.y,
-                              z=box_center.z + box_dimensions[2] / 2,
+                              z=box_center.z + box_dims[2] / 2,
                               frame=box_center.frame)
         ## this is the center of the box
         self.box_center = box_center
 
-        self.define_simbox(self.frame_obs, self.box_origin, self.box_center, self.box_dimensions, self.box_res)
+        self.simbox = Box(self.frame_obs, self.box_origin, self.box_center, self.box_dimensions, self.box_res)
         self.box_bounds = self.simbox.bounds_coords
+        self.bottom_wcs_header = self.simbox.bottom_cea_header
 
-        download_sdo = downloader.SDOImageDownloader(time)
+        self.fov_coords = self.simbox.bl_tr_coords(pad_frac=self.pad_frac)
+
+        print(f"Bottom left: {self.fov_coords[0]}; Top right: {self.fov_coords[1]}")
+        if not all([coordinate_is_on_solar_disk(coord) for coord in self.fov_coords]):
+            print("Warning: Some of the box corners are not on the solar disk. Please check the box dimensions.")
+
+        download_sdo = downloader.SDOImageDownloader(time, data_dir=data_dir)
         self.sdofitsfiles = download_sdo.download_images()
         self.sdomaps = {}
 
-        self.bottom_wcs_header = self.simbox.bottom_cea_header
-        self.fov_coords = self.simbox.bl_tr_pad_coords
         self.sdomaps[self.init_map_context_name] = self.loadmap(self.init_map_context_name)
         self.map_context = self.sdomaps[self.init_map_context_name]
         self.bottom_wcs_header['rsun_ref'] = self.map_context.meta['rsun_ref']
         self.sdomaps[self.init_map_bottom_name] = self.loadmap(self.init_map_bottom_name)
 
-        self.map_bottom = self.sdomaps[self.init_map_bottom_name].reproject_to(self.bottom_wcs_header, algorithm="adaptive",
-                                                          roundtrip_coords=False)
+        self.map_bottom = self.sdomaps[self.init_map_bottom_name].reproject_to(self.bottom_wcs_header,
+                                                                               algorithm="adaptive",
+                                                                               roundtrip_coords=False)
         self.init_ui()
 
     @property
@@ -370,15 +391,6 @@ class GxBox(QMainWindow):
                                                 scale=u.Quantity([10, 10]) * u.arcsec / u.pix)
         return Map(instrument_data, instrument_header)
 
-    def define_simbox(self, frame_obs, box_origin, box_center, box_dimensions, box_res):
-        # Finally, we can define the edge coordinates of the box by first creating a coordinate to represent the origin. This is easily computed from our point that defined the orientation since this is the point at which the box is tangent to the solar surface.
-
-        # In[11]:
-
-        # Using that origin, we can compute the coordinates of all edges.
-
-        self.simbox = Box(frame_obs, box_origin, box_center, box_dimensions, box_res)
-
     def init_ui(self):
         self.setWindowTitle('GxBox Map Viewer')
         # self.setGeometry(100, 100, 800, 600)
@@ -414,6 +426,9 @@ class GxBox(QMainWindow):
         self.map_bottom_selector.currentTextChanged.connect(self.update_bottom_map)
         self.map_context_selector.currentTextChanged.connect(self.update_context_map)
 
+        maglib_lff = mf_lfff()
+        maglib_lff.set_field(self.map_bottom.data)
+        res1 = maglib_lff.lfff_cube(200)
 
         # Matplotlib Figure
         self.fig = plt.Figure()
@@ -439,7 +454,7 @@ class GxBox(QMainWindow):
     def update_bottom_map(self, map_name):
         map_bottom = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
         self.map_bottom = map_bottom.reproject_to(self.bottom_wcs_header, algorithm="adaptive",
-                                                          roundtrip_coords=False)
+                                                  roundtrip_coords=False)
         self.update_plot()
 
     def update_context_map(self, map_name):
@@ -447,34 +462,34 @@ class GxBox(QMainWindow):
         self.update_plot()
 
     def update_plot(self):
-            self.fig.clear()
-            self.axes = self.fig.add_subplot(projection=self.map_context)
-            ax = self.axes
-            self.map_context.plot(axes=ax, cmap='gray')
-            self.map_context.draw_grid(axes=ax, color='w', lw=0.5)
-            self.map_context.draw_limb(axes=ax, color='w', lw=1.0)
-            # for edge in self.simbox.bottom_edges:
-            #     ax.plot_coord(edge, color='r', ls='-', marker='', lw=1.0)
-            # for edge in self.simbox.non_bottom_edges:
-            #     ax.plot_coord(edge, color='r', ls='--', marker='', lw=0.5)
-            for edge in self.simbox.bottom_edges:
-                ax.plot_coord(edge, color='tab:red', ls='--', marker='', lw=0.5)
-            for edge in self.simbox.non_bottom_edges:
-                ax.plot_coord(edge, color='tab:red', ls='-', marker='', lw=1.0)
-            # ax.plot_coord(self.box_center, color='r', marker='+')
-            # ax.plot_coord(self.box_origin, mec='r', mfc='none', marker='o')
-            self.map_context.draw_quadrangle(
-                self.simbox.bounds_coords,
-                axes=ax,
-                edgecolor="tab:blue",
-                linestyle="--",
-                linewidth=0.5,
-            )
-            self.map_bottom.plot(axes=ax, autoalign=True)
-            ax.set_title(ax.get_title(), pad=45)
-            self.fig.tight_layout()
-            # Refresh canvas
-            self.canvas.draw()
+        self.fig.clear()
+        self.axes = self.fig.add_subplot(projection=self.map_context)
+        ax = self.axes
+        self.map_context.plot(axes=ax)
+        self.map_context.draw_grid(axes=ax, color='w', lw=0.5)
+        self.map_context.draw_limb(axes=ax, color='w', lw=1.0)
+        # for edge in self.simbox.bottom_edges:
+        #     ax.plot_coord(edge, color='r', ls='-', marker='', lw=1.0)
+        # for edge in self.simbox.non_bottom_edges:
+        #     ax.plot_coord(edge, color='r', ls='--', marker='', lw=0.5)
+        for edge in self.simbox.bottom_edges:
+            ax.plot_coord(edge, color='tab:red', ls='--', marker='', lw=0.5)
+        for edge in self.simbox.non_bottom_edges:
+            ax.plot_coord(edge, color='tab:red', ls='-', marker='', lw=1.0)
+        # ax.plot_coord(self.box_center, color='r', marker='+')
+        # ax.plot_coord(self.box_origin, mec='r', mfc='none', marker='o')
+        self.map_context.draw_quadrangle(
+            self.simbox.bounds_coords,
+            axes=ax,
+            edgecolor="tab:blue",
+            linestyle="--",
+            linewidth=0.5,
+        )
+        self.map_bottom.plot(axes=ax, autoalign=True)
+        ax.set_title(ax.get_title(), pad=45)
+        self.fig.tight_layout()
+        # Refresh canvas
+        self.canvas.draw()
 
     def create_lines_of_sight(self):
         # The rest of the code for creating lines of sight goes here
@@ -484,31 +499,105 @@ class GxBox(QMainWindow):
         # The rest of the code for visualization goes here
         pass
 
-if __name__ == '__main__':
-    import astropy.time
-    import sunpy.sun.constants
-    from astropy.coordinates import SkyCoord
-    from sunpy.coordinates import Heliocentric, Helioprojective, get_earth
-    import astropy.units as u
-    from pyampp.gxbox.gxbox_factory import GxBox
 
-    # time = astropy.time.Time('2024-05-09T17:12:00')
-    # box_origin = SkyCoord(450 * u.arcsec, -256 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
-    time = astropy.time.Time('2014-11-01T16:40:00')
-    # box_origin = SkyCoord(lon=30 * u.deg, lat=20 * u.deg,
-    #                       radius=sunpy.sun.constants.radius,
-    #                       frame='heliographic_stonyhurst')
-    ## dots source
-    # box_origin = SkyCoord(-475 * u.arcsec, -330 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
-    ## flare AR
-    box_origin = SkyCoord(-632 * u.arcsec, -135 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
-    observer = get_earth(time)
-    box_dimensions = u.Quantity([150, 150, 100]) * u.Mm
-    # box_dimensions = u.Quantity([200, 200, 200]) * u.Mm
-    box_res = 0.6 * u.Mm
+def main():
+    # Setting up Argument Parser
+    parser = argparse.ArgumentParser(description="Run GxBox with specified parameters.")
+    parser.add_argument('--time', required=True, help='Observation time in ISO format, e.g., "2024-05-12T00:00:00"')
+    parser.add_argument('--coords', nargs=2, type=float, required=True,
+                        help='Center coordinates [x, y] in arcsec if HPC or deg if HGS')
+    parser.add_argument('--hpc', action='store_true', help='Use Helioprojective coordinates (default)')
+    parser.add_argument('--hgs', action='store_true', help='Use Heliographic Stonyhurst coordinates')
+    parser.add_argument('--box_dims', nargs=3, type=int, default=[64, 64, 64],
+                        help='Box dimensions in pixels as three integers [dx, dy, dz]')
+    parser.add_argument('--box_res', type=float, default=1.4, help='Box resolution in Mm per pixel')
+    parser.add_argument('--observer', help='Observer location, default is Earth')
+    parser.add_argument('--pad_frac', type=float, default=0.25,
+                        help='Fractional padding applied to each side of the box, expressed as a decimal')
+    parser.add_argument('--data_dir', default=DOWNLOAD_DIR, help='Directory for storing data')
+    parser.add_argument('--gxmodel_dir', default=GXMODEL_DIR, help='Directory for storing model outputs')
+    parser.add_argument('--external_box', default=os.path.abspath(os.getcwd()),
+                        help='Path to external box file (optional)')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode with interactive session.')
 
-    app = QApplication(sys.argv)
-    gxbox = GxBox(time, observer, box_origin, box_dimensions,box_res)
+    args = parser.parse_args()
+
+    # Processing arguments
+    time = Time(args.time)
+    coords = args.coords
+    box_dims = u.Quantity(args.box_dims, u.pix)
+    box_res = args.box_res * u.Mm
+
+    if args.hpc:
+        box_origin = SkyCoord(coords[0] * u.arcsec, coords[1] * u.arcsec, obstime=time, observer="earth",
+                              rsun=696 * u.Mm, frame='helioprojective')
+    elif args.hgs:
+        box_origin = SkyCoord(lon=coords[0] * u.deg, lat=coords[1] * u.deg, obstime=time, radius=696 * u.Mm,
+                              frame='heliographic_stonyhurst')
+    else:
+        raise ValueError("Coordinate frame not specified or unknown.")
+
+    if args.observer:
+        observer = SkyCoord.from_name(args.observer)
+    else:
+        observer = get_earth(time)
+
+    box_dimensions = box_dims / u.pix * box_res
+    pad_frac = args.pad_frac
+    data_dir = args.data_dir
+    gxmodel_dir = args.gxmodel_dir
+    external_box = args.external_box
+
+
+
+    # Running the application
+    app = QApplication([])
+    gxbox = GxBox(time, observer, box_origin, box_dimensions, box_res, pad_frac=pad_frac, data_dir=data_dir,
+                  gxmodel_dir=gxmodel_dir, external_box=external_box)
     gxbox.show()
 
+    if args.debug:
+        # Start an interactive IPython session for debugging
+        import IPython
+        IPython.embed()
+        import matplotlib.pyplot as plt
+        plt.show()
+    app.exec_()
+
+
+if __name__ == '__main__':
+    main()
+    # import astropy.time
+    # import sunpy.sun.constants
+    # from astropy.coordinates import SkyCoord
+    # from sunpy.coordinates import Heliocentric, Helioprojective, get_earth
+    # import astropy.units as u
+    # from pyampp.gxbox.gxbox_factory import GxBox
+    #
+    # # time = astropy.time.Time('2024-05-09T17:12:00')
+    # # box_origin = SkyCoord(450 * u.arcsec, -256 * u.arcsec, distance,obstime=time, rsun = 696*u.Mm, observer="earth", frame='helioprojective')
+    # # box_dimensions = u.Quantity([200, 200, 200]) * u.Mm
+    #
+    # time = astropy.time.Time('2014-11-01T16:40:00')
+    # distance = sun.earth_distance(time)
+    # box_origin = SkyCoord(lon=30 * u.deg, lat=20 * u.deg,
+    #                       obstime=time,
+    #                       radius=696 * u.Mm,
+    #                       frame='heliographic_stonyhurst')
+    # ## dots source
+    # # box_origin = SkyCoord(-475 * u.arcsec, -330 * u.arcsec, distance,obstime=time, rsun = 696*u.Mm, observer="earth", frame='helioprojective')
+    # ## flare AR
+    # box_origin = SkyCoord(-632 * u.arcsec, -135 * u.arcsec, obstime=time, rsun=696 * u.Mm, observer="earth",
+    #                       frame='helioprojective')
+    # box_dimensions = u.Quantity([150, 150, 100]) * u.Mm
+    #
+    # box_res = 0.6 * u.Mm
+    # box_res = 1.4 * u.Mm
+    # # box_dimensions = u.Quantity([128, 128, 128]) * u.Mm * 1.4
+    # box_dimensions = u.Quantity([64, 64, 64]) * u.Mm * 1.4
+    # observer = get_earth(time)
+    #
+    # app = QApplication(sys.argv)
+    # gxbox = GxBox(time, observer, box_origin, box_dimensions, box_res)
+    # gxbox.show()
     # sys.exit(app.exec_())
