@@ -1,0 +1,6 @@
+[submodule "pyampp/lib/nlfff"]
+	path = pyampp/lib/nlfff
+	url = https://github.com/Alexey-Stupishin/Magnetic-Field_Library.git
+[submodule "pyampp/lib/grff"]
+	path = pyampp/lib/grff
+	url = https://github.com/kuznetsov-radio/gximagecomputing.git
