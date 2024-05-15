@@ -31,8 +31,9 @@ base_dir = Path(pyampp.__file__).parent
 nlfff_libpath = Path(base_dir / 'lib' / 'nlfff' / 'binaries' / 'WWNLFFFReconstruction.so').resolve()
 radio_libpath = Path(base_dir / 'lib' / 'grff' / 'binaries' / 'RenderGRFF.so').resolve()
 
-os.environ['OMP_NUM_THREADS']='16' # number of parallel threads
+os.environ['OMP_NUM_THREADS'] = '16'  # number of parallel threads
 locale.setlocale(locale.LC_ALL, "C");
+
 
 ## todo rsun need to be unified across the code. Ask Gelu to provide a value for rsun.
 class Box:
@@ -334,7 +335,7 @@ class GxBox(QMainWindow):
         >>> import astropy.units as u
         >>> from pyampp.gxbox import GxBox
         >>> time = Time('2024-05-09T17:12:00')
-        >>> observer = SkyCoord(0 * u.deg, 0 * u.deg, obstime=time, frame='heliographic_stonyhurst')
+        >>> observer = SkyCoord(0 * u.deg, 0 * u.deg, obstime=time, frame='heliographic_carrington')
         >>> box_orig = SkyCoord(450 * u.arcsec, -256 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
         >>> box_dims = u.Quantity([100, 100, 100], u.Mm)
         >>> box_res = 1.4 * u.Mm
@@ -375,8 +376,8 @@ class GxBox(QMainWindow):
         self.bottom_wcs_header = self.simbox.bottom_cea_header
 
         self.fov_coords = self.simbox.bl_tr_coords(pad_frac=self.pad_frac)
-
         print(f"Bottom left: {self.fov_coords[0]}; Top right: {self.fov_coords[1]}")
+
         if not all([coordinate_is_on_solar_disk(coord) for coord in self.fov_coords]):
             print("Warning: Some of the box corners are not on the solar disk. Please check the box dimensions.")
 
@@ -407,6 +408,21 @@ class GxBox(QMainWindow):
         else:
             return self.sdofitsfiles.keys()
 
+    def corr_fov_coords(self, sunpymap, fov_coords):
+        '''
+        Corrects the field of view coordinates using the given map.
+        :param sunpymap: The map to use for correction.
+        :type sunpymap: sunpy.map.Map
+        :param fov_coords: The field of view coordinates (bottom left and top right) as SkyCoord objects.
+        :type fov_coords: list
+
+        :return: Corrected field of view coordinates.
+        :rtype: list
+        '''
+        fov_coords = [SkyCoord(Tx=fov_coords[0].Tx, Ty=fov_coords[0].Ty, frame=sunpymap.coordinate_frame),
+                      SkyCoord(Tx=fov_coords[1].Tx, Ty=fov_coords[1].Ty, frame=sunpymap.coordinate_frame)]
+        return fov_coords
+
     def _load_hmi_b_seg_maps(self, mapname, fov_coords):
         """
         Load specific HMI B segment maps required for the magnetic field vector data products.
@@ -425,7 +441,9 @@ class GxBox(QMainWindow):
         if mapname in self.sdomaps.keys():
             return self.sdomaps[mapname]
 
-        loaded_map = Map(self.sdofitsfiles[mapname]).submap(fov_coords[0], top_right=fov_coords[1])
+        loaded_map = Map(self.sdofitsfiles[mapname])
+        fov_coords = self.corr_fov_coords(loaded_map, fov_coords)
+        loaded_map = loaded_map.submap(fov_coords[0], top_right=fov_coords[1])
         # loaded_map = loaded_map.rotate(order=3)
         if mapname in ['azimuth']:
             if 'disambig' not in self.sdomaps.keys():
@@ -471,7 +489,9 @@ class GxBox(QMainWindow):
             return self.sdomaps[mapname]
 
         # Load general maps
-        self.sdomaps[mapname] = Map(self.sdofitsfiles[mapname]).submap(fov_coords[0], top_right=fov_coords[1])
+        loaded_map = Map(self.sdofitsfiles[mapname])
+        fov_coords = self.corr_fov_coords(loaded_map, fov_coords)
+        self.sdomaps[mapname] = loaded_map.submap(fov_coords[0], top_right=fov_coords[1])
         return self.sdomaps[mapname]
 
     def make_dummy_map(self, ref_coord):
@@ -636,12 +656,13 @@ def main():
 
         python pyAMPP/pyampp/gxboxox_factory.py --time 2014-11-01T16:40:00 --coords -632 -135 --hpc --box_dims 64 64 64 --box_res 1.400 --pad_frac 0.25
     """
+    ## todo From Viktor: I advice you to switch from argparse to fire library. It can make it easy to create API for classes and functions and change it
     parser = argparse.ArgumentParser(description="Run GxBox with specified parameters.")
     parser.add_argument('--time', required=True, help='Observation time in ISO format, e.g., "2024-05-12T00:00:00"')
     parser.add_argument('--coords', nargs=2, type=float, required=True,
                         help='Center coordinates [x, y] in arcsec if HPC or deg if HGS')
     parser.add_argument('--hpc', action='store_true', help='Use Helioprojective coordinates (default)')
-    parser.add_argument('--hgs', action='store_true', help='Use Heliographic Stonyhurst coordinates')
+    parser.add_argument('--hgc', action='store_true', help='Use Heliographic Carrington coordinates')
     parser.add_argument('--box_dims', nargs=3, type=int, default=[64, 64, 64],
                         help='Box dimensions in pixels as three integers [dx, dy, dz]')
     parser.add_argument('--box_res', type=float, default=1.4, help='Box resolution in Mm per pixel')
@@ -667,7 +688,7 @@ def main():
                               rsun=696 * u.Mm, frame='helioprojective')
     elif args.hgs:
         box_origin = SkyCoord(lon=coords[0] * u.deg, lat=coords[1] * u.deg, obstime=time, radius=696 * u.Mm,
-                              frame='heliographic_stonyhurst')
+                              frame='heliographic_carrington')
     else:
         raise ValueError("Coordinate frame not specified or unknown.")
 
@@ -681,8 +702,6 @@ def main():
     data_dir = args.data_dir
     gxmodel_dir = args.gxmodel_dir
     external_box = args.external_box
-
-
 
     # Running the application
     app = QApplication([])
@@ -717,7 +736,7 @@ if __name__ == '__main__':
     # box_origin = SkyCoord(lon=30 * u.deg, lat=20 * u.deg,
     #                       obstime=time,
     #                       radius=696 * u.Mm,
-    #                       frame='heliographic_stonyhurst')
+    #                       frame='heliographic_carrington')
     # ## dots source
     # # box_origin = SkyCoord(-475 * u.arcsec, -330 * u.arcsec, distance,obstime=time, rsun = 696*u.Mm, observer="earth", frame='helioprojective')
     # ## flare AR

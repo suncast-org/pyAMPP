@@ -62,8 +62,8 @@ class PyAmppGUI(QMainWindow):
         Updates the command display with the current command.
     update_hpc_state(checked):
         Updates the UI when Helioprojective coordinates are selected.
-    update_hgs_state(checked):
-        Updates the UI when Heliographic Stonyhurst coordinates are selected.
+    update_hgc_state(checked):
+        Updates the UI when Heliographic Carrington coordinates are selected.
     get_command():
         Constructs the command based on the current UI settings.
     execute_command():
@@ -298,10 +298,10 @@ class PyAmppGUI(QMainWindow):
         self.hpc_radio_button.setToolTip("Use Helioprojective coordinates frame to define the model center")
         self.hpc_radio_button.toggled.connect(self.update_hpc_state)
         coords_layout.addWidget(self.hpc_radio_button)
-        self.hgs_radio_button = QRadioButton("Stonyhurst")
-        self.hgs_radio_button.setToolTip("Use Heliographic Stonyhurst coordinates frame to define the model center")
-        self.hgs_radio_button.toggled.connect(self.update_hgs_state)
-        coords_layout.addWidget(self.hgs_radio_button)
+        self.hgc_radio_button = QRadioButton("Carrington")
+        self.hgc_radio_button.setToolTip("Use Heliographic Carrington coordinates frame to define the model center")
+        self.hgc_radio_button.toggled.connect(self.update_hgc_state)
+        coords_layout.addWidget(self.hgc_radio_button)
         coords_layout.addStretch()
         main_layout.addLayout(coords_layout)
 
@@ -470,16 +470,16 @@ class PyAmppGUI(QMainWindow):
             self.coord_y_label.setText("Y:")
             self.update_command_display()
 
-    def update_hgs_state(self, checked):
+    def update_hgc_state(self, checked):
         """
-        Updates the UI when Heliographic Stonyhurst coordinates are selected.
+        Updates the UI when Heliographic Carrington coordinates are selected.
 
-        :param checked: Whether the Heliographic Stonyhurst radio button is checked.
+        :param checked: Whether the Heliographic Carrington radio button is checked.
         :type checked: bool
         """
         if checked:
-            self.coord_x_edit.setToolTip("Heliographic Stonyhurst Longitude of the model center in deg")
-            self.coord_y_edit.setToolTip("Heliographic Stonyhurst Latitude of the model center in deg")
+            self.coord_x_edit.setToolTip("Heliographic Carrington Longitude of the model center in deg")
+            self.coord_y_edit.setToolTip("Heliographic Carrington Latitude of the model center in deg")
             self.coord_label.setText("Center Coords in deg")
             self.coord_x_label.setText("lon:")
             self.coord_y_label.setText("lat:")
@@ -503,7 +503,7 @@ class PyAmppGUI(QMainWindow):
         if self.hpc_radio_button.isChecked():
             command += ['--coords', self.coord_x_edit.text(), self.coord_y_edit.text(), '--hpc']
         else:
-            command += ['--coords', self.coord_x_edit.text(), self.coord_y_edit.text(), '--hgs']
+            command += ['--coords', self.coord_x_edit.text(), self.coord_y_edit.text(), '--hgc']
 
         command += ['--box_dims', self.grid_x_edit.text(), self.grid_y_edit.text(), self.grid_z_edit.text()]
         command += ['--box_res', f'{((int(self.res_edit.text()) * u.km).to(u.Mm)).value:.3f}']

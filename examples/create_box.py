@@ -8,7 +8,7 @@ from pyampp.gxbox.gxbox_factory import GxBox
 time = astropy.time.Time('2014-11-01T16:40:00')
 # box_origin = SkyCoord(lon=30 * u.deg, lat=20 * u.deg,
 #                       radius=sunpy.sun.constants.radius,
-#                       frame='heliographic_stonyhurst')
+#                       frame='heliographic_carrington')
 ## dots source
 # box_origin = SkyCoord(-475 * u.arcsec, -330 * u.arcsec, obstime=time, observer="earth", frame='helioprojective')
 ## flare AR
@@ -35,9 +35,9 @@ gxbox.show()
 
 
 
-# box_origin_hs = box_origin.transform_to('heliographic_stonyhurst')
+# box_origin_hs = box_origin.transform_to('heliographic_carrington')
 # new_observer = SkyCoord(box_origin_hs.lon, box_origin_hs.lat, box_origin.distance.value*u.AU, obstime=time,
-#                         frame='heliographic_stonyhurst')
+#                         frame='heliographic_carrington')
 #
 # out_shape = aia_map.data.shape
 #
