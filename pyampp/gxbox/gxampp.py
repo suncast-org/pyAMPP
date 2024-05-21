@@ -5,11 +5,12 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEd
                              QCheckBox, QGridLayout, QGroupBox, QVBoxLayout, QHBoxLayout, QDateTimeEdit,
                              QCalendarWidget, QTextEdit, QMessageBox,
                              QFileDialog)
-from PyQt5.QtGui import QIcon,QFont
+from PyQt5.QtGui import QIcon, QFont
 from PyQt5.QtCore import QSize, QDateTime, Qt
 from pyampp.util.config import *
 import pyampp
 from pathlib import Path
+import argparse
 
 base_dir = Path(pyampp.__file__).parent
 svg_dir = base_dir / 'gxbox' / 'UI'
@@ -138,8 +139,8 @@ class PyAmppGUI(QMainWindow):
         # External Box Path
         layout.addWidget(QLabel("External Box Path:"), 2, 0)
         self.external_box_edit = QLineEdit()
-        self.external_box_edit.setText(os.getcwd())
-        self.external_box_edit.setToolTip("Path to the external box. Default is the current directory.")
+        # self.external_box_edit.setText(os.getcwd())
+        self.external_box_edit.setToolTip("Path to the external box, if exist.")
         self.external_box_edit.returnPressed.connect(self.update_external_box_dir)
         layout.addWidget(self.external_box_edit, 2, 1)
         external_browse_button = QPushButton("Browse")
@@ -165,12 +166,40 @@ class PyAmppGUI(QMainWindow):
         self.update_dir(new_path, GXMODEL_DIR)
         self.update_command_display()
 
+
+    def read_external_box(self):
+        """
+        Reads the external box path based on the user input.
+        """
+        import pickle
+        import astropy.units as u
+        from sunpy.coordinates import HeliographicCarrington, HeliographicStonyhurst
+
+        boxfile = self.external_box_edit.text()
+        with open(boxfile, 'rb') as f:
+            boxdata = pickle.load(f)
+            map_bottom = boxdata['map_bottom']
+            nx, ny, nz = boxdata['b3d']['nlfff']['bx'].shape
+            box_res = map_bottom.rsun_meters.to(u.Mm) * ((map_bottom.scale[0] * 1. * u.pix).to(u.rad) / u.rad)
+            center = map_bottom.center.transform_to(HeliographicStonyhurst)
+        self.model_time_edit.setDateTime(QDateTime(map_bottom.date.to_datetime()))
+        self.hgs_radio_button.setChecked(True)
+        self.coord_x_edit.setText(f'{center.lon.to(u.deg).value}')
+        self.coord_y_edit.setText(f'{center.lat.to(u.deg).value}')
+        self.grid_x_edit.setText(f'{nx}')
+        self.grid_y_edit.setText(f'{ny}')
+        self.grid_z_edit.setText(f'{nz}')
+        self.res_edit.setText(f'{box_res.to(u.km).value}')
+        self.update_command_display()
+
     def update_external_box_dir(self):
         """
         Updates the external box directory path based on the user input.
         """
         new_path = self.external_box_edit.text()
         self.update_dir(new_path, os.getcwd())
+        if os.path.isfile(self.external_box_edit.text()):
+            self.read_external_box()
         self.update_command_display()
 
     def update_dir(self, new_path, default_path):
@@ -234,9 +263,11 @@ class PyAmppGUI(QMainWindow):
         """
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
-        file_name = QFileDialog.getExistingDirectory(self, "Select Directory", os.getcwd())
+        file_name, _ = QFileDialog.getOpenFileName(self, "Select File", os.getcwd(), "gxbox Files (*.gxbox)")
+        # file_name = QFileDialog.getExistingDirectory(self, "Select Directory", os.getcwd())
         if file_name:
             self.external_box_edit.setText(file_name)
+            self.read_external_box()
 
     def add_model_configuration_section(self):
         """
@@ -261,7 +292,7 @@ class PyAmppGUI(QMainWindow):
         self.model_time_edit.setDateTime(QDateTime.currentDateTimeUtc())
         self.model_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self.model_time_edit.setCalendarPopup(True)
-        self.model_time_edit.setDateTimeRange(QDateTime(2010, 1, 1, 0, 0, 0),QDateTime(QDateTime.currentDateTimeUtc()))
+        self.model_time_edit.setDateTimeRange(QDateTime(2010, 1, 1, 0, 0, 0), QDateTime(QDateTime.currentDateTimeUtc()))
         self.model_time_edit.setCalendarWidget(QCalendarWidget())
         self.model_time_edit.setToolTip("Model time in UT")
         self.model_time_edit.dateTimeChanged.connect(self.update_command_display)
@@ -302,6 +333,10 @@ class PyAmppGUI(QMainWindow):
         self.hgc_radio_button.setToolTip("Use Heliographic Carrington coordinates frame to define the model center")
         self.hgc_radio_button.toggled.connect(self.update_hgc_state)
         coords_layout.addWidget(self.hgc_radio_button)
+        self.hgs_radio_button = QRadioButton("Stonyhurst")
+        self.hgs_radio_button.setToolTip("Use Heliographic Stonyhurst coordinates frame to define the model center")
+        self.hgs_radio_button.toggled.connect(self.update_hgs_state)
+        coords_layout.addWidget(self.hgs_radio_button)
         coords_layout.addStretch()
         main_layout.addLayout(coords_layout)
 
@@ -485,6 +520,21 @@ class PyAmppGUI(QMainWindow):
             self.coord_y_label.setText("lat:")
             self.update_command_display()
 
+    def update_hgs_state(self, checked):
+        """
+        Updates the UI when Heliographic Stonyhurst coordinates are selected.
+
+        :param checked: Whether the Heliographic Stonyhurst radio button is checked.
+        :type checked: bool
+        """
+        if checked:
+            self.coord_x_edit.setToolTip("Heliographic Stonyhurst Longitude of the model center in deg")
+            self.coord_y_edit.setToolTip("Heliographic Stonyhurst Latitude of the model center in deg")
+            self.coord_label.setText("Center Coords in deg")
+            self.coord_x_label.setText("lon:")
+            self.coord_y_label.setText("lat:")
+            self.update_command_display()
+
     def get_command(self):
         """
         Constructs the command based on the current UI settings.
@@ -498,19 +548,22 @@ class PyAmppGUI(QMainWindow):
         import astropy.units as u
         command = ['python', os.path.join(base_dir, 'gxbox', 'gxbox_factory.py')]
         time = astropy.time.Time(self.model_time_edit.dateTime().toPyDateTime())
-        command += ['--time',time.to_datetime().strftime('%Y-%m-%dT%H:%M:%S')]
+        command += ['--time', time.to_datetime().strftime('%Y-%m-%dT%H:%M:%S')]
 
         if self.hpc_radio_button.isChecked():
             command += ['--coords', self.coord_x_edit.text(), self.coord_y_edit.text(), '--hpc']
-        else:
+        elif self.hgc_radio_button.isChecked():
             command += ['--coords', self.coord_x_edit.text(), self.coord_y_edit.text(), '--hgc']
+        else:
+            command += ['--coords', self.coord_x_edit.text(), self.coord_y_edit.text(), '--hgs']
 
         command += ['--box_dims', self.grid_x_edit.text(), self.grid_y_edit.text(), self.grid_z_edit.text()]
-        command += ['--box_res', f'{((int(self.res_edit.text()) * u.km).to(u.Mm)).value:.3f}']
+        command += ['--box_res', f'{((float(self.res_edit.text()) * u.km).to(u.Mm)).value:.3f}']
         command += ['--pad_frac', f'{float(self.padding_size_edit.text()) / 100:.2f}']
         command += ['--data_dir', self.sdo_data_edit.text()]
         command += ['--gxmodel_dir', self.gx_model_edit.text()]
-        command += ['--external_box', self.external_box_edit.text()]
+        if self.external_box_edit.text() != '':
+            command += ['--external_box', self.external_box_edit.text()]
         # print(command)
         return command
 
@@ -566,16 +619,24 @@ def main():
     This command initializes the PyQt application loop and opens the main window of the PyAmppGUI, where all interactions
     occur. Default values for date and coordinates are set programmatically before the event loop starts.
     """
-    app = QApplication(sys.argv)
+    parser = argparse.ArgumentParser(description="Run GxBox with specified parameters.")
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode with interactive session.')
+    args = parser.parse_args()
+
+    app = QApplication([])
     pyampp = PyAmppGUI()
     pyampp.model_time_edit.setDateTime(QDateTime(2014, 11, 1, 16, 40))
     pyampp.coord_x_edit.setText('-632')
     pyampp.coord_y_edit.setText('-135')
     pyampp.update_command_display()
+    if args.debug:
+        # Start an interactive IPython session for debugging
+        import IPython
+        IPython.embed()
+        import matplotlib.pyplot as plt
+        plt.show()
     sys.exit(app.exec_())
-
 
 
 if __name__ == '__main__':
     main()
-

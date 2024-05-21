@@ -7,7 +7,12 @@ requires = [
     "numpy>=1.25",
     "cython",
     "ipympl",
-    "ipywidgets"
+    "ipywidgets",
+    "matplotlib",
+    "pyvista",
+    "pyvistaqt",
+    "pyqt5",
+    "qtrangeslider"
 ]
 build-backend = "setuptools.build_meta"
 
