@@ -120,7 +120,7 @@ class MagFieldWrapper:
         self.__step = np.array([dr, dr, dr], dtype = np.float64)
 
     #-------------------------------------------------------------------------------
-    def NLFFFNLFFF(self
+    def NLFFF(self
             , weight_bound_size = 0.1
             , derivative_stencil = 3
             , dense_grid_use = 1
