@@ -29,12 +29,8 @@ import pyampp
 from pyampp.util.lff import mf_lfff
 from pyampp.util.MagFieldWrapper import MagFieldWrapper
 from pyampp.util.radio import GXRadioImageComputing
+from pyampp.gxbox.magfield_viewer import MagFieldViewer
 import pickle
-import pyvista as pv
-from pyvistaqt import BackgroundPlotter
-import pyvista as pv
-from pyvistaqt import QtInteractor
-from sunkit_pyvista import SunpyPlotter
 
 base_dir = Path(pyampp.__file__).parent
 nlfff_libpath = Path(base_dir / 'lib' / 'nlfff' / 'binaries' / 'WWNLFFFReconstruction.so').resolve()
@@ -42,412 +38,6 @@ radio_libpath = Path(base_dir / 'lib' / 'grff' / 'binaries' / 'RenderGRFF.so').r
 
 os.environ['OMP_NUM_THREADS'] = '16'  # number of parallel threads
 locale.setlocale(locale.LC_ALL, "C");
-
-import pyvista as pv
-from pyvistaqt import BackgroundPlotter
-from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
-import numpy as np
-
-
-class MagneticFieldVisualizer(BackgroundPlotter):
-    '''
-    A class to visualize the magnetic field of a box using PyVista. It inherits from the BackgroundPlotter class.
-    '''
-
-    def __init__(self, box, parent=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.box = box
-        self.parent = parent
-        self.updating = False  # Flag to avoid recursion
-        self.sphere_actor = None
-        self.plane_actor = None
-        self.bottom_slice_actor = None
-        self.streamlines_actor = None
-        self.sphere_visible = True
-        self.plane_visible = True
-        self.scalar = 'bz'
-        self.previous_params = {}
-        self.previous_valid_values = {}
-        self.scalar_selector = None
-        self.center_x_input = None
-        self.center_y_input = None
-        self.center_z_input = None
-        self.radius_input = None
-        self.n_points_input = None
-        self.slice_z_input = None
-        self.vmin_input = None
-        self.vmax_input = None
-        self.update_button = None
-        self.send_button = None
-        self.sphere_checkbox = None
-        self.add_widgets_to_window()
-        self.app_window.setWindowTitle("GxBox 3D viewer")
-
-    def add_widgets_to_window(self):
-        # Get the central widget's layout
-        central_widget = self.app_window.centralWidget()
-        layout = central_widget.layout()
-
-        if layout is None:
-            layout = QVBoxLayout()
-            central_widget.setLayout(layout)
-
-        # Add widgets to the layout
-        scalar_control_layout = QHBoxLayout()
-        scalar_label = QLabel("Select Scalar:")
-        self.scalar_selector = QComboBox()
-        self.scalar_selector.addItems(['bx', 'by', 'bz'])
-        self.scalar_selector.setCurrentText(self.scalar)
-        self.scalar_selector.currentTextChanged.connect(self.update_plot)
-        scalar_control_layout.addWidget(scalar_label)
-        scalar_control_layout.addWidget(self.scalar_selector)
-        layout.addLayout(scalar_control_layout)
-
-        sphere_control_layout = QHBoxLayout()
-        center_label = QLabel("Center (x, y, z):")
-        self.center_x_input = QLineEdit(f"{np.mean(self.box.grid_coords['x'].value):.2f}")
-        self.center_y_input = QLineEdit(f"{np.mean(self.box.grid_coords['y'].value):.2f}")
-        self.center_z_input = QLineEdit(
-            f"{np.min(self.box.grid_coords['z'].value) + self.box.grid_coords['z'].value.ptp() * 0.1:.2f}")
-        self.center_x_input.returnPressed.connect(self.update_sphere)
-        self.center_y_input.returnPressed.connect(self.update_sphere)
-        self.center_z_input.returnPressed.connect(self.update_sphere)
-        sphere_control_layout.addWidget(center_label)
-        sphere_control_layout.addWidget(self.center_x_input)
-        sphere_control_layout.addWidget(self.center_y_input)
-        sphere_control_layout.addWidget(self.center_z_input)
-
-        radius_label = QLabel("Seed Radius [Mm]:")
-        self.radius_input = QLineEdit(
-            f"{min(self.box.grid_coords['x'].value.ptp(), self.box.grid_coords['y'].value.ptp(), self.box.grid_coords['z'].value.ptp()) * 0.05:.2f}")
-        self.radius_input.returnPressed.connect(self.update_sphere)
-        sphere_control_layout.addWidget(radius_label)
-        sphere_control_layout.addWidget(self.radius_input)
-
-        n_points_label = QLabel("Number of Seeds:")
-        self.n_points_input = QLineEdit("10")
-        self.n_points_input.returnPressed.connect(self.update_sphere)
-        sphere_control_layout.addWidget(n_points_label)
-        sphere_control_layout.addWidget(self.n_points_input)
-        layout.addLayout(sphere_control_layout)
-
-        slice_vmin_vmax_layout = QHBoxLayout()
-        slice_z_label = QLabel("Slice Z [Mm]:")
-        self.slice_z_input = QLineEdit(
-            f"{np.min(self.box.grid_coords['z'].value) + self.box.grid_coords['z'].value.ptp() * 0.01:.2f}")
-        self.slice_z_input.returnPressed.connect(self.update_plot)
-        slice_vmin_vmax_layout.addWidget(slice_z_label)
-        slice_vmin_vmax_layout.addWidget(self.slice_z_input)
-
-        vmin_label = QLabel("Vmin:")
-        self.vmin_input = QLineEdit("-1000")
-        self.vmin_input.returnPressed.connect(self.update_plot)
-        slice_vmin_vmax_layout.addWidget(vmin_label)
-        slice_vmin_vmax_layout.addWidget(self.vmin_input)
-
-        vmax_label = QLabel("Vmax:")
-        self.vmax_input = QLineEdit("1000")
-        self.vmax_input.returnPressed.connect(self.update_plot)
-        slice_vmin_vmax_layout.addWidget(vmax_label)
-        slice_vmin_vmax_layout.addWidget(self.vmax_input)
-        layout.addLayout(slice_vmin_vmax_layout)
-
-        action_layout = QHBoxLayout()
-        self.update_button = QPushButton("Update")
-        self.update_button.clicked.connect(self.update_plot)
-        action_layout.addWidget(self.update_button)
-
-        self.send_button = QPushButton("Send Streamlines")
-        self.send_button.clicked.connect(self.send_streamlines)
-        action_layout.addWidget(self.send_button)
-
-        self.sphere_checkbox = QCheckBox("Show Sphere")
-        self.sphere_checkbox.setChecked(True)
-        self.sphere_checkbox.stateChanged.connect(self.toggle_sphere_visibility)
-        action_layout.addWidget(self.sphere_checkbox)
-
-        self.plane_checkbox = QCheckBox("Show Plane")
-        self.plane_checkbox.setChecked(True)
-        self.plane_checkbox.stateChanged.connect(self.toggle_plane_visibility)
-        action_layout.addWidget(self.plane_checkbox)
-        layout.addLayout(action_layout)
-
-        self.show_plot()
-        self.show_axes_all()
-        self.view_isometric()
-        self.plane_checkbox.setChecked(False)
-
-    def validate_input(self, widget, min_val, max_val, original_value, to_int=False, paired_widget=None,
-                       paired_type=None):
-        ''''
-        Validates the input of a QLineEdit widget and returns the value if it is valid. If the input is invalid, a warning message is displayed and the original value is restored.
-        :param widget: QLineEdit, the widget to validate.
-        :param min_val: float, the minimum valid value.
-        :param max_val: float, the maximum valid value.
-        :param original_value: float, the original value of the widget.
-        :param to_int: bool, whether to convert the value to an integer.
-        :param paired_widget: QLineEdit, the paired widget to compare the value with.
-        :param paired_type: str, the type of comparison to perform with the paired widget.
-        :return: float, the valid value.
-        '''
-        try:
-            value = float(widget.text())
-            if not min_val <= value <= max_val:
-                original_value = np.ceil((min_val) * 100) / 100 if value < min_val else np.floor((max_val) * 100) / 100
-                raise ValueError
-
-            if paired_widget:
-                paired_value = float(paired_widget.text())
-                if paired_type == 'vmin' and value >= paired_value:
-                    raise ValueError
-                if paired_type == 'vmax' and value <= paired_value:
-                    raise ValueError
-
-            if to_int:
-                value = int(value)
-
-            self.previous_valid_values[widget] = value
-            return value
-        except ValueError:
-            if paired_type == 'vmin':
-                QMessageBox.warning(self, "Invalid Input",
-                                    f"Please enter a number between {min_val:.3f} and {max_val:.3f} that is less than the corresponding max value.")
-            elif paired_type == 'vmax':
-                QMessageBox.warning(self, "Invalid Input",
-                                    f"Please enter a number between {min_val:.3f} and {max_val:.3f} that is greater than the corresponding min value.")
-            else:
-                QMessageBox.warning(self, "Invalid Input",
-                                    f"Please enter a number between {min_val:.3f} and {max_val:.3f}.")
-
-            widget.setText(str(original_value))
-            return original_value
-
-    def show_plot(self):
-        x = self.box.grid_coords['x'].value
-        y = self.box.grid_coords['y'].value
-        z = self.box.grid_coords['z'].value
-
-        bx = self.box.b3d['nlfff']['bx']
-        by = self.box.b3d['nlfff']['by']
-        bz = self.box.b3d['nlfff']['bz']
-        vectors = np.c_[bx.ravel(order='F'), by.ravel(order='F'), bz.ravel(order='F')]
-
-        self.grid = pv.ImageData()
-        self.grid.dimensions = (len(x), len(y), len(z))
-        self.grid.spacing = (x[1] - x[0], y[1] - y[0], z[1] - z[0])
-        self.grid.origin = (x.min(), y.min(), z.min())
-        self.grid['vectors'] = vectors
-        self.grid['bx'] = bx.ravel(order='F')
-        self.grid['by'] = by.ravel(order='F')
-        self.grid['bz'] = bz.ravel(order='F')
-
-        self.previous_valid_values = {
-            self.center_x_input: float(self.center_x_input.text()),
-            self.center_y_input: float(self.center_y_input.text()),
-            self.center_z_input: float(self.center_z_input.text()),
-            self.radius_input: float(self.radius_input.text()),
-            self.slice_z_input: float(self.slice_z_input.text()),
-            self.n_points_input: int(self.n_points_input.text()),
-            self.vmin_input: float(self.vmin_input.text()),
-            self.vmax_input: float(self.vmax_input.text())
-        }
-
-        self.update_plot()
-
-    def update_plot(self):
-        if self.updating:  # Check if already updating
-            return
-
-        self.updating = True  # Set the flag
-
-        x = self.box.grid_coords['x'].value
-        y = self.box.grid_coords['y'].value
-        z = self.box.grid_coords['z'].value
-
-        xmin, xmax = x.min(), x.max()
-        ymin, ymax = y.min(), y.max()
-        zmin, zmax = z.min(), z.max()
-
-        # Get current parameters
-        center_x = self.validate_input(self.center_x_input, xmin, xmax, self.previous_valid_values[self.center_x_input])
-        center_y = self.validate_input(self.center_y_input, ymin, ymax, self.previous_valid_values[self.center_y_input])
-        center_z = self.validate_input(self.center_z_input, zmin, zmax, self.previous_valid_values[self.center_z_input])
-        radius = self.validate_input(self.radius_input, 0, min(x.ptp(), y.ptp(), z.ptp()),
-                                     self.previous_valid_values[self.radius_input])
-        slice_z = self.validate_input(self.slice_z_input, zmin, zmax, self.previous_valid_values[self.slice_z_input])
-        n_points = self.validate_input(self.n_points_input, 1, 500, self.previous_valid_values[self.n_points_input],
-                                       to_int=True)
-
-        vmin = self.validate_input(self.vmin_input, -5e4, 5e4, self.previous_valid_values[self.vmin_input],
-                                   paired_widget=self.vmax_input, paired_type='vmin')
-        vmax = self.validate_input(self.vmax_input, -5e4, 5e4, self.previous_valid_values[self.vmax_input],
-                                   paired_widget=self.vmin_input, paired_type='vmax')
-
-        scalar = self.scalar_selector.currentText()
-        sphere_visible = self.sphere_visible
-        plane_visible = self.plane_visible
-
-        # Create a dictionary of current parameters
-        current_params = {
-            "center_x": center_x,
-            "center_y": center_y,
-            "center_z": center_z,
-            "radius": radius,
-            "slice_z": slice_z,
-            "n_points": n_points,
-            "vmin": vmin,
-            "vmax": vmax,
-            "scalar": scalar,
-            "sphere_visible": sphere_visible,
-            "plane_visible": plane_visible
-        }
-
-        # Check if parameters have changed
-        if current_params == self.previous_params:
-            self.updating = False  # Reset the flag
-            return
-
-        # Update only relevant objects based on parameter changes
-        if current_params['slice_z'] != self.previous_params.get('slice_z') or \
-                current_params['scalar'] != self.previous_params.get('scalar') or \
-                current_params['vmin'] != self.previous_params.get('vmin') or \
-                current_params['vmax'] != self.previous_params.get('vmax'):
-            self.update_slice(current_params['slice_z'], current_params['scalar'], current_params['vmin'],
-                              current_params['vmax'])
-
-        if current_params['center_x'] != self.previous_params.get('center_x') or \
-                current_params['center_y'] != self.previous_params.get('center_y') or \
-                current_params['center_z'] != self.previous_params.get('center_z') or \
-                current_params['radius'] != self.previous_params.get('radius') or \
-                current_params['n_points'] != self.previous_params.get('n_points'):
-            self.update_streamlines(current_params['center_x'], current_params['center_y'], current_params['center_z'],
-                                    current_params['radius'], current_params['n_points'])
-
-        if current_params['sphere_visible'] != self.previous_params.get('sphere_visible'):
-            self.update_sphere_visibility(current_params['sphere_visible'])
-
-        if current_params['plane_visible'] != self.previous_params.get('plane_visible'):
-            self.update_plane_visibility(current_params['plane_visible'])
-
-        # Update previous parameters
-        self.previous_params = current_params
-
-        # self.plotter.show()
-        self.updating = False  # Reset the flag
-
-    def update_slice(self, slice_z, scalar, vmin, vmax):
-        new_slice = self.grid.slice(normal='z', origin=(self.grid.origin[0], self.grid.origin[1], slice_z))
-        if self.bottom_slice_actor is None:
-            self.bottom_slice_actor = self.add_mesh(new_slice, scalars=scalar, clim=(vmin, vmax), show_edges=False,
-                                                    cmap='gray', pickable=False, show_scalar_bar=False)
-        else:
-            self.remove_actor(self.bottom_slice_actor)
-            self.bottom_slice_actor = self.add_mesh(new_slice, scalars=scalar, clim=(vmin, vmax), show_edges=False,
-                                                    cmap='gray', pickable=False, reset_camera=False,
-                                                    show_scalar_bar=False)
-
-    def update_streamlines(self, center_x, center_y, center_z, radius, n_points):
-        new_streamlines = self.grid.streamlines(vectors='vectors', source_center=(center_x, center_y, center_z),
-                                                source_radius=radius, n_points=n_points, integration_direction='both',
-                                                max_time=5000, progress_bar=True)
-        if new_streamlines.n_points > 0:
-            if self.streamlines_actor is None:
-                self.streamlines_actor = self.add_mesh(new_streamlines.tube(radius=0.1), pickable=False,
-                                                       show_scalar_bar=False)
-            else:
-                self.remove_actor(self.streamlines_actor)
-                self.streamlines_actor = self.add_mesh(new_streamlines.tube(radius=0.1), pickable=False,
-                                                       reset_camera=False, show_scalar_bar=False)
-        else:
-            print("No streamlines generated.")
-
-    def update_sphere(self):
-        if self.sphere_actor is not None:
-            self.sphere_actor.SetCenter([float(self.center_x_input.text()), float(self.center_y_input.text()),
-                                         float(self.center_z_input.text())])
-            self.sphere_actor.SetRadius(float(self.radius_input.text()))
-            self.update_plot()
-
-    def update_sphere_visibility(self, sphere_visible):
-        if sphere_visible:
-            if self.sphere_actor is None:
-                center_x = float(self.center_x_input.text())
-                center_y = float(self.center_y_input.text())
-                center_z = float(self.center_z_input.text())
-                radius = float(self.radius_input.text())
-                self.sphere_actor = self.add_sphere_widget(self.on_sphere_moved,
-                                                           center=(center_x, center_y, center_z),
-                                                           radius=radius, theta_resolution=18, phi_resolution=18,
-                                                           style='wireframe')
-            else:
-                self.sphere_actor.On()
-        else:
-            if self.sphere_actor is not None:
-                self.sphere_actor.Off()
-
-    def on_sphere_moved(self, center):
-        self.center_x_input.setText(f"{center[0]:.2f}")
-        self.center_y_input.setText(f"{center[1]:.2f}")
-        self.center_z_input.setText(f"{center[2]:.2f}")
-        self.update_sphere()
-
-    def toggle_sphere_visibility(self, state):
-        self.sphere_visible = state == Qt.Checked
-        self.update_plot()
-
-    def update_plane(self):
-        if self.plane_actor is not None:
-            origin = self.box.grid_coords['x'].value.ptp() / 2, self.box.grid_coords['y'].value.ptp() / 2
-            slice_z = float(self.slice_z_input.text())
-            self.plane_actor.SetOrigin([origin[0], origin[1], slice_z])
-            self.update_plot()
-
-    def update_plane_visibility(self, plane_visible):
-        if plane_visible:
-            if self.plane_actor is None:
-                origin = self.box.grid_coords['x'].value.ptp() / 2, self.box.grid_coords['y'].value.ptp() / 2
-                slice_z = float(self.slice_z_input.text())
-                self.plane_actor = self.add_plane_widget(self.on_plane_moved, normal='z',
-                                                         origin=(origin[0], origin[1], slice_z), normal_rotation=False)
-            else:
-                self.plane_actor.On()
-        else:
-            if self.plane_actor is not None:
-                self.plane_actor.Off()
-
-    def on_plane_moved(self, normal, origin):
-        self.slice_z_input.setText(f"{origin[2]:.2f}")
-        self.update_plane()
-
-    def toggle_plane_visibility(self, state):
-        self.plane_visible = state == Qt.Checked
-        self.update_plot()
-
-    def send_streamlines(self):
-        print("Sending streamlines to gxbox...")
-        if self.parent is not None and self.streamlines_actor is not None:
-            streamlines = self.grid.streamlines(vectors='vectors', source_center=(
-                float(self.center_x_input.text()), float(self.center_y_input.text()),
-                float(self.center_z_input.text())),
-                                                source_radius=float(self.radius_input.text()),
-                                                n_points=int(self.n_points_input.text()), integration_direction='both',
-                                                max_time=5000, progress_bar=True)
-            if streamlines.n_lines > 0:
-
-                self.parent.plot_fieldlines(self.extract_streamlines(streamlines))
-
-    def extract_streamlines(self, streamlines):
-        lines = []
-        n_lines = streamlines.lines.shape[0]
-        i = 0
-        while i < n_lines:
-            num_points = streamlines.lines[i]
-            start_idx = streamlines.lines[i + 1]
-            end_idx = start_idx + num_points
-            line = streamlines.points[start_idx:end_idx]
-            lines.append(line)
-            i += num_points + 1
-        return lines
 
 
 class Box:
@@ -800,9 +390,14 @@ class GxBox(QMainWindow):
         self.edge_coords = []
         self.axes = None
         self.fig = None
+        self.axes_world_coords = None
+        self.axes_world_coords_init = None
         self.init_map_context_name = '171'
         self.init_map_bottom_name = 'field'
         self.external_box = external_box
+        self.fieldlines_coords = []
+        self.map_context_im = None
+        self.map_bottom_im = None
 
         ## this is a dummy map. it should be replaced by a real map from inputs.
         self.instrument_map = self.make_dummy_map(self.box_origin.transform_to(self.frame_obs))
@@ -1000,6 +595,10 @@ class GxBox(QMainWindow):
         dropdown_layout.addWidget(self.b3d_model_selector_label)
         dropdown_layout.addWidget(self.b3d_model_selector)
 
+        # self.reset_axes_button = QPushButton("Reset Axes")
+        # self.reset_axes_button.clicked.connect(self.reset_axes)
+        # dropdown_layout.addWidget(self.reset_axes_button)
+
         # Add the visualize button
         self.visualize_button = QPushButton("3D viewer")
         self.visualize_button.clicked.connect(self.visualize_3d_magnetic_field)
@@ -1098,7 +697,7 @@ class GxBox(QMainWindow):
         Launches the MagneticFieldVisualizer to visualize the 3D magnetic field data.
         """
 
-        self.visualizer = MagneticFieldVisualizer(self.box, self)
+        self.visualizer = MagFieldViewer(self.box, self)
         self.visualizer.show()
 
     def update_bottom_map(self, map_name):
@@ -1108,10 +707,14 @@ class GxBox(QMainWindow):
         :param map_name: Name of the map to be updated.
         :type map_name: str
         """
+        if self.map_bottom_im is not None:
+            self.map_bottom_im.remove()
         map_bottom = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
         self.map_bottom = map_bottom.reproject_to(self.bottom_wcs_header, algorithm="adaptive",
                                                   roundtrip_coords=False)
-        self.update_plot()
+        self.map_bottom_im = self.map_bottom.plot(axes=self.axes, autoalign=True)
+        # self.update_plot()
+        self.canvas.draw()
 
     def update_context_map(self, map_name):
         """
@@ -1120,42 +723,80 @@ class GxBox(QMainWindow):
         :param map_name: Name of the map to be updated.
         :type map_name: str
         """
+        if self.map_context_im is not None:
+            self.map_context_im.remove()
         self.map_context = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
-        self.update_plot()
+        self.map_context_im = self.map_context.plot(axes=self.axes)
+        self.canvas.draw()
 
-    def update_plot(self):
+    @property
+    def get_axes_world_coords(self):
+        # Get pixel bounds
+        pixel_coords_x = self.axes.get_xlim()
+        pixel_coords_y = self.axes.get_ylim()
+
+        # Convert pixel bounds to world coordinates
+        world_coords = self.map_context.wcs.pixel_to_world(pixel_coords_x, pixel_coords_y)
+
+        return world_coords
+
+    def get_axes_pixel_coords(self, coords_world=None):
+        if coords_world is None:
+            coords_world = self.get_axes_world_coords
+        world_coords = SkyCoord(Tx=coords_world.Tx, Ty=coords_world.Ty, frame=self.map_context.coordinate_frame)
+        pixel_coords_x, pixel_coords_y = self.map_context.wcs.world_to_pixel(world_coords)
+        return pixel_coords_x, pixel_coords_y
+
+    # def reset_axes(self):
+    #     self.axes_world_coords = None
+    #     axes_pixel_coords = self.get_axes_pixel_coords(coords_world=self.axes_world_coords_init)
+    #     self.axes.set_xlim(axes_pixel_coords[0])
+    #     self.axes.set_ylim(axes_pixel_coords[1])
+
+    def update_plot(self, show_bound_box=True, show_box_outline=True):
         """
         Updates the plot with the current data and settings.
         """
+        if self.axes is not None:
+            self.axes_world_coords = self.get_axes_world_coords
         self.fig.clear()
         self.axes = self.fig.add_subplot(projection=self.map_context)
         ax = self.axes
-        self.map_context.plot(axes=ax)
+        self.map_context_im = self.map_context.plot(axes=ax)
         self.map_context.draw_grid(axes=ax, color='w', lw=0.5)
         self.map_context.draw_limb(axes=ax, color='w', lw=1.0)
+
         # for edge in self.simbox.bottom_edges:
         #     ax.plot_coord(edge, color='r', ls='-', marker='', lw=1.0)
         # for edge in self.simbox.non_bottom_edges:
         #     ax.plot_coord(edge, color='r', ls='--', marker='', lw=0.5)
-        for edge in self.box.bottom_edges:
-            ax.plot_coord(edge, color='tab:red', ls='--', marker='', lw=1.0)
-        for edge in self.box.non_bottom_edges:
-            ax.plot_coord(edge, color='tab:red', ls='-', marker='', lw=1.0)
+        if show_box_outline:
+            for edge in self.box.bottom_edges:
+                ax.plot_coord(edge, color='tab:red', ls='--', marker='', lw=1.0)
+            for edge in self.box.non_bottom_edges:
+                ax.plot_coord(edge, color='tab:red', ls='-', marker='', lw=1.0)
         # self.map_context.draw_quadrangle(self.map_bottom.bottom_left_coord, axes=ax,
         #                                  width=self.map_bottom.top_right_coord.lon - self.map_bottom.bottom_left_coord.lon,
         #                                  height=self.map_bottom.top_right_coord.lat - self.map_bottom.bottom_left_coord.lat,
         #                                  edgecolor='tab:red', linestyle='--', linewidth=0.5)
         # ax.plot_coord(self.box_center, color='r', marker='+')
         # ax.plot_coord(self.box_origin, mec='r', mfc='none', marker='o')
-        self.map_context.draw_quadrangle(
-            self.box.bounds_coords,
-            axes=ax,
-            edgecolor="tab:blue",
-            linestyle="--",
-            linewidth=0.5,
-        )
-        self.map_bottom.plot(axes=ax, autoalign=True)
+        if show_bound_box:
+            self.map_context.draw_quadrangle(
+                self.box.bounds_coords,
+                axes=ax,
+                edgecolor="tab:blue",
+                linestyle="--",
+                linewidth=0.5,
+            )
+        self.map_bottom_im = self.map_bottom.plot(axes=ax, autoalign=True)
         ax.set_title(ax.get_title(), pad=45)
+        if self.axes_world_coords_init is None:
+            self.axes_world_coords_init = self.get_axes_world_coords
+        if self.axes_world_coords is not None:
+            axes_pixel_coords = self.get_axes_pixel_coords()
+            ax.set_xlim(axes_pixel_coords[0])
+            ax.set_ylim(axes_pixel_coords[1])
         self.fig.tight_layout()
         # Refresh canvas
         self.canvas.draw()
@@ -1164,9 +805,9 @@ class GxBox(QMainWindow):
         ax = self.axes
         for coord in coords_hcc:
             # Convert the streamline coordinates to the gxbox frame_obs
-            coord_hcc= SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=coord[:, 2] * u.Mm, frame=self.frame_hcc)
+            coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=coord[:, 2] * u.Mm, frame=self.frame_hcc)
             coord_hpc = coord_hcc.transform_to(self.frame_obs)
-            ax.plot_coord(coord_hpc, '-', lw=0.5)
+            ax.plot_coord(coord_hpc, '-', c='tab:blue', lw=0.5)
         self.canvas.draw()
 
     def plot(self):
