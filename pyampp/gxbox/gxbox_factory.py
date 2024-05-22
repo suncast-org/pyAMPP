@@ -801,8 +801,31 @@ class GxBox(QMainWindow):
         # Refresh canvas
         self.canvas.draw()
 
-    def plot_fieldlines(self, coords_hcc):
+    def extract_streamlines(self, streamlines):
+        """
+        Extracts individual streamlines from the streamlines data.
+
+        :param streamlines: pyvista.PolyData
+            The streamlines data.
+        :return: list of numpy.ndarray
+            A list of individual streamlines.
+        """
+        lines = []
+        n_lines = streamlines.lines.shape[0]
+        i = 0
+        while i < n_lines:
+            num_points = streamlines.lines[i]
+            start_idx = streamlines.lines[i + 1]
+            end_idx = start_idx + num_points
+            line = streamlines.points[start_idx:end_idx]
+            lines.append(line)
+            i += num_points + 1
+        return lines
+
+    def plot_fieldlines(self, streamlines):
+        coords_hcc = self.extract_streamlines(streamlines)
         ax = self.axes
+
         for coord in coords_hcc:
             # Convert the streamline coordinates to the gxbox frame_obs
             coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=coord[:, 2] * u.Mm, frame=self.frame_hcc)

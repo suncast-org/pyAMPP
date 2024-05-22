@@ -176,14 +176,17 @@ class MagFieldViewer(BackgroundPlotter):
         sphere_control_layout.addWidget(self.n_points_input)
         layout.addLayout(sphere_control_layout)
 
-        action_layout = QHBoxLayout()
-        self.update_button = QPushButton("Update")
-        self.update_button.clicked.connect(self.update_plot)
-        action_layout.addWidget(self.update_button)
 
-        self.send_button = QPushButton("Send Streamlines")
+        action_layout = QHBoxLayout()
+
+        self.send_button = QPushButton("Update Map")
         self.send_button.clicked.connect(self.send_streamlines)
         action_layout.addWidget(self.send_button)
+
+        # self.update_button = QPushButton("Update")
+        # self.update_button.clicked.connect(self.update_plot)
+        # action_layout.addWidget(self.update_button)
+
 
         self.sphere_checkbox = QCheckBox("Show Sphere")
         self.sphere_checkbox.setChecked(True)
@@ -622,25 +625,5 @@ class MagFieldViewer(BackgroundPlotter):
                                                 n_points=int(self.n_points_input.text()), integration_direction='both',
                                                 max_time=5000, progress_bar=True)
             if streamlines.n_lines > 0:
-                self.parent.plot_fieldlines(self.extract_streamlines(streamlines))
+                self.parent.plot_fieldlines(streamlines)
 
-    def extract_streamlines(self, streamlines):
-        """
-        Extracts individual streamlines from the streamlines data.
-
-        :param streamlines: pyvista.PolyData
-            The streamlines data.
-        :return: list of numpy.ndarray
-            A list of individual streamlines.
-        """
-        lines = []
-        n_lines = streamlines.lines.shape[0]
-        i = 0
-        while i < n_lines:
-            num_points = streamlines.lines[i]
-            start_idx = streamlines.lines[i + 1]
-            end_idx = start_idx + num_points
-            line = streamlines.points[start_idx:end_idx]
-            lines.append(line)
-            i += num_points + 1
-        return lines
