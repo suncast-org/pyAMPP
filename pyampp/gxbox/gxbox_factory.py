@@ -16,7 +16,7 @@ from pyampp.data import downloader
 from pyampp.gxbox.boxutils import hmi_disambig, hmi_b2ptr
 import sys
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QLabel, \
-    QPushButton, QSlider, QLineEdit, QCheckBox,QMessageBox
+    QPushButton, QSlider, QLineEdit, QCheckBox, QMessageBox
 from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -47,20 +47,24 @@ import pyvista as pv
 from pyvistaqt import BackgroundPlotter
 from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
 import numpy as np
-from qtrangeslider import QRangeSlider
+
 
 class MagneticFieldVisualizer(BackgroundPlotter):
     '''
     A class to visualize the magnetic field of a box using PyVista. It inherits from the BackgroundPlotter class.
     '''
-    def __init__(self, box, *args, **kwargs):
+
+    def __init__(self, box, parent=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.box = box
+        self.parent = parent
         self.updating = False  # Flag to avoid recursion
         self.sphere_actor = None
+        self.plane_actor = None
         self.bottom_slice_actor = None
         self.streamlines_actor = None
         self.sphere_visible = True
+        self.plane_visible = True
         self.scalar = 'bz'
         self.previous_params = {}
         self.previous_valid_values = {}
@@ -74,8 +78,10 @@ class MagneticFieldVisualizer(BackgroundPlotter):
         self.vmin_input = None
         self.vmax_input = None
         self.update_button = None
+        self.send_button = None
         self.sphere_checkbox = None
         self.add_widgets_to_window()
+        self.app_window.setWindowTitle("GxBox 3D viewer")
 
     def add_widgets_to_window(self):
         # Get the central widget's layout
@@ -146,24 +152,48 @@ class MagneticFieldVisualizer(BackgroundPlotter):
         slice_vmin_vmax_layout.addWidget(self.vmax_input)
         layout.addLayout(slice_vmin_vmax_layout)
 
+        action_layout = QHBoxLayout()
         self.update_button = QPushButton("Update")
         self.update_button.clicked.connect(self.update_plot)
-        layout.addWidget(self.update_button)
+        action_layout.addWidget(self.update_button)
+
+        self.send_button = QPushButton("Send Streamlines")
+        self.send_button.clicked.connect(self.send_streamlines)
+        action_layout.addWidget(self.send_button)
 
         self.sphere_checkbox = QCheckBox("Show Sphere")
         self.sphere_checkbox.setChecked(True)
         self.sphere_checkbox.stateChanged.connect(self.toggle_sphere_visibility)
-        layout.addWidget(self.sphere_checkbox)
+        action_layout.addWidget(self.sphere_checkbox)
+
+        self.plane_checkbox = QCheckBox("Show Plane")
+        self.plane_checkbox.setChecked(True)
+        self.plane_checkbox.stateChanged.connect(self.toggle_plane_visibility)
+        action_layout.addWidget(self.plane_checkbox)
+        layout.addLayout(action_layout)
 
         self.show_plot()
         self.show_axes_all()
-        self.view_isometric(negative=True)
+        self.view_isometric()
+        self.plane_checkbox.setChecked(False)
 
     def validate_input(self, widget, min_val, max_val, original_value, to_int=False, paired_widget=None,
                        paired_type=None):
+        ''''
+        Validates the input of a QLineEdit widget and returns the value if it is valid. If the input is invalid, a warning message is displayed and the original value is restored.
+        :param widget: QLineEdit, the widget to validate.
+        :param min_val: float, the minimum valid value.
+        :param max_val: float, the maximum valid value.
+        :param original_value: float, the original value of the widget.
+        :param to_int: bool, whether to convert the value to an integer.
+        :param paired_widget: QLineEdit, the paired widget to compare the value with.
+        :param paired_type: str, the type of comparison to perform with the paired widget.
+        :return: float, the valid value.
+        '''
         try:
             value = float(widget.text())
-            if value < min_val or value > max_val:
+            if not min_val <= value <= max_val:
+                original_value = np.ceil((min_val) * 100) / 100 if value < min_val else np.floor((max_val) * 100) / 100
                 raise ValueError
 
             if paired_widget:
@@ -191,6 +221,7 @@ class MagneticFieldVisualizer(BackgroundPlotter):
 
             widget.setText(str(original_value))
             return original_value
+
     def show_plot(self):
         x = self.box.grid_coords['x'].value
         y = self.box.grid_coords['y'].value
@@ -254,6 +285,7 @@ class MagneticFieldVisualizer(BackgroundPlotter):
 
         scalar = self.scalar_selector.currentText()
         sphere_visible = self.sphere_visible
+        plane_visible = self.plane_visible
 
         # Create a dictionary of current parameters
         current_params = {
@@ -266,7 +298,8 @@ class MagneticFieldVisualizer(BackgroundPlotter):
             "vmin": vmin,
             "vmax": vmax,
             "scalar": scalar,
-            "sphere_visible": sphere_visible
+            "sphere_visible": sphere_visible,
+            "plane_visible": plane_visible
         }
 
         # Check if parameters have changed
@@ -293,6 +326,9 @@ class MagneticFieldVisualizer(BackgroundPlotter):
         if current_params['sphere_visible'] != self.previous_params.get('sphere_visible'):
             self.update_sphere_visibility(current_params['sphere_visible'])
 
+        if current_params['plane_visible'] != self.previous_params.get('plane_visible'):
+            self.update_plane_visibility(current_params['plane_visible'])
+
         # Update previous parameters
         self.previous_params = current_params
 
@@ -302,10 +338,13 @@ class MagneticFieldVisualizer(BackgroundPlotter):
     def update_slice(self, slice_z, scalar, vmin, vmax):
         new_slice = self.grid.slice(normal='z', origin=(self.grid.origin[0], self.grid.origin[1], slice_z))
         if self.bottom_slice_actor is None:
-            self.bottom_slice_actor = self.add_mesh(new_slice, scalars=scalar, clim=(vmin, vmax), show_edges=False, cmap='gray', pickable=False, show_scalar_bar=False)
+            self.bottom_slice_actor = self.add_mesh(new_slice, scalars=scalar, clim=(vmin, vmax), show_edges=False,
+                                                    cmap='gray', pickable=False, show_scalar_bar=False)
         else:
             self.remove_actor(self.bottom_slice_actor)
-            self.bottom_slice_actor = self.add_mesh(new_slice, scalars=scalar, clim=(vmin, vmax), show_edges=False, cmap='gray', pickable=False, reset_camera=False, show_scalar_bar=False)
+            self.bottom_slice_actor = self.add_mesh(new_slice, scalars=scalar, clim=(vmin, vmax), show_edges=False,
+                                                    cmap='gray', pickable=False, reset_camera=False,
+                                                    show_scalar_bar=False)
 
     def update_streamlines(self, center_x, center_y, center_z, radius, n_points):
         new_streamlines = self.grid.streamlines(vectors='vectors', source_center=(center_x, center_y, center_z),
@@ -313,16 +352,19 @@ class MagneticFieldVisualizer(BackgroundPlotter):
                                                 max_time=5000, progress_bar=True)
         if new_streamlines.n_points > 0:
             if self.streamlines_actor is None:
-                self.streamlines_actor = self.add_mesh(new_streamlines.tube(radius=0.1), pickable=False, show_scalar_bar=False)
+                self.streamlines_actor = self.add_mesh(new_streamlines.tube(radius=0.1), pickable=False,
+                                                       show_scalar_bar=False)
             else:
                 self.remove_actor(self.streamlines_actor)
-                self.streamlines_actor = self.add_mesh(new_streamlines.tube(radius=0.1), pickable=False, reset_camera=False, show_scalar_bar=False)
+                self.streamlines_actor = self.add_mesh(new_streamlines.tube(radius=0.1), pickable=False,
+                                                       reset_camera=False, show_scalar_bar=False)
         else:
             print("No streamlines generated.")
 
     def update_sphere(self):
         if self.sphere_actor is not None:
-            self.sphere_actor.SetCenter([float(self.center_x_input.text()), float(self.center_y_input.text()), float(self.center_z_input.text())])
+            self.sphere_actor.SetCenter([float(self.center_x_input.text()), float(self.center_y_input.text()),
+                                         float(self.center_z_input.text())])
             self.sphere_actor.SetRadius(float(self.radius_input.text()))
             self.update_plot()
 
@@ -334,9 +376,9 @@ class MagneticFieldVisualizer(BackgroundPlotter):
                 center_z = float(self.center_z_input.text())
                 radius = float(self.radius_input.text())
                 self.sphere_actor = self.add_sphere_widget(self.on_sphere_moved,
-                                                                   center=(center_x, center_y, center_z),
-                                                                   radius=radius, theta_resolution=18, phi_resolution=18,
-                                                                   style='wireframe')
+                                                           center=(center_x, center_y, center_z),
+                                                           radius=radius, theta_resolution=18, phi_resolution=18,
+                                                           style='wireframe')
             else:
                 self.sphere_actor.On()
         else:
@@ -353,8 +395,59 @@ class MagneticFieldVisualizer(BackgroundPlotter):
         self.sphere_visible = state == Qt.Checked
         self.update_plot()
 
+    def update_plane(self):
+        if self.plane_actor is not None:
+            origin = self.box.grid_coords['x'].value.ptp() / 2, self.box.grid_coords['y'].value.ptp() / 2
+            slice_z = float(self.slice_z_input.text())
+            self.plane_actor.SetOrigin([origin[0], origin[1], slice_z])
+            self.update_plot()
 
+    def update_plane_visibility(self, plane_visible):
+        if plane_visible:
+            if self.plane_actor is None:
+                origin = self.box.grid_coords['x'].value.ptp() / 2, self.box.grid_coords['y'].value.ptp() / 2
+                slice_z = float(self.slice_z_input.text())
+                self.plane_actor = self.add_plane_widget(self.on_plane_moved, normal='z',
+                                                         origin=(origin[0], origin[1], slice_z), normal_rotation=False)
+            else:
+                self.plane_actor.On()
+        else:
+            if self.plane_actor is not None:
+                self.plane_actor.Off()
 
+    def on_plane_moved(self, normal, origin):
+        self.slice_z_input.setText(f"{origin[2]:.2f}")
+        self.update_plane()
+
+    def toggle_plane_visibility(self, state):
+        self.plane_visible = state == Qt.Checked
+        self.update_plot()
+
+    def send_streamlines(self):
+        print("Sending streamlines to gxbox...")
+        if self.parent is not None and self.streamlines_actor is not None:
+            streamlines = self.grid.streamlines(vectors='vectors', source_center=(
+                float(self.center_x_input.text()), float(self.center_y_input.text()),
+                float(self.center_z_input.text())),
+                                                source_radius=float(self.radius_input.text()),
+                                                n_points=int(self.n_points_input.text()), integration_direction='both',
+                                                max_time=5000, progress_bar=True)
+            if streamlines.n_lines > 0:
+
+                self.parent.plot_fieldlines(self.extract_streamlines(streamlines))
+
+    def extract_streamlines(self, streamlines):
+        lines = []
+        n_lines = streamlines.lines.shape[0]
+        i = 0
+        while i < n_lines:
+            num_points = streamlines.lines[i]
+            start_idx = streamlines.lines[i + 1]
+            end_idx = start_idx + num_points
+            line = streamlines.points[start_idx:end_idx]
+            lines.append(line)
+            i += num_points + 1
+        return lines
 
 
 class Box:
@@ -908,7 +1001,7 @@ class GxBox(QMainWindow):
         dropdown_layout.addWidget(self.b3d_model_selector)
 
         # Add the visualize button
-        self.visualize_button = QPushButton("PyVista")
+        self.visualize_button = QPushButton("3D viewer")
         self.visualize_button.clicked.connect(self.visualize_3d_magnetic_field)
         dropdown_layout.addWidget(self.visualize_button)
 
@@ -1005,7 +1098,7 @@ class GxBox(QMainWindow):
         Launches the MagneticFieldVisualizer to visualize the 3D magnetic field data.
         """
 
-        self.visualizer = MagneticFieldVisualizer(self.box)
+        self.visualizer = MagneticFieldVisualizer(self.box, self)
         self.visualizer.show()
 
     def update_bottom_map(self, map_name):
@@ -1065,6 +1158,15 @@ class GxBox(QMainWindow):
         ax.set_title(ax.get_title(), pad=45)
         self.fig.tight_layout()
         # Refresh canvas
+        self.canvas.draw()
+
+    def plot_fieldlines(self, coords_hcc):
+        ax = self.axes
+        for coord in coords_hcc:
+            # Convert the streamline coordinates to the gxbox frame_obs
+            coord_hcc= SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=coord[:, 2] * u.Mm, frame=self.frame_hcc)
+            coord_hpc = coord_hcc.transform_to(self.frame_obs)
+            ax.plot_coord(coord_hpc, '-', lw=0.5)
         self.canvas.draw()
 
     def plot(self):
