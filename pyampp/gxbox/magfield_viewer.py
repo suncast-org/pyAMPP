@@ -7,7 +7,9 @@ from astropy.time import Time
 
 import pyvista as pv
 from pyvistaqt import BackgroundPlotter
-from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton
+from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QTreeView, \
+    QGroupBox
+from PyQt5.QtGui import QStandardItemModel, QStandardItem
 import numpy as np
 
 
@@ -34,6 +36,7 @@ def maxval(max_val):
     """
     return np.floor(max_val * 100) / 100
 
+
 def validate_number(func):
     """
     Decorator to validate if the input in the widget is a number.
@@ -43,6 +46,7 @@ def validate_number(func):
     :return: function
         The wrapped function.
     """
+
     def wrapper(self, widget, *args, **kwargs):
         try:
             float(widget.text().strip())
@@ -63,6 +67,7 @@ class MagFieldViewer(BackgroundPlotter):
     :param parent: object, optional
         The parent object (default is None).
     """
+
     def __init__(self, box, parent=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.box = box
@@ -96,7 +101,11 @@ class MagFieldViewer(BackgroundPlotter):
         self.grid_xmin, self.grid_xmax = minval(self.grid_x.min()), maxval(self.grid_x.max())
         self.grid_ymin, self.grid_ymax = minval(self.grid_y.min()), maxval(self.grid_y.max())
         self.grid_zmin, self.grid_zmax = minval(self.grid_z.min()), maxval(self.grid_z.max())
+        self.grid_zbase = self.grid_zmin
+        self.grid_z = self.grid_z - self.grid_zbase
+        self.grid_zmin, self.grid_zmax = self.grid_z.min(), self.grid_z.max()
 
+        # self.init_ui()
         self.add_widgets_to_window()
         self.show_plot()
         self.show_axes_all()
@@ -104,44 +113,51 @@ class MagFieldViewer(BackgroundPlotter):
         self.plane_checkbox.setChecked(False)
         self.app_window.setWindowTitle("GxBox 3D viewer")
 
-
-
     def add_widgets_to_window(self):
         """
         Adds the input widgets to the window.
         """
         # Get the central widget's layout
         central_widget = self.app_window.centralWidget()
-        layout = central_widget.layout()
+        main_layout = central_widget.layout()
 
-        if layout is None:
-            layout = QVBoxLayout()
-            central_widget.setLayout(layout)
+        # if main_layout is None:
+        #     main_layout = QHBoxLayout()
+        #     central_widget.setLayout(main_layout)
+
+        control_layout = QHBoxLayout()
+
+        # Create and add the tree view
+        self.tree_view = QTreeView()
+        self.model = QStandardItemModel()
+        self.model.setHorizontalHeaderLabels(["Spheres", "Properties"])
+        self.tree_view.setModel(self.model)
+        self.tree_view.setMinimumWidth(300)
+        self.tree_view.setMinimumHeight(50)
+        self.tree_view.setMaximumHeight(150)
+        self.tree_view.selectionModel().selectionChanged.connect(self.on_selection_changed)
+        control_layout.addWidget(self.tree_view)
+
+        # Create and add the properties panel
+        properties_panel = QWidget()
+        properties_layout = QVBoxLayout()
+        properties_panel.setLayout(properties_layout)
+
+        control_layout.addWidget(properties_panel)
 
         # Add widgets to the layout
+        # Slice Control Group
+        slice_control_group = QGroupBox("Slice Z")
         slice_control_layout = QHBoxLayout()
 
-        slice_z_label = QLabel("Slice Z [Mm]:")
+        slice_z_label = QLabel("Z [Mm]:")
         self.slice_z_input = QLineEdit(
-            f"{np.min(self.box.grid_coords['z'].value) + self.box.grid_coords['z'].value.ptp() * 0.005:.2f}")
+            f"{0:.2f}")
         self.slice_z_input.returnPressed.connect(lambda: self.on_slice_z_input_returnPressed(self.slice_z_input))
         slice_control_layout.addWidget(slice_z_label)
         slice_control_layout.addWidget(self.slice_z_input)
 
-        vmin_label = QLabel("Vmin:")
-        self.vmin_input = QLineEdit("-1000")
-        self.vmin_input.returnPressed.connect(lambda: self.on_vmin_input_returnPressed(self.vmin_input))
-        slice_control_layout.addWidget(vmin_label)
-        slice_control_layout.addWidget(self.vmin_input)
-
-        vmax_label = QLabel("Vmax:")
-        self.vmax_input = QLineEdit("1000")
-        self.vmax_input.returnPressed.connect(lambda: self.on_vmax_input_returnPressed(self.vmax_input))
-        slice_control_layout.addWidget(vmax_label)
-        slice_control_layout.addWidget(self.vmax_input)
-        layout.addLayout(slice_control_layout)
-
-        scalar_label = QLabel("Select Slice Scalar:")
+        scalar_label = QLabel("Select Scalar:")
         self.scalar_selector = QComboBox()
         self.scalar_selector.addItems(['bx', 'by', 'bz'])
         self.scalar_selector.setCurrentText(self.scalar)
@@ -149,12 +165,26 @@ class MagFieldViewer(BackgroundPlotter):
         slice_control_layout.addWidget(scalar_label)
         slice_control_layout.addWidget(self.scalar_selector)
 
+        vmin_label = QLabel("Vmin/Vmax [G]:")
+        self.vmin_input = QLineEdit("-1000")
+        self.vmin_input.returnPressed.connect(lambda: self.on_vmin_input_returnPressed(self.vmin_input))
+        slice_control_layout.addWidget(vmin_label)
+        slice_control_layout.addWidget(self.vmin_input)
+
+        self.vmax_input = QLineEdit("1000")
+        self.vmax_input.returnPressed.connect(lambda: self.on_vmax_input_returnPressed(self.vmax_input))
+        slice_control_layout.addWidget(self.vmax_input)
+
+        slice_control_group.setLayout(slice_control_layout)
+        properties_layout.addWidget(slice_control_group)
+
+        # Sphere Control Group
+        sphere_control_group = QGroupBox("Sphere")
         sphere_control_layout = QHBoxLayout()
-        center_label = QLabel("Center (x, y, z):")
-        self.center_x_input = QLineEdit(f"{np.mean(self.box.grid_coords['x'].value):.2f}")
-        self.center_y_input = QLineEdit(f"{np.mean(self.box.grid_coords['y'].value):.2f}")
-        self.center_z_input = QLineEdit(
-            f"{np.min(self.box.grid_coords['z'].value) + self.box.grid_coords['z'].value.ptp() * 0.1:.2f}")
+        center_label = QLabel("Location [Mm]:")
+        self.center_x_input = QLineEdit(f"{np.mean(self.grid_x):.2f}")
+        self.center_y_input = QLineEdit(f"{np.mean(self.grid_y):.2f}")
+        self.center_z_input = QLineEdit(f"{self.grid_zmin + self.grid_z.ptp() * 0.1:.2f}")
         self.center_x_input.returnPressed.connect(lambda: self.on_center_x_input_returnPressed(self.center_x_input))
         self.center_y_input.returnPressed.connect(lambda: self.on_center_y_input_returnPressed(self.center_y_input))
         self.center_z_input.returnPressed.connect(lambda: self.on_center_z_input_returnPressed(self.center_z_input))
@@ -163,31 +193,31 @@ class MagFieldViewer(BackgroundPlotter):
         sphere_control_layout.addWidget(self.center_y_input)
         sphere_control_layout.addWidget(self.center_z_input)
 
-        radius_label = QLabel("Sphere Radius [Mm]:")
+        radius_label = QLabel("Radius [Mm]:")
         self.radius_input = QLineEdit(
-            f"{min(self.box.grid_coords['x'].value.ptp(), self.box.grid_coords['y'].value.ptp(), self.box.grid_coords['z'].value.ptp()) * 0.05:.2f}")
+            f"{min(self.grid_x.ptp(), self.grid_y.ptp(), self.grid_z.ptp()) * 0.05:.2f}")
         self.radius_input.returnPressed.connect(lambda: self.on_radius_input_returnPressed(self.radius_input))
         sphere_control_layout.addWidget(radius_label)
         sphere_control_layout.addWidget(self.radius_input)
 
-        n_points_label = QLabel("Number of Seeds:")
+        n_points_label = QLabel("# of Field Lines:")
         self.n_points_input = QLineEdit("10")
         self.n_points_input.returnPressed.connect(lambda: self.on_n_points_input_returnPressed(self.n_points_input))
         sphere_control_layout.addWidget(n_points_label)
         sphere_control_layout.addWidget(self.n_points_input)
-        layout.addLayout(sphere_control_layout)
 
+        sphere_control_group.setLayout(sphere_control_layout)
+        properties_layout.addWidget(sphere_control_group)
 
         action_layout = QHBoxLayout()
 
-        self.send_button = QPushButton("Update Map")
+        self.send_button = QPushButton("Send Field Lines")
         self.send_button.clicked.connect(self.send_streamlines)
         action_layout.addWidget(self.send_button)
 
         # self.update_button = QPushButton("Update")
         # self.update_button.clicked.connect(self.update_plot)
         # action_layout.addWidget(self.update_button)
-
 
         self.sphere_checkbox = QCheckBox("Show Sphere")
         self.sphere_checkbox.setChecked(True)
@@ -198,9 +228,23 @@ class MagFieldViewer(BackgroundPlotter):
         self.plane_checkbox.setChecked(True)
         self.plane_checkbox.stateChanged.connect(self.toggle_plane_visibility)
         action_layout.addWidget(self.plane_checkbox)
-        layout.addLayout(action_layout)
+        properties_layout.addLayout(action_layout)
 
+        main_layout.addLayout(control_layout)
 
+    def on_selection_changed(self, selected, deselected):
+        """
+        Handles the event when a selection in the tree view is changed.
+
+        :param selected: QItemSelection
+            The newly selected items.
+        :param deselected: QItemSelection
+            The previously selected items.
+        """
+        indexes = selected.indexes()
+        if indexes:
+            item = self.model.itemFromIndex(indexes[0])
+            print(f"Selected: {item.text()}")
 
     @validate_number
     def on_center_x_input_returnPressed(self, widget):
@@ -372,29 +416,29 @@ class MagFieldViewer(BackgroundPlotter):
 
         self.update_plot()
 
-
-
     def update_plot(self):
         """
         Updates the plot based on the current input parameters.
         """
-        print(f"Initial cam clip range: {self.camera.clipping_range}")
         if self.updating:  # Check if already updating
             return
 
         self.updating = True  # Set the flag
 
-
         # Get current parameters
-        center_x = self.validate_input(self.center_x_input, self.grid_xmin, self.grid_xmax, self.previous_valid_values[self.center_x_input])
-        center_y = self.validate_input(self.center_y_input, self.grid_ymin, self.grid_ymax, self.previous_valid_values[self.center_y_input])
-        center_z = self.validate_input(self.center_z_input, self.grid_zmin, self.grid_zmax, self.previous_valid_values[self.center_z_input])
+        center_x = self.validate_input(self.center_x_input, self.grid_xmin, self.grid_xmax,
+                                       self.previous_valid_values[self.center_x_input])
+        center_y = self.validate_input(self.center_y_input, self.grid_ymin, self.grid_ymax,
+                                       self.previous_valid_values[self.center_y_input])
+        center_z = self.validate_input(self.center_z_input, 0, self.grid_zmax,
+                                       self.previous_valid_values[self.center_z_input])
         radius = self.validate_input(self.radius_input, 0, min(self.grid_x.ptp(), self.grid_y.ptp(), self.grid_z.ptp()),
                                      self.previous_valid_values[self.radius_input])
         n_points = self.validate_input(self.n_points_input, 1, 500, self.previous_valid_values[self.n_points_input],
                                        to_int=True)
         self.update_sphere()
-        slice_z = self.validate_input(self.slice_z_input, self.grid_zmin, self.grid_zmax, self.previous_valid_values[self.slice_z_input])
+        slice_z = self.validate_input(self.slice_z_input, 0, self.grid_zmax,
+                                      self.previous_valid_values[self.slice_z_input])
         self.update_plane()
         vmin = self.validate_input(self.vmin_input, -5e4, 5e4, self.previous_valid_values[self.vmin_input],
                                    paired_widget=self.vmax_input, paired_type='vmin')
@@ -425,12 +469,13 @@ class MagFieldViewer(BackgroundPlotter):
             self.updating = False  # Reset the flag
             return
 
-
         # Update only relevant objects based on parameter changes
         if current_params['slice_z'] != self.previous_params.get('slice_z') or \
                 current_params['scalar'] != self.previous_params.get('scalar') or \
                 current_params['vmin'] != self.previous_params.get('vmin') or \
                 current_params['vmax'] != self.previous_params.get('vmax'):
+            print(current_params['slice_z'], current_params['scalar'], current_params['vmin'],
+                  current_params['vmax'])
             self.update_slice(current_params['slice_z'], current_params['scalar'], current_params['vmin'],
                               current_params['vmax'])
 
@@ -494,8 +539,8 @@ class MagFieldViewer(BackgroundPlotter):
             The number of seed points for the streamlines.
         """
         self.streamlines = self.grid.streamlines(vectors='vectors', source_center=(center_x, center_y, center_z),
-                                                source_radius=radius, n_points=n_points, integration_direction='both',
-                                                max_time=5000, progress_bar=True)
+                                                 source_radius=radius, n_points=n_points, integration_direction='both',
+                                                 max_time=5000, progress_bar=False)
         if self.streamlines.n_points > 0:
             if self.streamlines_actor is None:
                 self.streamlines_actor = self.add_mesh(self.streamlines.tube(radius=0.1), pickable=False,
@@ -567,7 +612,7 @@ class MagFieldViewer(BackgroundPlotter):
         Updates the plane widget based on the current input parameters.
         """
         if self.plane_actor is not None:
-            origin = self.box.grid_coords['x'].value.ptp() / 2, self.box.grid_coords['y'].value.ptp() / 2
+            origin = self.grid_x.ptp() / 2, self.grid_y.ptp() / 2
             slice_z = float(self.slice_z_input.text())
             self.plane_actor.SetOrigin([origin[0], origin[1], slice_z])
             self.update_plot()
@@ -581,10 +626,12 @@ class MagFieldViewer(BackgroundPlotter):
         """
         if plane_visible:
             if self.plane_actor is None:
-                origin = self.box.grid_coords['x'].value.ptp() / 2, self.box.grid_coords['y'].value.ptp() / 2
+                origin = self.grid_x.ptp() / 2, self.grid_y.ptp() / 2
                 slice_z = float(self.slice_z_input.text())
                 self.plane_actor = self.add_plane_widget(self.on_plane_moved, normal='z',
-                                                         origin=(origin[0], origin[1], slice_z), normal_rotation=False)
+                                                         origin=(origin[0], origin[1], slice_z), bounds=(
+                    self.grid_xmin, self.grid_xmax, self.grid_ymin, self.grid_ymax, self.grid_zmin, self.grid_zmax),
+                                                         normal_rotation=False)
             else:
                 self.plane_actor.On()
         else:
@@ -620,5 +667,4 @@ class MagFieldViewer(BackgroundPlotter):
         print("Sending streamlines to gxbox...")
         if self.parent is not None and self.streamlines_actor is not None:
             if self.streamlines.n_lines > 0:
-                self.parent.plot_fieldlines(self.streamlines)
-
+                self.parent.plot_fieldlines(self.streamlines, z_base = self.grid_zbase)

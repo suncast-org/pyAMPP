@@ -42,7 +42,7 @@ radio_libpath = Path(base_dir / 'lib' / 'grff' / 'binaries' / 'RenderGRFF.so').r
 os.environ['OMP_NUM_THREADS'] = '16'  # number of parallel threads
 locale.setlocale(locale.LC_ALL, "C");
 
-
+## todo add chrom mask to the tool
 class Box:
     """
     Represents a 3D box in solar or observer coordinates defined by its origin, center, dimensions, and resolution.
@@ -856,7 +856,7 @@ class GxBox(QMainWindow):
 
         self.canvas.draw()
 
-    def plot_fieldlines(self, streamlines):
+    def plot_fieldlines(self, streamlines, z_base=0.0):
         """
         Plots the extracted fieldlines with colorization based on their magnitude.
 
@@ -866,14 +866,13 @@ class GxBox(QMainWindow):
         from matplotlib.collections import LineCollection
         coords, fields = self.extract_streamlines(streamlines)
         ax = self.axes
-
         # Normalize the magnitude values for colormap
         norm = mcolors.Normalize(vmin=0, vmax=1000)
         cmap = plt.get_cmap('viridis')
 
         for coord, field in zip(coords, fields):
             # Convert the streamline coordinates to the gxbox frame_obs
-            coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=coord[:, 2] * u.Mm, frame=self.frame_hcc)
+            coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=(coord[:, 2] + z_base) * u.Mm, frame=self.frame_hcc)
             coord_hpc = coord_hcc.transform_to(self.frame_obs)
             # for i in range(len(coords)):
             #     ax.plot_coord(coord_hpc[i], '-', c=cmap(norm([field['magnitude'][i]])), lw=0.5)
