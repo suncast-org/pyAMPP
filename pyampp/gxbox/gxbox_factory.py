@@ -31,6 +31,9 @@ from pyampp.util.MagFieldWrapper import MagFieldWrapper
 from pyampp.util.radio import GXRadioImageComputing
 from pyampp.gxbox.magfield_viewer import MagFieldViewer
 import pickle
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 
 base_dir = Path(pyampp.__file__).parent
 nlfff_libpath = Path(base_dir / 'lib' / 'nlfff' / 'binaries' / 'WWNLFFFReconstruction.so').resolve()
@@ -568,6 +571,15 @@ class GxBox(QMainWindow):
         # Layout
         main_layout = QVBoxLayout(central_widget)
 
+        # Matplotlib Figure
+        self.fig = plt.Figure()
+        self.canvas = FigureCanvas(self.fig)
+        main_layout.addWidget(self.canvas)
+
+        # Add Matplotlib Navigation Toolbar
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        main_layout.addWidget(self.toolbar)
+
         # Horizontal layout for dropdowns and labels
         dropdown_layout = QHBoxLayout()
 
@@ -671,14 +683,8 @@ class GxBox(QMainWindow):
         # ax_3d.set_zlabel('Z')
         # ax_3d.set_title('3D Field Lines')
 
-        # Matplotlib Figure
-        self.fig = plt.Figure()
-        self.canvas = FigureCanvas(self.fig)
-        main_layout.addWidget(self.canvas)
 
-        # Add Matplotlib Navigation Toolbar
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        main_layout.addWidget(self.toolbar)
+
 
         self.update_plot()
 
@@ -811,6 +817,7 @@ class GxBox(QMainWindow):
             A list of individual streamlines.
         """
         lines = []
+        fields = []
         n_lines = streamlines.lines.shape[0]
         i = 0
         while i < n_lines:
@@ -819,18 +826,69 @@ class GxBox(QMainWindow):
             end_idx = start_idx + num_points
             line = streamlines.points[start_idx:end_idx]
             lines.append(line)
-            i += num_points + 1
-        return lines
+            bx = streamlines['bx'][start_idx:end_idx]
+            by = streamlines['by'][start_idx:end_idx]
+            bz = streamlines['bz'][start_idx:end_idx]
+            magnitude = np.sqrt(bx ** 2 + by ** 2 + bz ** 2)
 
-    def plot_fieldlines(self, streamlines):
-        coords_hcc = self.extract_streamlines(streamlines)
+            fields.append({'bx': bx, 'by': by, 'bz': bz, 'magnitude': magnitude})
+            i += num_points + 1
+        return lines, fields
+
+    def plot_fieldlines_std(self, streamlines):
+        """
+        Plots the extracted fieldlines with colorization based on their magnitude.
+
+        :param streamlines: pyvista.PolyData
+            The streamlines data.
+        """
+        coords, fields = self.extract_streamlines(streamlines)
         ax = self.axes
 
-        for coord in coords_hcc:
+        # Normalize the magnitude values for colormap
+        norm = mcolors.Normalize(vmin=0, vmax=1000)
+        cmap = plt.get_cmap('viridis')
+
+        for coord, field in zip(coords, fields):
+            coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=coord[:, 2] * u.Mm, frame=self.frame_hcc)
+            coord_hpc = coord_hcc.transform_to(self.frame_obs)
+            ax.plot_coord(coord_hpc, '-', c='tab:blue', lw=0.3, alpha=0.5)
+
+        self.canvas.draw()
+
+    def plot_fieldlines(self, streamlines):
+        """
+        Plots the extracted fieldlines with colorization based on their magnitude.
+
+        :param streamlines: pyvista.PolyData
+            The streamlines data.
+        """
+        from matplotlib.collections import LineCollection
+        coords, fields = self.extract_streamlines(streamlines)
+        ax = self.axes
+
+        # Normalize the magnitude values for colormap
+        norm = mcolors.Normalize(vmin=0, vmax=1000)
+        cmap = plt.get_cmap('viridis')
+
+        for coord, field in zip(coords, fields):
             # Convert the streamline coordinates to the gxbox frame_obs
             coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=coord[:, 2] * u.Mm, frame=self.frame_hcc)
             coord_hpc = coord_hcc.transform_to(self.frame_obs)
-            ax.plot_coord(coord_hpc, '-', c='tab:blue', lw=0.5)
+            # for i in range(len(coords)):
+            #     ax.plot_coord(coord_hpc[i], '-', c=cmap(norm([field['magnitude'][i]])), lw=0.5)
+            # ax.plot_coord(coord_hpc, '-', c='tab:blue', lw=0.3, alpha=0.5)
+            # ax.scatter(coord_hpc.Tx.to(u.deg), coord_hpc.Ty.to(u.deg), marker='o', s=0.5,
+            #            transform=ax.get_transform("world"), c=cmap(norm(field['magnitude'])), edgecolor='none')
+            xpix, ypix = self.map_context.world_to_pixel(coord_hpc)
+            x = xpix.value
+            y = ypix.value
+            magnitude = field['magnitude']
+            segments = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
+            colors = [cmap(norm(value)) for value in magnitude]  # Colormap for each segment
+            lc = LineCollection(segments, colors=colors, linewidths=0.5)
+            ax.add_collection(lc)
+
         self.canvas.draw()
 
     def plot(self):

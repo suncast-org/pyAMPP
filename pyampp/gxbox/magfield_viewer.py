@@ -72,6 +72,7 @@ class MagFieldViewer(BackgroundPlotter):
         self.plane_actor = None
         self.bottom_slice_actor = None
         self.streamlines_actor = None
+        self.streamlines = None
         self.sphere_visible = True
         self.plane_visible = True
         self.scalar = 'bz'
@@ -492,16 +493,16 @@ class MagFieldViewer(BackgroundPlotter):
         :param n_points: int
             The number of seed points for the streamlines.
         """
-        new_streamlines = self.grid.streamlines(vectors='vectors', source_center=(center_x, center_y, center_z),
+        self.streamlines = self.grid.streamlines(vectors='vectors', source_center=(center_x, center_y, center_z),
                                                 source_radius=radius, n_points=n_points, integration_direction='both',
                                                 max_time=5000, progress_bar=True)
-        if new_streamlines.n_points > 0:
+        if self.streamlines.n_points > 0:
             if self.streamlines_actor is None:
-                self.streamlines_actor = self.add_mesh(new_streamlines.tube(radius=0.1), pickable=False,
+                self.streamlines_actor = self.add_mesh(self.streamlines.tube(radius=0.1), pickable=False,
                                                        show_scalar_bar=False)
             else:
                 self.remove_actor(self.streamlines_actor)
-                self.streamlines_actor = self.add_mesh(new_streamlines.tube(radius=0.1), pickable=False,
+                self.streamlines_actor = self.add_mesh(self.streamlines.tube(radius=0.1), pickable=False,
                                                        reset_camera=False, show_scalar_bar=False)
         else:
             print("No streamlines generated.")
@@ -618,12 +619,6 @@ class MagFieldViewer(BackgroundPlotter):
         """
         print("Sending streamlines to gxbox...")
         if self.parent is not None and self.streamlines_actor is not None:
-            streamlines = self.grid.streamlines(vectors='vectors', source_center=(
-                float(self.center_x_input.text()), float(self.center_y_input.text()),
-                float(self.center_z_input.text())),
-                                                source_radius=float(self.radius_input.text()),
-                                                n_points=int(self.n_points_input.text()), integration_direction='both',
-                                                max_time=5000, progress_bar=True)
-            if streamlines.n_lines > 0:
-                self.parent.plot_fieldlines(streamlines)
+            if self.streamlines.n_lines > 0:
+                self.parent.plot_fieldlines(self.streamlines)
 
