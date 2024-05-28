@@ -3,6 +3,7 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord
 from sunpy.coordinates import HeliographicCarrington, HeliographicStonyhurst
 from sunpy.map import all_coordinates_from_map, Map
+from PyQt5.QtWidgets import  QMessageBox
 
 import numpy as np
 from astropy.io import fits
@@ -97,3 +98,37 @@ def hmi_b2ptr(map_field, map_inclination, map_azimuth):
     map_br = Map(bptr[2, :, :], header)
 
     return map_bp, map_bt, map_br
+
+
+def validate_number(func):
+    """
+    Decorator to validate if the input in the widget is a number.
+
+    :param func: function
+        The function to wrap.
+    :return: function
+        The wrapped function.
+    """
+
+    def wrapper(self, widget, *args, **kwargs):
+        try:
+            float(widget.text().strip())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number.")
+            return
+        return func(self, widget, *args, **kwargs)
+
+    return wrapper
+
+
+def set_QLineEdit_text_pos(line_edit, text):
+    """
+    Sets the text of the QLineEdit and moves the cursor to the beginning.
+
+    :param line_edit: QLineEdit
+        The QLineEdit widget.
+    :param text: str
+        The text to set.
+    """
+    line_edit.setText(text)
+    line_edit.setCursorPosition(0)

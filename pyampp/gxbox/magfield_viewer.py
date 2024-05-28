@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from astropy.time import Time
+from pyampp.gxbox.boxutils import validate_number
 
 import pyvista as pv
 from pyvistaqt import BackgroundPlotter
@@ -37,25 +38,6 @@ def maxval(max_val):
     return np.floor(max_val * 100) / 100
 
 
-def validate_number(func):
-    """
-    Decorator to validate if the input in the widget is a number.
-
-    :param func: function
-        The function to wrap.
-    :return: function
-        The wrapped function.
-    """
-
-    def wrapper(self, widget, *args, **kwargs):
-        try:
-            float(widget.text().strip())
-        except ValueError:
-            QMessageBox.warning(self, "Invalid Input", "Please enter a valid number.")
-            return
-        return func(self, widget, *args, **kwargs)
-
-    return wrapper
 
 
 class MagFieldViewer(BackgroundPlotter):
@@ -151,13 +133,16 @@ class MagFieldViewer(BackgroundPlotter):
         slice_control_layout = QHBoxLayout()
 
         slice_z_label = QLabel("Z [Mm]:")
+        slice_z_label.setToolTip(f"Enter the Z coordinate for the slice in the range of 0 to {self.grid_zmax:.2f} Mm.")
         self.slice_z_input = QLineEdit(
             f"{0:.2f}")
         self.slice_z_input.returnPressed.connect(lambda: self.on_slice_z_input_returnPressed(self.slice_z_input))
+        self.slice_z_input.setToolTip(f"Enter the Z coordinate for the slice in the range of 0 to {self.grid_zmax:.2f} Mm.")
         slice_control_layout.addWidget(slice_z_label)
         slice_control_layout.addWidget(self.slice_z_input)
 
         scalar_label = QLabel("Select Scalar:")
+        scalar_label.setToolTip("Select the scalar field to display on the slice.")
         self.scalar_selector = QComboBox()
         self.scalar_selector.addItems(['bx', 'by', 'bz'])
         self.scalar_selector.setCurrentText(self.scalar)
@@ -165,13 +150,16 @@ class MagFieldViewer(BackgroundPlotter):
         slice_control_layout.addWidget(scalar_label)
         slice_control_layout.addWidget(self.scalar_selector)
 
-        vmin_label = QLabel("Vmin/Vmax [G]:")
+        vmin_vmax_label = QLabel("Vmin/Vmax [G]:")
+        vmin_vmax_label.setToolTip("Enter the minimum and maximum values for the color scale.")
         self.vmin_input = QLineEdit("-1000")
+        self.vmin_input.setToolTip("Enter the minimum value for the color scale.")
         self.vmin_input.returnPressed.connect(lambda: self.on_vmin_input_returnPressed(self.vmin_input))
-        slice_control_layout.addWidget(vmin_label)
+        slice_control_layout.addWidget(vmin_vmax_label)
         slice_control_layout.addWidget(self.vmin_input)
 
         self.vmax_input = QLineEdit("1000")
+        self.vmax_input.setToolTip("Enter the maximum value for the color scale.")
         self.vmax_input.returnPressed.connect(lambda: self.on_vmax_input_returnPressed(self.vmax_input))
         slice_control_layout.addWidget(self.vmax_input)
 
@@ -182,9 +170,17 @@ class MagFieldViewer(BackgroundPlotter):
         sphere_control_group = QGroupBox("Sphere")
         sphere_control_layout = QHBoxLayout()
         center_label = QLabel("Location [Mm]:")
+        center_label.setToolTip(
+            f"Enter the X, Y, and Z coordinates for the center of the sphere.")
         self.center_x_input = QLineEdit(f"{np.mean(self.grid_x):.2f}")
         self.center_y_input = QLineEdit(f"{np.mean(self.grid_y):.2f}")
         self.center_z_input = QLineEdit(f"{self.grid_zmin + self.grid_z.ptp() * 0.1:.2f}")
+        self.center_x_input.setToolTip(
+            f"Enter the X coordinate for the center of the sphere in the range of {self.grid_xmin:.2f} to {self.grid_xmax:.2f} Mm.")
+        self.center_y_input.setToolTip(
+            f"Enter the Y coordinate for the center of the sphere in the range of {self.grid_ymin:.2f} to {self.grid_ymax:.2f} Mm.")
+        self.center_z_input.setToolTip(
+            f"Enter the Z coordinate for the center of the sphere in the range of {0:.2f} to {self.grid_zmax:.2f} Mm.")
         self.center_x_input.returnPressed.connect(lambda: self.on_center_x_input_returnPressed(self.center_x_input))
         self.center_y_input.returnPressed.connect(lambda: self.on_center_y_input_returnPressed(self.center_y_input))
         self.center_z_input.returnPressed.connect(lambda: self.on_center_z_input_returnPressed(self.center_z_input))
@@ -194,14 +190,22 @@ class MagFieldViewer(BackgroundPlotter):
         sphere_control_layout.addWidget(self.center_z_input)
 
         radius_label = QLabel("Radius [Mm]:")
+        radius_label.setToolTip(
+            f"Enter the radius of the sphere.")
         self.radius_input = QLineEdit(
             f"{min(self.grid_x.ptp(), self.grid_y.ptp(), self.grid_z.ptp()) * 0.05:.2f}")
+        self.radius_input.setToolTip(
+            f"Enter the radius of the sphere in Mm.")
         self.radius_input.returnPressed.connect(lambda: self.on_radius_input_returnPressed(self.radius_input))
         sphere_control_layout.addWidget(radius_label)
         sphere_control_layout.addWidget(self.radius_input)
 
         n_points_label = QLabel("# of Field Lines:")
+        n_points_label.setToolTip(
+            "Enter the number of seed points for the field lines.")
         self.n_points_input = QLineEdit("10")
+        self.n_points_input.setToolTip(
+            "Enter the number of seed points for the field lines.")
         self.n_points_input.returnPressed.connect(lambda: self.on_n_points_input_returnPressed(self.n_points_input))
         sphere_control_layout.addWidget(n_points_label)
         sphere_control_layout.addWidget(self.n_points_input)
@@ -212,6 +216,11 @@ class MagFieldViewer(BackgroundPlotter):
         action_layout = QHBoxLayout()
 
         self.send_button = QPushButton("Send Field Lines")
+        if self.parent is None:
+            self.send_button.setEnabled(False)
+            self.send_button.setToolTip("No parent object to send the field lines to.")
+        else:
+            self.send_button.setToolTip(f"Send the field lines to {self.parent.__class__}.")
         self.send_button.clicked.connect(self.send_streamlines)
         action_layout.addWidget(self.send_button)
 
@@ -434,7 +443,7 @@ class MagFieldViewer(BackgroundPlotter):
                                        self.previous_valid_values[self.center_z_input])
         radius = self.validate_input(self.radius_input, 0, min(self.grid_x.ptp(), self.grid_y.ptp(), self.grid_z.ptp()),
                                      self.previous_valid_values[self.radius_input])
-        n_points = self.validate_input(self.n_points_input, 1, 500, self.previous_valid_values[self.n_points_input],
+        n_points = self.validate_input(self.n_points_input, 1, 1000, self.previous_valid_values[self.n_points_input],
                                        to_int=True)
         self.update_sphere()
         slice_z = self.validate_input(self.slice_z_input, 0, self.grid_zmax,
@@ -664,7 +673,7 @@ class MagFieldViewer(BackgroundPlotter):
         """
         Sends the streamline data to the parent object (if any).
         """
-        print("Sending streamlines to gxbox...")
+        print(f"Sending streamlines to {self.parent}")
         if self.parent is not None and self.streamlines_actor is not None:
             if self.streamlines.n_lines > 0:
                 self.parent.plot_fieldlines(self.streamlines, z_base = self.grid_zbase)

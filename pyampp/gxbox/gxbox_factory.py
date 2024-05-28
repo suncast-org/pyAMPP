@@ -16,7 +16,7 @@ from pyampp.data import downloader
 from pyampp.gxbox.boxutils import hmi_disambig, hmi_b2ptr
 import sys
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QLabel, \
-    QPushButton, QSlider, QLineEdit, QCheckBox, QMessageBox
+    QPushButton, QSlider, QLineEdit, QCheckBox, QMessageBox, QGroupBox,QToolButton
 from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -41,6 +41,7 @@ radio_libpath = Path(base_dir / 'lib' / 'grff' / 'binaries' / 'RenderGRFF.so').r
 
 os.environ['OMP_NUM_THREADS'] = '16'  # number of parallel threads
 locale.setlocale(locale.LC_ALL, "C");
+
 
 ## todo add chrom mask to the tool
 class Box:
@@ -171,7 +172,8 @@ class Box:
         #                                         scale=scale, observatory=self._origin.observer, projection_code='CEA')
         bottom_cea_header = make_fitswcs_header(shape, origin,
                                                 scale=scale, projection_code='CEA')
-        bottom_cea_header['OBSRVTRY'] = str(origin.observer)
+        # bottom_cea_header['OBSRVTRY'] = str(origin.observer)
+        bottom_cea_header['OBSRVTRY'] = 'None'
         return bottom_cea_header
 
     def _calculate_edge_types(self):
@@ -399,6 +401,8 @@ class GxBox(QMainWindow):
         self.init_map_bottom_name = 'field'
         self.external_box = external_box
         self.fieldlines_coords = []
+        self.fieldlines_line_collection = []  # Initialize an empty list to store LineCollections
+        self.fieldlines_show_status = True  # Initial status of the fieldlines visibility
         self.map_context_im = None
         self.map_bottom_im = None
 
@@ -432,6 +436,7 @@ class GxBox(QMainWindow):
         self.bottom_wcs_header['rsun_ref'] = self.map_context.meta['rsun_ref']
         self.sdomaps[self.init_map_bottom_name] = self.loadmap(self.init_map_bottom_name)
 
+        # print(self.bottom_wcs_header)
         self.map_bottom = self.sdomaps[self.init_map_bottom_name].reproject_to(self.bottom_wcs_header,
                                                                                algorithm="adaptive",
                                                                                roundtrip_coords=False)
@@ -570,6 +575,7 @@ class GxBox(QMainWindow):
 
         # Layout
         main_layout = QVBoxLayout(central_widget)
+        control_layout = QHBoxLayout()
 
         # Matplotlib Figure
         self.fig = plt.Figure()
@@ -580,47 +586,69 @@ class GxBox(QMainWindow):
         self.toolbar = NavigationToolbar(self.canvas, self)
         main_layout.addWidget(self.toolbar)
 
+        map_control_group = QGroupBox("Map Controls")
+        map_control_group.setFixedHeight(100)
         # Horizontal layout for dropdowns and labels
-        dropdown_layout = QHBoxLayout()
+        map_control_layout = QHBoxLayout()
 
         # Dropdown for bottom map selection
         self.map_bottom_selector = QComboBox()
         self.map_bottom_selector.addItems(list(self.avaliable_maps))
         self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index(self.init_map_bottom_name))
-        self.map_bottom_selector_label = QLabel("Select Bottom Map:")
-        dropdown_layout.addWidget(self.map_bottom_selector_label)
-        dropdown_layout.addWidget(self.map_bottom_selector)
+        self.map_bottom_selector_label = QLabel("Bottom Map:")
+        map_control_layout.addWidget(self.map_bottom_selector_label)
+        map_control_layout.addWidget(self.map_bottom_selector)
 
         # Dropdown for context map selection
         self.map_context_selector = QComboBox()
         self.map_context_selector.addItems(list(self.avaliable_maps))
         self.map_context_selector.setCurrentIndex(self.avaliable_maps.index(self.init_map_context_name))
-        self.map_context_selector_label = QLabel("Select Context Map:")
-        dropdown_layout.addWidget(self.map_context_selector_label)
-        dropdown_layout.addWidget(self.map_context_selector)
+        self.map_context_selector_label = QLabel("Context Map:")
+        map_control_layout.addWidget(self.map_context_selector_label)
+        map_control_layout.addWidget(self.map_context_selector)
 
         # Dropdown for 3D magnetic model selection
         self.b3d_model_selector = QComboBox()
         self.b3d_model_selector.addItems(self.box.b3dtype)
         self.b3d_model_selector.setCurrentIndex(0)
-        self.b3d_model_selector_label = QLabel("Select 3D Mag. Model:")
-        dropdown_layout.addWidget(self.b3d_model_selector_label)
-        dropdown_layout.addWidget(self.b3d_model_selector)
+        self.b3d_model_selector_label = QLabel("3D Mag. Model:")
+        map_control_layout.addWidget(self.b3d_model_selector_label)
+        map_control_layout.addWidget(self.b3d_model_selector)
 
-        # self.reset_axes_button = QPushButton("Reset Axes")
-        # self.reset_axes_button.clicked.connect(self.reset_axes)
-        # dropdown_layout.addWidget(self.reset_axes_button)
-
-        # Add the visualize button
-        self.visualize_button = QPushButton("3D viewer")
-        self.visualize_button.clicked.connect(self.visualize_3d_magnetic_field)
-        dropdown_layout.addWidget(self.visualize_button)
-
-        main_layout.addLayout(dropdown_layout)
+        map_control_group.setLayout(map_control_layout)
+        control_layout.addWidget(map_control_group)
+        map_control_group.setFixedHeight(80)
+        # map_control_group.adjustSize()
 
         # Connect dropdowns to their respective handlers
         self.map_bottom_selector.currentTextChanged.connect(self.update_bottom_map)
         self.map_context_selector.currentTextChanged.connect(self.update_context_map)
+
+        fieldline_control_group = QGroupBox("Field Line Controls")
+        fieldline_control_layout = QHBoxLayout()
+
+        # Add the visualize button
+        self.visualize_button = QPushButton("3D viewer")
+        self.visualize_button.setToolTip("Visualize the 3D magnetic field.")
+        self.visualize_button.clicked.connect(self.visualize_3d_magnetic_field)
+        fieldline_control_layout.addWidget(self.visualize_button)
+
+        self.toggle_fieldlines_button = QPushButton("Hide")
+        self.toggle_fieldlines_button.setToolTip("Toggle the visibility of the field lines.")
+        self.toggle_fieldlines_button.clicked.connect(self.toggle_fieldlines_visibility)
+        fieldline_control_layout.addWidget(self.toggle_fieldlines_button)
+
+        self.clear_fieldlines_button = QPushButton("Clear")
+        self.clear_fieldlines_button.setToolTip("Clear the field lines.")
+        self.clear_fieldlines_button.clicked.connect(self.clear_fieldlines)
+        fieldline_control_layout.addWidget(self.clear_fieldlines_button)
+
+        fieldline_control_group.setLayout(fieldline_control_layout)
+        control_layout.addWidget(fieldline_control_group)
+        fieldline_control_group.setFixedHeight(80)
+        # fieldline_control_group.adjustSize()
+
+        main_layout.addLayout(control_layout)
 
         if self.external_box is not None:
             if os.path.exists(self.external_box):
@@ -650,7 +678,7 @@ class GxBox(QMainWindow):
         # bz = self.box.b3d_lfff['bz'].swapaxes(0, 1)
         # vector_field = np.stack([bx, by, bz], axis=-1).astype(np.float64)
         # grid = VectorGrid(vector_field, grid_coords=[self.box.grid_coords['x'].value,
-        #                                              self.box.grid_coords['y'].value,
+        #                                              self.box.grid_coordes['y'].value,
         #                                              self.box.grid_coords['z'].value])
         # step_size = 0.1  # grid space = 1
         # max_steps = 10000
@@ -682,9 +710,6 @@ class GxBox(QMainWindow):
         # ax_3d.set_ylabel('Y')
         # ax_3d.set_zlabel('Z')
         # ax_3d.set_title('3D Field Lines')
-
-
-
 
         self.update_plot()
 
@@ -753,11 +778,37 @@ class GxBox(QMainWindow):
         pixel_coords_x, pixel_coords_y = self.map_context.wcs.world_to_pixel(world_coords)
         return pixel_coords_x, pixel_coords_y
 
-    # def reset_axes(self):
-    #     self.axes_world_coords = None
-    #     axes_pixel_coords = self.get_axes_pixel_coords(coords_world=self.axes_world_coords_init)
-    #     self.axes.set_xlim(axes_pixel_coords[0])
-    #     self.axes.set_ylim(axes_pixel_coords[1])
+    def toggle_fieldlines_visibility(self):
+        """
+        Toggles the visibility of the fieldlines from the plot.
+        """
+        self.fieldlines_show_status = not self.fieldlines_show_status
+        print("Toggling fieldlines visibility: ", self.fieldlines_show_status)
+
+        if len(self.fieldlines_line_collection) == 0:
+            return
+
+        for lc in self.fieldlines_line_collection:
+            lc.set_visible(self.fieldlines_show_status)
+
+        if self.fieldlines_show_status:
+            self.toggle_fieldlines_button.setText("Hide")
+        else:
+            self.toggle_fieldlines_button.setText("Show")
+
+        self.canvas.draw()
+
+    def clear_fieldlines(self):
+        """
+        Clears the fieldlines from the plot.
+        """
+        if len(self.fieldlines_line_collection) == 0:
+            return
+
+        while self.fieldlines_line_collection:
+            lc = self.fieldlines_line_collection.pop()
+            lc.remove()  # Remove the LineCollection from the axes
+        self.canvas.draw()
 
     def update_plot(self, show_bound_box=True, show_box_outline=True):
         """
@@ -835,27 +886,6 @@ class GxBox(QMainWindow):
             i += num_points + 1
         return lines, fields
 
-    def plot_fieldlines_std(self, streamlines):
-        """
-        Plots the extracted fieldlines with colorization based on their magnitude.
-
-        :param streamlines: pyvista.PolyData
-            The streamlines data.
-        """
-        coords, fields = self.extract_streamlines(streamlines)
-        ax = self.axes
-
-        # Normalize the magnitude values for colormap
-        norm = mcolors.Normalize(vmin=0, vmax=1000)
-        cmap = plt.get_cmap('viridis')
-
-        for coord, field in zip(coords, fields):
-            coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=coord[:, 2] * u.Mm, frame=self.frame_hcc)
-            coord_hpc = coord_hcc.transform_to(self.frame_obs)
-            ax.plot_coord(coord_hpc, '-', c='tab:blue', lw=0.3, alpha=0.5)
-
-        self.canvas.draw()
-
     def plot_fieldlines(self, streamlines, z_base=0.0):
         """
         Plots the extracted fieldlines with colorization based on their magnitude.
@@ -872,13 +902,10 @@ class GxBox(QMainWindow):
 
         for coord, field in zip(coords, fields):
             # Convert the streamline coordinates to the gxbox frame_obs
-            coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=(coord[:, 2] + z_base) * u.Mm, frame=self.frame_hcc)
+            coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=(coord[:, 2] + z_base) * u.Mm,
+                                 frame=self.frame_hcc)
             coord_hpc = coord_hcc.transform_to(self.frame_obs)
-            # for i in range(len(coords)):
-            #     ax.plot_coord(coord_hpc[i], '-', c=cmap(norm([field['magnitude'][i]])), lw=0.5)
             # ax.plot_coord(coord_hpc, '-', c='tab:blue', lw=0.3, alpha=0.5)
-            # ax.scatter(coord_hpc.Tx.to(u.deg), coord_hpc.Ty.to(u.deg), marker='o', s=0.5,
-            #            transform=ax.get_transform("world"), c=cmap(norm(field['magnitude'])), edgecolor='none')
             xpix, ypix = self.map_context.world_to_pixel(coord_hpc)
             x = xpix.value
             y = ypix.value
@@ -887,6 +914,9 @@ class GxBox(QMainWindow):
             colors = [cmap(norm(value)) for value in magnitude]  # Colormap for each segment
             lc = LineCollection(segments, colors=colors, linewidths=0.5)
             ax.add_collection(lc)
+            self.fieldlines_line_collection.append(lc)
+            if not self.fieldlines_show_status:
+                lc.set_visible(False)
 
         self.canvas.draw()
 

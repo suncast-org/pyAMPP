@@ -11,9 +11,28 @@ from pyampp.util.config import *
 import pyampp
 from pathlib import Path
 import argparse
+from pyampp.gxbox.boxutils import validate_number
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+from astropy.time import Time
+from sunpy.coordinates import get_earth, HeliographicStonyhurst, HeliographicCarrington, Helioprojective
+import numpy as np
+
 
 base_dir = Path(pyampp.__file__).parent
 svg_dir = base_dir / 'gxbox' / 'UI'
+
+
+class CustomQLineEdit(QLineEdit):
+    def setTextL(self, text):
+        """
+        Sets the text of the QLineEdit and moves the cursor to the beginning.
+
+        :param text: str
+            The text to set.
+        """
+        self.setText(text)
+        self.setCursorPosition(0)
 
 
 class PyAmppGUI(QMainWindow):
@@ -82,6 +101,11 @@ class PyAmppGUI(QMainWindow):
         Initializes the PyAmppGUI class.
         """
         super().__init__()
+        self.model_time_orig = None
+        # self.rotate_to_time_button = None
+        self.rotate_revert_button = None
+        self.coords_center = None
+        self.coords_center_orig = None
         self.initUI()
 
     def initUI(self):
@@ -100,6 +124,7 @@ class PyAmppGUI(QMainWindow):
         self.add_cmd_display()
         self.add_cmd_buttons()
         self.add_status_log()
+        self.update_coords_center()
 
         # Set window properties
         self.setWindowTitle('Solar Data Model GUI')
@@ -166,30 +191,33 @@ class PyAmppGUI(QMainWindow):
         self.update_dir(new_path, GXMODEL_DIR)
         self.update_command_display()
 
-
     def read_external_box(self):
         """
         Reads the external box path based on the user input.
         """
         import pickle
-        import astropy.units as u
-        from sunpy.coordinates import HeliographicCarrington, HeliographicStonyhurst
 
         boxfile = self.external_box_edit.text()
         with open(boxfile, 'rb') as f:
             boxdata = pickle.load(f)
             map_bottom = boxdata['map_bottom']
+            self.model_time_orig = map_bottom.date
             nx, ny, nz = boxdata['b3d']['nlfff']['bx'].shape
             box_res = map_bottom.rsun_meters.to(u.Mm) * ((map_bottom.scale[0] * 1. * u.pix).to(u.rad) / u.rad)
-            center = map_bottom.center.transform_to(HeliographicStonyhurst)
-        self.model_time_edit.setDateTime(QDateTime(map_bottom.date.to_datetime()))
+            center = map_bottom.center.transform_to(
+                HeliographicStonyhurst(obstime=self.model_time_orig))
+        print("----------------------before model time set")
+        self.model_time_edit.setDateTime(QDateTime(self.model_time_orig.to_datetime()))
+        print("----------------------after model time set")
         self.hgs_radio_button.setChecked(True)
-        self.coord_x_edit.setText(f'{center.lon.to(u.deg).value}')
-        self.coord_y_edit.setText(f'{center.lat.to(u.deg).value}')
-        self.grid_x_edit.setText(f'{nx}')
-        self.grid_y_edit.setText(f'{ny}')
-        self.grid_z_edit.setText(f'{nz}')
-        self.res_edit.setText(f'{box_res.to(u.km).value}')
+        self.coord_x_edit.setTextL(f'{center.lon.to(u.deg).value}')
+        self.coord_y_edit.setTextL(f'{center.lat.to(u.deg).value}')
+        self.grid_x_edit.setTextL(f'{nx}')
+        self.grid_y_edit.setTextL(f'{ny}')
+        self.grid_z_edit.setTextL(f'{nz}')
+        self.res_edit.setTextL(f'{box_res.to(u.km).value}')
+        self.update_coords_center()
+        self.coords_center_orig = self.coords_center
         self.update_command_display()
 
     def update_external_box_dir(self):
@@ -286,8 +314,9 @@ class PyAmppGUI(QMainWindow):
         main_layout.addLayout(jump_to_action_layout)
 
         # Model Time
-        model_time_layout = QHBoxLayout()
-        model_time_layout.addWidget(QLabel("Time [UT]:"))
+        self.model_time_layout = QHBoxLayout()
+        self.model_time_layout.addWidget(QLabel("Time [UT]:"))
+
         self.model_time_edit = QDateTimeEdit()
         self.model_time_edit.setDateTime(QDateTime.currentDateTimeUtc())
         self.model_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
@@ -295,11 +324,10 @@ class PyAmppGUI(QMainWindow):
         self.model_time_edit.setDateTimeRange(QDateTime(2010, 1, 1, 0, 0, 0), QDateTime(QDateTime.currentDateTimeUtc()))
         self.model_time_edit.setCalendarWidget(QCalendarWidget())
         self.model_time_edit.setToolTip("Model time in UT")
-        self.model_time_edit.dateTimeChanged.connect(self.update_command_display)
-
-        model_time_layout.addWidget(self.model_time_edit)
-        model_time_layout.addStretch()  # Add stretch
-        main_layout.addLayout(model_time_layout)
+        self.model_time_edit.dateTimeChanged.connect(self.on_time_input_changed)
+        self.model_time_layout.addWidget(self.model_time_edit)
+        self.model_time_layout.addStretch()  # Add stretch
+        main_layout.addLayout(self.model_time_layout)
 
         # Model Coordinates
         coords_layout = QHBoxLayout()
@@ -307,15 +335,16 @@ class PyAmppGUI(QMainWindow):
         coords_layout.addWidget(self.coord_label)
         self.coord_x_label = QLabel("X:")
         coords_layout.addWidget(self.coord_x_label)
-        self.coord_x_edit = QLineEdit("0.0")
+        self.coord_x_edit = CustomQLineEdit("0.0")
+        # self.coord_x_edit.setAlignment(Qt.AlignTrailing)
         self.coord_x_edit.setToolTip("Solar X coordinate of the model center in arcsec")
-        self.coord_x_edit.returnPressed.connect(self.update_command_display)
+        self.coord_x_edit.returnPressed.connect(lambda: self.on_coord_x_input_return_pressed(self.coord_x_edit))
         coords_layout.addWidget(self.coord_x_edit)
         self.coord_y_label = QLabel("Y:")
         coords_layout.addWidget(self.coord_y_label)
-        self.coord_y_edit = QLineEdit("0.0")
+        self.coord_y_edit = CustomQLineEdit("0.0")
         self.coord_y_edit.setToolTip("Solar Y coordinate of the model center in arcsec")
-        self.coord_y_edit.returnPressed.connect(self.update_command_display)
+        self.coord_y_edit.returnPressed.connect(lambda: self.on_coord_y_input_return_pressed(self.coord_y_edit))
         self.coord_x_label.setFixedWidth(30)
         self.coord_y_label.setFixedWidth(30)
         self.coord_label.setFixedWidth(150)
@@ -344,22 +373,25 @@ class PyAmppGUI(QMainWindow):
         grid_layout = QHBoxLayout()
         grid_layout.addWidget(QLabel("Grid Size in pix"))
         grid_layout.addWidget(QLabel("X:"))
-        self.grid_x_edit = QLineEdit("64")
+        self.grid_x_edit = CustomQLineEdit("64")
         self.grid_x_edit.setToolTip("Number of grid points in the x-direction")
-        self.grid_x_edit.returnPressed.connect(self.update_command_display)
+        self.grid_x_edit.returnPressed.connect(lambda: self.on_grid_x_input_return_pressed(self.grid_x_edit))
         self.grid_x_edit.setFixedWidth(100)
+        self.grid_x_edit.setCursorPosition(0)
         grid_layout.addWidget(self.grid_x_edit)
         grid_layout.addWidget(QLabel("Y:"))
-        self.grid_y_edit = QLineEdit("64")
+        self.grid_y_edit = CustomQLineEdit("64")
         self.grid_y_edit.setToolTip("Number of grid points in the y-direction")
-        self.grid_y_edit.returnPressed.connect(self.update_command_display)
+        self.grid_y_edit.returnPressed.connect(lambda: self.on_grid_y_input_return_pressed(self.grid_y_edit))
         self.grid_y_edit.setFixedWidth(100)
+        self.grid_y_edit.setCursorPosition(0)
         grid_layout.addWidget(self.grid_y_edit)
         grid_layout.addWidget(QLabel("Z:"))
-        self.grid_z_edit = QLineEdit("64")
+        self.grid_z_edit = CustomQLineEdit("64")
         self.grid_z_edit.setToolTip("Number of grid points in the z-direction")
-        self.grid_z_edit.returnPressed.connect(self.update_command_display)
+        self.grid_z_edit.returnPressed.connect(lambda: self.on_grid_z_input_return_pressed(self.grid_z_edit))
         self.grid_z_edit.setFixedWidth(100)
+        self.grid_z_edit.setCursorPosition(0)
         grid_layout.addWidget(self.grid_z_edit)
         grid_layout.addStretch()
         main_layout.addLayout(grid_layout)
@@ -367,17 +399,20 @@ class PyAmppGUI(QMainWindow):
         # Resolution and Padding Zone Size
         res_padding_layout = QHBoxLayout()
         res_padding_layout.addWidget(QLabel("Res. [km]:"))
-        self.res_edit = QLineEdit('1400')
+        self.res_edit = CustomQLineEdit('1400')
         self.res_edit.setFixedWidth(100)
         self.res_edit.setToolTip("Resolution in km")
-        self.res_edit.returnPressed.connect(self.update_command_display)
+        self.res_edit.setCursorPosition(0)
+        self.res_edit.returnPressed.connect(lambda: self.on_res_input_return_pressed(self.res_edit))
         res_padding_layout.addWidget(self.res_edit)
         res_padding_layout.addWidget(QLabel("Padding (%):"))
-        self.padding_size_edit = QLineEdit()
+        self.padding_size_edit = CustomQLineEdit()
         self.padding_size_edit.setFixedWidth(100)
+        self.padding_size_edit.setCursorPosition(0)
         self.padding_size_edit.setToolTip(
             "Padding as a percentage of box dimensions, increases each side of the box for extended margins.")
-        self.padding_size_edit.returnPressed.connect(self.update_command_display)
+        self.padding_size_edit.returnPressed.connect(
+            lambda: self.on_padding_size_input_return_pressed(self.padding_size_edit))
         self.padding_size_edit.setText("25")
         res_padding_layout.addWidget(self.padding_size_edit)
         res_padding_layout.addStretch()  # Add stretch
@@ -482,15 +517,127 @@ class PyAmppGUI(QMainWindow):
         self.status_log_edit.setMinimumHeight(200)  # Adjusted smaller height for the command display area
         self.main_layout.addWidget(self.status_log_edit)
 
-    def update_command_display(self):
+    @validate_number
+    def on_coord_x_input_return_pressed(self, widget):
+        self.update_command_display(widget)
+
+    @validate_number
+    def on_coord_y_input_return_pressed(self, widget):
+        self.update_command_display(widget)
+
+    @validate_number
+    def on_grid_x_input_return_pressed(self, widget):
+        self.update_command_display(widget)
+
+    @validate_number
+    def on_grid_y_input_return_pressed(self, widget):
+        self.update_command_display(widget)
+
+    @validate_number
+    def on_grid_z_input_return_pressed(self, widget):
+        self.update_command_display(widget)
+
+    @validate_number
+    def on_res_input_return_pressed(self, widget):
+        self.update_command_display(widget)
+
+    def on_padding_size_input_return_pressed(self, widget):
+        self.update_command_display(widget)
+
+    def _remove_stretch_from_layout(self, layout):
+        """
+        Removes the last stretch item from the given layout if it exists.
+
+        This method checks the last item in the layout and removes it if it is a spacer item.
+        It is useful for dynamically managing layout items, especially when adding or removing widgets.
+
+        Parameters
+        ----------
+        layout : QLayout
+            The layout from which the stretch item should be removed.
+        """
+        count = layout.count()
+        if count > 0 and layout.itemAt(count - 1).spacerItem():
+            layout.takeAt(count - 1)
+    def on_time_input_changed(self):
+        if self.model_time_orig is not None:
+            time = Time(self.model_time_edit.dateTime().toPyDateTime()).mjd
+            model_time_orig = self.model_time_orig.mjd
+            time_sec_diff = (time - model_time_orig) * 24 * 3600
+            print(time_sec_diff)
+            if np.abs(time_sec_diff) >= 0.5:
+                self.on_rotate_model_to_time()
+                if self.rotate_revert_button is None:
+                    self._remove_stretch_from_layout(self.model_time_layout)
+                    self.rotate_revert_button = QPushButton("Revert")
+                    self.rotate_revert_button.setToolTip("Revert the model to the original time")
+                    self.rotate_revert_button.clicked.connect(self.on_rotate_revert_button_clicked)
+                    self.model_time_layout.addWidget(self.rotate_revert_button)
+                    self.model_time_layout.addStretch()
+            else:
+                if self.rotate_revert_button is not None:
+                        self.update_coords_center(revert=True)
+                        self.rotate_revert()
+                        self._remove_stretch_from_layout(self.model_time_layout)
+                        self.model_time_layout.removeWidget(self.rotate_revert_button)
+                        self.rotate_revert_button.deleteLater()
+                        self.rotate_revert_button = None
+                        self.model_time_layout.addStretch()
+        self.update_command_display()
+
+
+    def on_rotate_revert_button_clicked(self):
+        self.model_time_edit.setDateTime(QDateTime(self.model_time_orig.to_datetime()))
+        self.rotate_revert()
+
+    def rotate_revert(self):
+        if self.hpc_radio_button.isChecked():
+            self.update_hpc_state(True)
+        elif self.hgc_radio_button.isChecked():
+            self.update_hgc_state(True)
+        elif self.hgs_radio_button.isChecked():
+            self.update_hgs_state(True)
+
+    def on_rotate_model_to_time(self):
+        """
+        Rotates the model to the specified time.
+        """
+        from sunpy.coordinates import RotatedSunFrame
+        point = self.coords_center_orig
+        time = Time(self.model_time_edit.dateTime().toPyDateTime()).mjd
+        model_time_orig = self.model_time_orig.mjd
+        time_sec_diff = (time - model_time_orig) * 24 * 3600
+        diffrot_point = SkyCoord(RotatedSunFrame(base=point, duration=time_sec_diff * u.s))
+        self.coords_center = diffrot_point.transform_to(self._coords_center.frame)
+        print(self.coords_center_orig,self.coords_center)
+        # self.status_log_edit.append("Model rotated to the specified time")
+        if self.hpc_radio_button.isChecked():
+            self.update_hpc_state(True, self.coords_center)
+        elif self.hgc_radio_button.isChecked():
+            self.update_hgc_state(True, self.coords_center)
+        elif self.hgs_radio_button.isChecked():
+            self.update_hgs_state(True, self.coords_center)
+        self.update_command_display()
+
+
+    def update_command_display(self, widget=None):
         """
         Updates the command display with the current command.
         """
+        # print(widget)
+        # if widget:
+        #     if isinstance(widget, QDateTimeEdit):
+        #         current_value = widget.dateTime().toString("yyyy-MM-dd HH:mm:ss")
+        #     else:
+        #         current_value = widget.text()
+        #     self.previous_params[widget] = self.current_params.get(widget, current_value)
+        #     self.current_params[widget] = current_value
+
         command = self.get_command()
         self.cmd_display_edit.clear()
         self.cmd_display_edit.append(" ".join(command))
 
-    def update_hpc_state(self, checked):
+    def update_hpc_state(self, checked, coords_center=None):
         """
         Updates the UI when Helioprojective coordinates are selected.
 
@@ -503,9 +650,15 @@ class PyAmppGUI(QMainWindow):
             self.coord_label.setText("Center Coords  in arcsec")
             self.coord_x_label.setText("X:")
             self.coord_y_label.setText("Y:")
+            if coords_center is None:
+                obstime = Time(self.model_time_edit.dateTime().toPyDateTime())
+                observer = get_earth(obstime)
+                coords_center = self.coords_center.transform_to(Helioprojective(obstime=obstime, observer=observer))
+            self.coord_x_edit.setTextL(f'{coords_center.Tx.to(u.arcsec).value}')
+            self.coord_y_edit.setTextL(f'{coords_center.Ty.to(u.arcsec).value}')
             self.update_command_display()
 
-    def update_hgc_state(self, checked):
+    def update_hgc_state(self, checked, coords_center=None):
         """
         Updates the UI when Heliographic Carrington coordinates are selected.
 
@@ -518,9 +671,15 @@ class PyAmppGUI(QMainWindow):
             self.coord_label.setText("Center Coords in deg")
             self.coord_x_label.setText("lon:")
             self.coord_y_label.setText("lat:")
+            if coords_center is None:
+                obstime = Time(self.model_time_edit.dateTime().toPyDateTime())
+                observer = get_earth(obstime)
+                coords_center = self.coords_center.transform_to(HeliographicCarrington(obstime=obstime,observer=observer))
+            self.coord_x_edit.setTextL(f'{coords_center.lon.to(u.deg).value}')
+            self.coord_y_edit.setTextL(f'{coords_center.lat.to(u.deg).value}')
             self.update_command_display()
 
-    def update_hgs_state(self, checked):
+    def update_hgs_state(self, checked, coords_center=None):
         """
         Updates the UI when Heliographic Stonyhurst coordinates are selected.
 
@@ -533,7 +692,36 @@ class PyAmppGUI(QMainWindow):
             self.coord_label.setText("Center Coords in deg")
             self.coord_x_label.setText("lon:")
             self.coord_y_label.setText("lat:")
+            if coords_center is None:
+                obstime = Time(self.model_time_edit.dateTime().toPyDateTime())
+                coords_center = self.coords_center.transform_to(HeliographicStonyhurst(obstime=obstime))
+            self.coord_x_edit.setTextL(f'{coords_center.lon.to(u.deg).value}')
+            self.coord_y_edit.setTextL(f'{coords_center.lat.to(u.deg).value}')
             self.update_command_display()
+
+    def update_coords_center(self, revert=False):
+        if revert:
+            self.coords_center = self.coords_center_orig
+        else:
+            self.coords_center = self._coords_center
+
+    @property
+    def _coords_center(self):
+        time = Time(self.model_time_edit.dateTime().toPyDateTime())
+        coords = [float(self.coord_x_edit.text()), float(self.coord_y_edit.text())]
+        if self.hpc_radio_button.isChecked():
+            observer = get_earth(time)
+            coords_center = SkyCoord(coords[0] * u.arcsec, coords[1] * u.arcsec, obstime=time, observer=observer,
+                                     rsun=696 * u.Mm, frame='helioprojective')
+        elif self.hgc_radio_button.isChecked():
+            coords_center = SkyCoord(lon=coords[0] * u.deg, lat=coords[1] * u.deg, obstime=time,
+                                     radius=696 * u.Mm,
+                                     frame='heliographic_carrington')
+        elif self.hgs_radio_button.isChecked():
+            coords_center = SkyCoord(lon=coords[0] * u.deg, lat=coords[1] * u.deg, obstime=time,
+                                     radius=696 * u.Mm,
+                                     frame='heliographic_stonyhurst')
+        return coords_center
 
     def get_command(self):
         """
@@ -628,6 +816,7 @@ def main():
     pyampp.model_time_edit.setDateTime(QDateTime(2014, 11, 1, 16, 40))
     pyampp.coord_x_edit.setText('-632')
     pyampp.coord_y_edit.setText('-135')
+    pyampp.update_coords_center()
     pyampp.update_command_display()
     if args.debug:
         # Start an interactive IPython session for debugging
