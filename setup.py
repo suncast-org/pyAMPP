@@ -73,23 +73,6 @@ setup(
     package_dir={'pyampp': 'pyampp', 'pyampp._src': 'pyampp/_src'},
     packages=['pyampp', 'pyampp._src'],
     ext_modules=[
-        Extension('pyampp._miriad', ['pyampp/_miriad/miriad_wrap.cpp'] + \
-                  indir('pyampp/_miriad/mir', ['uvio.c', 'hio.c', 'pack.c', 'bug.c',
-                                             'dio.c', 'headio.c', 'maskio.c']),
-                  define_macros=global_macros,
-                  include_dirs=[numpy.get_include(), 'pyampp/_miriad',
-                                'pyampp/_miriad/mir', 'pyampp/_common']),
-        Extension('pyampp._deconv', ['pyampp/_deconv/deconv.cpp'],
-                  define_macros=global_macros,
-                  include_dirs=[numpy.get_include(), 'pyampp/_common']),
-        # Extension('pyampp._img', ['pyampp/_img/img.cpp'],
-        #    include_dirs = [numpy.get_include()]),
-        Extension('pyampp._dsp', ['pyampp/_dsp/dsp.c', 'pyampp/_dsp/grid/grid.c'],
-                  define_macros=global_macros,
-                  include_dirs=[numpy.get_include(), 'pyampp/_dsp', 'pyampp/_dsp/grid', 'pyampp/_common']),
-        Extension('pyampp.utils', ['pyampp/utils/utils.cpp'],
-                  define_macros=global_macros,
-                  include_dirs=[numpy.get_include(), 'pyampp/_common']),
     ],
     scripts=glob.glob('scripts/*'),
 
