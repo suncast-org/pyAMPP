@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLab
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 import numpy as np
 
+pv.global_theme.allow_empty_mesh = True
 
 def minval(min_val):
     """
@@ -135,7 +136,7 @@ class MagFieldViewer(BackgroundPlotter):
         slice_z_label = QLabel("Z [Mm]:")
         slice_z_label.setToolTip(f"Enter the Z coordinate for the slice in the range of 0 to {self.grid_zmax:.2f} Mm.")
         self.slice_z_input = QLineEdit(
-            f"{0:.2f}")
+            f"{0.01:.2f}")
         self.slice_z_input.returnPressed.connect(lambda: self.on_slice_z_input_returnPressed(self.slice_z_input))
         self.slice_z_input.setToolTip(f"Enter the Z coordinate for the slice in the range of 0 to {self.grid_zmax:.2f} Mm.")
         slice_control_layout.addWidget(slice_z_label)
@@ -203,7 +204,7 @@ class MagFieldViewer(BackgroundPlotter):
         n_points_label = QLabel("# of Field Lines:")
         n_points_label.setToolTip(
             "Enter the number of seed points for the field lines.")
-        self.n_points_input = QLineEdit("10")
+        self.n_points_input = QLineEdit("100")
         self.n_points_input.setToolTip(
             "Enter the number of seed points for the field lines.")
         self.n_points_input.returnPressed.connect(lambda: self.on_n_points_input_returnPressed(self.n_points_input))
