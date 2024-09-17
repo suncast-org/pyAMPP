@@ -3,7 +3,8 @@ import os
 import astropy.units as u
 from sunpy.net import Fido, attrs as a
 from glob import glob
-
+from datetime import timedelta
+import re
 
 class SDOImageDownloader:
     """
@@ -69,31 +70,6 @@ class SDOImageDownloader:
         }
         return patterns
 
-    # def _check_files_exist(self, datadir, returnfilelist=False):
-    #     """
-    #     Checks if the files exist in the specified directory based on pre-defined patterns.
-    #
-    #     :param datadir: The directory where files are expected to be located.
-    #     :type datadir: str
-    #     :param returnfilelist: Whether to return the first file found for each pattern, defaults to False.
-    #     :type returnfilelist: bool, optional
-    #     :return: A dictionary indicating file existence or paths for each data category.
-    #     :rtype: dict
-    #     """
-    #     patterns = self._generate_filename_patterns(datadir)
-    #     existence_report = {}
-    #     for category, patterns_dict in patterns.items():
-    #         existence_report[category] = {}
-    #         for key, pattern in patterns_dict.items():
-    #             found_files = glob(pattern)
-    #             if returnfilelist:
-    #                 # Return the first file found for each pattern if any are found, else None
-    #                 # print(found_files)
-    #                 existence_report[category][key] = found_files[0] if found_files else None
-    #             else:
-    #                 # Return True if any files are found, False otherwise
-    #                 existence_report[category][key] = bool(found_files)
-    #     return existence_report
 
     def _check_files_exist(self, datadir, returnfilelist=False):
         """
@@ -108,19 +84,38 @@ class SDOImageDownloader:
         """
         patterns = self._generate_filename_patterns(datadir)
         existence_report = {}
+
+        time_tolerances = {
+            'euv': timedelta(seconds=12),
+            'uv': timedelta(seconds=24),
+            'hmi_b': timedelta(seconds=720),
+            'hmi_m': timedelta(seconds=720),
+            'hmi_ic': timedelta(seconds=720)
+        }
+
+        def file_within_tolerance(filepath, tolerance):
+            filename = os.path.basename(filepath)
+            timestamp_str = re.search(r'\d{4}-\d{2}-\d{2}T\d{6}Z', filename)
+            if not timestamp_str:
+                timestamp_str = re.search(r'\d{8}_\d{6}_TAI', filename)
+            if timestamp_str:
+                file_time = self.time.strptime(timestamp_str.group(), '%Y%m%d_%H%M%S_TAI' if '_' in timestamp_str.group() else '%Y-%m-%dT%H%M%SZ')
+                return abs(file_time - self.time).sec <= tolerance.total_seconds()
+            return False
+
         if returnfilelist:
             for category, patterns_dict in patterns.items():
                 for key, pattern in patterns_dict.items():
                     found_files = glob(pattern)
-                    # Return the first file found for each pattern if any are found, else None
-                    # print(found_files)
+                    found_files = glob(pattern)
+                    found_files = [f for f in found_files if file_within_tolerance(f, time_tolerances[category])]
                     existence_report[key] = found_files[0] if found_files else None
         else:
             for category, patterns_dict in patterns.items():
                 existence_report[category] = {}
                 for key, pattern in patterns_dict.items():
                     found_files = glob(pattern)
-                    # Return True if any files are found, False otherwise
+                    found_files = [f for f in found_files if file_within_tolerance(f, time_tolerances[category])]
                     existence_report[category][key] = bool(found_files)
         return existence_report
 

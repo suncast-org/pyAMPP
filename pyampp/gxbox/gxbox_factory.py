@@ -1,39 +1,30 @@
-import itertools
-import astropy.units as u
-import astropy.time
-import numpy as np
-import matplotlib.pyplot as plt
-from sunpy.map import Map, make_fitswcs_header, all_pixel_indices_from_map, coordinate_is_on_solar_disk
-import sunpy.sun.constants
-from astropy.coordinates import SkyCoord
-from sunpy.coordinates import Heliocentric, Helioprojective, get_earth, HeliographicStonyhurst, HeliographicCarrington, \
-    sun
-from datetime import datetime, timedelta
-import os
-import glob
-from pyampp.util.config import *
-from pyampp.data import downloader
-from pyampp.gxbox.boxutils import hmi_disambig, hmi_b2ptr
-import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QLabel, \
-    QPushButton, QSlider, QLineEdit, QCheckBox, QMessageBox, QGroupBox,QToolButton
-from PyQt5.QtCore import Qt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import argparse
-from astropy.time import Time
-from pathlib import Path
+import itertools
 import locale
-from streamtracer import StreamTracer, VectorGrid
-import pyampp
-from pyampp.util.lff import mf_lfff
-from pyampp.util.MagFieldWrapper import MagFieldWrapper
-from pyampp.util.radio import GXRadioImageComputing
-from pyampp.gxbox.magfield_viewer import MagFieldViewer
+# from pyampp.gxbox.magfield_viewer_dev import MagFieldViewer
 import pickle
-import matplotlib.cm as cm
+from pathlib import Path
+
+import astropy.units as u
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import numpy as np
+from PyQt5.QtWidgets import QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMainWindow, \
+    QPushButton, QVBoxLayout, QWidget
+from astropy.coordinates import SkyCoord
+from astropy.time import Time
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from pyAMaFiL.mag_field_wrapper import MagFieldWrapper
+from sunpy.coordinates import Heliocentric, HeliographicStonyhurst, Helioprojective, get_earth
+from sunpy.map import Map, coordinate_is_on_solar_disk, make_fitswcs_header
+
+import pyampp
+from pyampp.data import downloader
+from pyampp.gxbox.boxutils import hmi_b2ptr, hmi_disambig
+from pyampp.gxbox.magfield_viewer import MagFieldViewer
+from pyampp.util.config import *
+from pyampp.util.lff import mf_lfff
 
 base_dir = Path(pyampp.__file__).parent
 nlfff_libpath = Path(base_dir / 'lib' / 'nlfff' / 'binaries' / 'WWNLFFFReconstruction.so').resolve()
@@ -321,6 +312,32 @@ class Box:
         """
         return self._dims
 
+    @property
+    def box_view_up(self):
+        """
+        Retrieves an edge from the bottom edges where the x and z coordinates of both points are the same.
+
+        :return: The edge with the same x and z coordinates.
+        :rtype: `~astropy.coordinates.SkyCoord` or None
+        """
+        for edge in self.bottom_edges:
+            if np.allclose(edge.x[0], edge.x[1]) and np.allclose(edge.z[0], edge.z[1]):
+                return edge
+        return None
+
+    @property
+    def box_norm_direction(self):
+        """
+        Retrieves an edge from the bottom edges where the x and z coordinates of both points are the same.
+
+        :return: The edge with the same x and z coordinates.
+        :rtype: `~astropy.coordinates.SkyCoord` or None
+        """
+        for edge in self.non_bottom_edges:
+            if np.allclose(edge.x[0], edge.x[1]) and np.allclose(edge.y[0], edge.y[1]):
+                return edge
+        return None
+
 
 class GxBox(QMainWindow):
     def __init__(self, time, observer, box_orig, box_dims=u.Quantity([100, 100, 100]) * u.Mm,
@@ -443,6 +460,25 @@ class GxBox(QMainWindow):
 
         self.init_ui()
 
+    def box_norm_direction(self):
+        cartesian_coords = self.box_origin.transform_to(
+            Heliocentric(observer=self.observer, obstime=self.time)).cartesian.xyz.value
+        normal_vector = cartesian_coords / np.linalg.norm(cartesian_coords)
+        return normal_vector
+
+    # def box_norm_direction(self):
+    #     cartesian_coords = np.diff(self.box.box_norm_direction.transform_to(Heliocentric(observer=self.observer, obstime=self.time)).cartesian.xyz).value
+    #     normal_vector = np.squeeze(cartesian_coords / np.linalg.norm(cartesian_coords))
+    #     normal_vector = normal_vector[1]/abs(normal_vector[1])*normal_vector
+    #     return normal_vector
+
+    def box_view_up(self):
+        cartesian_coords = np.diff(self.box.box_view_up.transform_to(
+            Heliocentric(observer=self.observer, obstime=self.time)).cartesian.xyz).value
+        normal_vector = np.squeeze(cartesian_coords / np.linalg.norm(cartesian_coords))
+        normal_vector = normal_vector[1] / abs(normal_vector[1]) * normal_vector
+        return normal_vector
+
     def load_gxbox(self, boxfile):
         with open(boxfile, 'rb') as f:
             gxboxdata = pickle.load(f)
@@ -532,9 +568,12 @@ class GxBox(QMainWindow):
             self._load_hmi_b_seg_maps(mapname, fov_coords)
 
         if mapname in HMI_B_PRODUCTS:
+            if mapname in self.sdomaps.keys():
+                return self.sdomaps[mapname]
             for key in HMI_B_SEGMENTS:
                 if key not in self.sdomaps.keys():
                     self.sdomaps[key] = self._load_hmi_b_seg_maps(key, fov_coords)
+
             map_bp, map_bt, map_br = hmi_b2ptr(self.sdomaps['field'], self.sdomaps['inclination'],
                                                self.sdomaps['azimuth'])
             self.sdomaps['bp'] = map_bp
@@ -643,6 +682,12 @@ class GxBox(QMainWindow):
         self.clear_fieldlines_button.clicked.connect(self.clear_fieldlines)
         fieldline_control_layout.addWidget(self.clear_fieldlines_button)
 
+        self.save_fieldlines_button = QPushButton("Save")
+        self.save_fieldlines_button.setToolTip("Save the field lines to a file.")
+        self.save_fieldlines_button.clicked.connect(
+            lambda: self.save_fieldlines(f'fieldlines_{self.time.to_datetime().strftime("%Y%m%dT%H%M%S")}.pkl'))
+        fieldline_control_layout.addWidget(self.save_fieldlines_button)
+
         fieldline_control_group.setLayout(fieldline_control_layout)
         control_layout.addWidget(fieldline_control_group)
         fieldline_control_group.setFixedHeight(80)
@@ -651,14 +696,15 @@ class GxBox(QMainWindow):
         main_layout.addLayout(control_layout)
 
         if self.external_box is not None:
-            if os.path.exists(self.external_box):
+            if os.path.isfile(self.external_box):
                 self.load_gxbox(self.external_box)
-        if self.box.b3d is {}:
-            maglib_lff = mf_lfff()
-            maglib_lff.set_field(self.map_bottom.data)
-            self.box.b3d['lfff'] = maglib_lff.lfff_cube(self.box.dims_pix[-1].value)
+        # if self.box.b3d is {}:
+        #     if self.map_bottom_selector.currentText() != 'br':
+        #         self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index('br'))
+        #     maglib_lff = mf_lfff()
+        #     maglib_lff.set_field(self.map_bottom.data)
+        #     self.box.b3d['lfff'] = maglib_lff.lfff_cube(self.box.dims_pix[-1].value)
 
-        ## todo add external box import. using boundary map to update box input at pyampp..
         # import time
         #
         # start_time = time.time()
@@ -727,8 +773,76 @@ class GxBox(QMainWindow):
         """
         Launches the MagneticFieldVisualizer to visualize the 3D magnetic field data.
         """
+        box_norm_direction = self.box_norm_direction()
+        box_view_up = self.box_view_up()
+        b3dtype = self.b3d_model_selector.currentText()
+        # print(f'type of self.box.b3d is {type(self.box.b3d)}')
+        # print(f'value of self.box.b3d is {self.box.b3d}')
+        # if b3dtype == 'lfff':
+        if self.box.b3d['lfff'] is None:
+            if self.map_bottom_selector.currentText() != 'br':
+                self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index('br'))
+            maglib_lff = mf_lfff()
+            ## todo ask Alexey how to get rid of the nan value.
+            bnddata = self.map_bottom.data
+            bnddata[np.isnan(bnddata)] = 0.0
 
-        self.visualizer = MagFieldViewer(self.box, self)
+            with open('bnddata.pkl', 'wb') as f:
+                pickle.dump(bnddata, f)
+            maglib_lff.set_field(bnddata)
+            ## the axis order in res is y, x, z. so we need to swap the first two axes, so that the order becomes x, y, z.
+            res = maglib_lff.lfff_cube(self.box.dims_pix[-1].value)
+            self.box.b3d['lfff'] = {}
+            self.box.b3d['lfff']['bx'] = res['bx'].swapaxes(0, 1)
+            self.box.b3d['lfff']['by'] = res['by'].swapaxes(0, 1)
+            self.box.b3d['lfff']['bz'] = res['bz'].swapaxes(0, 1)
+
+        if b3dtype == 'nlfff':
+            self.box.b3d['nlfff'] = {}
+            bx_lff, by_lff, bz_lff = [self.box.b3d['lfff'][k].swapaxes(0, 1) for k in ("bx", "by", "bz")]
+
+            # replace bottom boundary of lff solution with initial boundary conditions
+            bvect_bottom = {}
+            bvect_bottom['bz'] = self.sdomaps['br'] if 'br' in self.sdomaps.keys() else self.loadmap('br')
+            bvect_bottom['bx'] = -self.sdomaps['bt'] if 'bt' in self.sdomaps.keys() else -self.loadmap('bt')
+            bvect_bottom['by'] = self.sdomaps['bp'] if 'bp' in self.sdomaps.keys() else self.loadmap('bp')
+
+            self.bvect_bottom = {}
+            for k in bvect_bottom.keys():
+                self.bvect_bottom[k] = bvect_bottom[k].reproject_to(self.bottom_wcs_header, algorithm="adaptive",
+                                                                    roundtrip_coords=False)
+
+            self.bvect_bottom_data = {}
+            for k in bvect_bottom.keys():
+                self.bvect_bottom_data[k] = self.bvect_bottom[k].data
+                self.bvect_bottom_data[k][np.isnan(self.bvect_bottom_data[k])] = 0.0
+            bx_lff[:, :, 0] = self.bvect_bottom_data['bx']
+            by_lff[:, :, 0] = self.bvect_bottom_data['by']
+            bz_lff[:, :, 0] = self.bvect_bottom_data['bz']
+
+            with open('inputdata.pkl', 'wb') as f:
+                pickle.dump([bx_lff,by_lff,bz_lff], f)
+
+            # return
+            import time
+            t0 = time.time()
+            maglib = MagFieldWrapper()
+            maglib.load_cube_vars(bx_lff, by_lff, bz_lff, self.box_res.to(u.cm).value)
+            # maglib.load_cube_vars(bx_lff, by_lff, bz_lff, np.array([0.00143678, 0.00143678, 0.00143678]))
+            res_nlf = maglib.NLFFF()
+            print(f'Time taken to compute NLFFF solution: {time.time() - t0} seconds')
+
+            ## the axis order in res_nlf is y, z, x. so we need to swap the first two axes, so that the order becomes x, y, z.
+            bx_nlff, by_nlff, bz_nlff = [res_nlf[k].transpose((2, 0, 1)) for k in ("bx", "by", "bz")]
+            self.box.b3d['nlfff']['bx'] = bx_nlff
+            self.box.b3d['nlfff']['by'] = by_nlff
+            self.box.b3d['nlfff']['bz'] = bz_nlff
+
+            with open('nlfffdata.pkl', 'wb') as f:
+                pickle.dump(self.box.b3d['nlfff'], f)
+
+        self.visualizer = MagFieldViewer(self.box, parent=self, box_norm_direction=box_norm_direction,
+                                         box_view_up=box_view_up, time=self.time, b3dtype=b3dtype)
         self.visualizer.show()
 
     def update_bottom_map(self, map_name):
@@ -893,32 +1007,59 @@ class GxBox(QMainWindow):
         :param streamlines: pyvista.PolyData
             The streamlines data.
         """
+        self.flines = {'coords_hcc': [], 'fields': [], 'frame_obs': self.frame_obs}
+
         from matplotlib.collections import LineCollection
-        coords, fields = self.extract_streamlines(streamlines)
+
         ax = self.axes
         # Normalize the magnitude values for colormap
         norm = mcolors.Normalize(vmin=0, vmax=1000)
         cmap = plt.get_cmap('viridis')
 
-        for coord, field in zip(coords, fields):
-            # Convert the streamline coordinates to the gxbox frame_obs
-            coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=(coord[:, 2] + z_base) * u.Mm,
-                                 frame=self.frame_hcc)
-            coord_hpc = coord_hcc.transform_to(self.frame_obs)
-            # ax.plot_coord(coord_hpc, '-', c='tab:blue', lw=0.3, alpha=0.5)
-            xpix, ypix = self.map_context.world_to_pixel(coord_hpc)
-            x = xpix.value
-            y = ypix.value
-            magnitude = field['magnitude']
-            segments = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
-            colors = [cmap(norm(value)) for value in magnitude]  # Colormap for each segment
-            lc = LineCollection(segments, colors=colors, linewidths=0.5)
-            ax.add_collection(lc)
-            self.fieldlines_line_collection.append(lc)
-            if not self.fieldlines_show_status:
-                lc.set_visible(False)
+        for streamlines_subset in streamlines:
+            coords_hcc = []
 
+            coords, fields = self.extract_streamlines(streamlines_subset)
+            for coord, field in zip(coords, fields):
+                # Convert the streamline coordinates to the gxbox frame_obs
+                coord_hcc = SkyCoord(x=coord[:, 0] * u.Mm, y=coord[:, 1] * u.Mm, z=(coord[:, 2] + z_base) * u.Mm,
+                                     frame=self.frame_hcc)
+                coords_hcc.append(coord_hcc)
+                coord_hpc = coord_hcc.transform_to(self.frame_obs)
+                # ax.plot_coord(coord_hpc, '-', c='tab:blue', lw=0.3, alpha=0.5)
+                xpix, ypix = self.map_context.world_to_pixel(coord_hpc)
+                x = xpix.value
+                y = ypix.value
+                magnitude = field['magnitude']
+                segments = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
+                colors = [cmap(norm(value)) for value in magnitude]  # Colormap for each segment
+                lc = LineCollection(segments, colors=colors, linewidths=0.5)
+                ax.add_collection(lc)
+                self.fieldlines_line_collection.append(lc)
+                if not self.fieldlines_show_status:
+                    lc.set_visible(False)
+            self.flines['coords_hcc'].append(coords_hcc)
+            self.flines['fields'].append(fields)
         self.canvas.draw()
+
+    def save_fieldlines(self, default_filename='fieldlines.pkl'):
+        """
+        Saves the fieldlines data to a file. Prompts the user to select a directory and input a filename.
+
+        :param default_filename: str
+            The default name of the file to save the fieldlines data.
+        """
+        # Open a file dialog to select directory and input filename
+        options = QFileDialog.Options()
+        options |= QFileDialog.DontUseNativeDialog
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Field Lines", default_filename, "Pickle Files (*.pkl)",
+                                                  options=options)
+
+        # Save the fieldlines if a valid filename is provided
+        if filename:
+            with open(filename, 'wb') as f:
+                pickle.dump(self.flines, f)
+            print(f"Field lines saved to {filename}")
 
     def plot(self):
         """
