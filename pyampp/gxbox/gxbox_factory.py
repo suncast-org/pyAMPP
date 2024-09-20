@@ -9,10 +9,12 @@ import astropy.units as u
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
-from PyQt5.QtWidgets import QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QMainWindow, \
+from PyQt5.QtWidgets import QApplication, QComboBox,QCheckBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit, \
+    QMainWindow, \
     QPushButton, QVBoxLayout, QWidget
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
+from matplotlib import colormaps as mplcmaps
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from pyAMaFiL.mag_field_wrapper import MagFieldWrapper
@@ -105,7 +107,7 @@ class Box:
         self._bottom_edges = None
         self._non_bottom_edges = None
         self._calculate_edge_types()  # Categorize edges upon initialization
-        self.b3dtype = ['lfff', 'nlfff']
+        self.b3dtype = ['pot', 'nlfff']
         self.b3d = {b3dtype: None for b3dtype in self.b3dtype}
 
     @property
@@ -626,37 +628,45 @@ class GxBox(QMainWindow):
         main_layout.addWidget(self.toolbar)
 
         map_control_group = QGroupBox("Map Controls")
-        map_control_group.setFixedHeight(100)
         # Horizontal layout for dropdowns and labels
-        map_control_layout = QHBoxLayout()
+        map_control_layout = QVBoxLayout()
+        map_control_layout1 = QHBoxLayout()
+        map_control_layout2 = QHBoxLayout()
+        map_control_layout3 = QHBoxLayout()
+
 
         # Dropdown for bottom map selection
         self.map_bottom_selector = QComboBox()
         self.map_bottom_selector.addItems(list(self.avaliable_maps))
         self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index(self.init_map_bottom_name))
+        self.map_bottom_selector.setMaximumWidth(100)
         self.map_bottom_selector_label = QLabel("Bottom Map:")
-        map_control_layout.addWidget(self.map_bottom_selector_label)
-        map_control_layout.addWidget(self.map_bottom_selector)
+        map_control_layout1.addWidget(self.map_bottom_selector_label)
+        map_control_layout1.addWidget(self.map_bottom_selector)
 
         # Dropdown for context map selection
         self.map_context_selector = QComboBox()
         self.map_context_selector.addItems(list(self.avaliable_maps))
         self.map_context_selector.setCurrentIndex(self.avaliable_maps.index(self.init_map_context_name))
+        self.map_context_selector.setMaximumWidth(100)
         self.map_context_selector_label = QLabel("Context Map:")
-        map_control_layout.addWidget(self.map_context_selector_label)
-        map_control_layout.addWidget(self.map_context_selector)
+        map_control_layout2.addWidget(self.map_context_selector_label)
+        map_control_layout2.addWidget(self.map_context_selector)
 
         # Dropdown for 3D magnetic model selection
         self.b3d_model_selector = QComboBox()
         self.b3d_model_selector.addItems(self.box.b3dtype)
         self.b3d_model_selector.setCurrentIndex(0)
         self.b3d_model_selector_label = QLabel("3D Mag. Model:")
-        map_control_layout.addWidget(self.b3d_model_selector_label)
-        map_control_layout.addWidget(self.b3d_model_selector)
+        map_control_layout3.addWidget(self.b3d_model_selector_label)
+        map_control_layout3.addWidget(self.b3d_model_selector)
 
+        map_control_layout.addLayout(map_control_layout1)
+        map_control_layout.addLayout(map_control_layout2)
+        map_control_layout.addLayout(map_control_layout3)
         map_control_group.setLayout(map_control_layout)
         control_layout.addWidget(map_control_group)
-        map_control_group.setFixedHeight(80)
+        map_control_group.setFixedHeight(160)
         # map_control_group.adjustSize()
 
         # Connect dropdowns to their respective handlers
@@ -664,33 +674,63 @@ class GxBox(QMainWindow):
         self.map_context_selector.currentTextChanged.connect(self.update_context_map)
 
         fieldline_control_group = QGroupBox("Field Line Controls")
-        fieldline_control_layout = QHBoxLayout()
+        fieldline_control_layout = QVBoxLayout()
+        fieldline_control_layout1 = QHBoxLayout()
+        fieldline_control_layout2 = QHBoxLayout()
+        fieldline_control_layout3 = QHBoxLayout()
 
         # Add the visualize button
         self.visualize_button = QPushButton("3D viewer")
         self.visualize_button.setToolTip("Visualize the 3D magnetic field.")
         self.visualize_button.clicked.connect(self.visualize_3d_magnetic_field)
-        fieldline_control_layout.addWidget(self.visualize_button)
+        fieldline_control_layout1.addWidget(self.visualize_button)
 
         self.toggle_fieldlines_button = QPushButton("Hide")
         self.toggle_fieldlines_button.setToolTip("Toggle the visibility of the field lines.")
         self.toggle_fieldlines_button.clicked.connect(self.toggle_fieldlines_visibility)
-        fieldline_control_layout.addWidget(self.toggle_fieldlines_button)
+        fieldline_control_layout1.addWidget(self.toggle_fieldlines_button)
 
         self.clear_fieldlines_button = QPushButton("Clear")
         self.clear_fieldlines_button.setToolTip("Clear the field lines.")
         self.clear_fieldlines_button.clicked.connect(self.clear_fieldlines)
-        fieldline_control_layout.addWidget(self.clear_fieldlines_button)
+        fieldline_control_layout1.addWidget(self.clear_fieldlines_button)
 
         self.save_fieldlines_button = QPushButton("Save")
         self.save_fieldlines_button.setToolTip("Save the field lines to a file.")
         self.save_fieldlines_button.clicked.connect(
             lambda: self.save_fieldlines(f'fieldlines_{self.time.to_datetime().strftime("%Y%m%dT%H%M%S")}.pkl'))
-        fieldline_control_layout.addWidget(self.save_fieldlines_button)
+        fieldline_control_layout1.addWidget(self.save_fieldlines_button)
+
+        self.bminmax_label = QLabel("Bmin/Bmax [G]:")
+        self.bmin_input = QLineEdit(self)
+        self.bmin_input.setText("0")  # Set default value
+        self.bmax_input = QLineEdit(self)
+        self.bmax_input.setText("1000")  # Set default value
+
+        fieldline_control_layout2.addWidget(self.bminmax_label)
+        fieldline_control_layout2.addWidget(self.bmin_input)
+        fieldline_control_layout2.addWidget(self.bmax_input)
+
+        self.cmap_selector = QComboBox(self)
+        self.cmap_selector.addItems(sorted(list(mplcmaps)))  # List all available colormaps
+        self.cmap_selector.setCurrentText("viridis")  # Set a default colormap
+        self.cmap_selector.setMaximumWidth(200)
+
+        self.cmap_clip_checkbox = QCheckBox("Clip")
+        self.cmap_clip_checkbox.setChecked(False)
+
+        fieldline_control_layout3.addWidget(QLabel("cmap:"))
+        fieldline_control_layout3.addWidget(self.cmap_selector)
+        fieldline_control_layout3.addWidget(self.cmap_clip_checkbox)
+        fieldline_control_layout3.setStretch(0, 1)
+
+        fieldline_control_layout.addLayout(fieldline_control_layout1)
+        fieldline_control_layout.addLayout(fieldline_control_layout2)
+        fieldline_control_layout.addLayout(fieldline_control_layout3)
 
         fieldline_control_group.setLayout(fieldline_control_layout)
         control_layout.addWidget(fieldline_control_group)
-        fieldline_control_group.setFixedHeight(80)
+        fieldline_control_group.setFixedHeight(160)
         # fieldline_control_group.adjustSize()
 
         main_layout.addLayout(control_layout)
@@ -698,64 +738,6 @@ class GxBox(QMainWindow):
         if self.external_box is not None:
             if os.path.isfile(self.external_box):
                 self.load_gxbox(self.external_box)
-        # if self.box.b3d is {}:
-        #     if self.map_bottom_selector.currentText() != 'br':
-        #         self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index('br'))
-        #     maglib_lff = mf_lfff()
-        #     maglib_lff.set_field(self.map_bottom.data)
-        #     self.box.b3d['lfff'] = maglib_lff.lfff_cube(self.box.dims_pix[-1].value)
-
-        # import time
-        #
-        # start_time = time.time()
-        # maglib_nlfff = MagFieldWrapper(nlfff_libpath)
-        # dr = (self.box_res.to(u.m)).value
-        # maglib_nlfff.load_cube_vars(self.box.b3d['lfff']['bx'], self.box.b3d['lfff']['by'],
-        #                                                     self.box.b3d['lfff']['bz'], dr)
-        # self.box.b3d['nlfff'] = maglib_nlfff.NLFFF()
-        # end_time = time.time()
-        #
-        # print(f"The block of code took {end_time - start_time} seconds to run.")
-
-        # from streamtracer import StreamTracer, VectorGrid
-        #
-        # bx = self.box.b3d_lfff['bx'].swapaxes(0, 1)
-        # by = self.box.b3d_lfff['by'].swapaxes(0, 1)
-        # bz = self.box.b3d_lfff['bz'].swapaxes(0, 1)
-        # vector_field = np.stack([bx, by, bz], axis=-1).astype(np.float64)
-        # grid = VectorGrid(vector_field, grid_coords=[self.box.grid_coords['x'].value,
-        #                                              self.box.grid_coordes['y'].value,
-        #                                              self.box.grid_coords['z'].value])
-        # step_size = 0.1  # grid space = 1
-        # max_steps = 10000
-        # tracer = StreamTracer(max_steps=max_steps, step_size=step_size)
-        #
-        # x = np.linspace(-50, 50, 10)
-        # y = np.linspace(-30, 30, 10)
-        # z = 696.5
-        # xx, yy = np.meshgrid(x, y)
-        #
-        #
-        # xx_final = np.hstack([xx.ravel()])
-        # yy_final = np.hstack([yy.ravel()])
-        # # Combine x, y, and z coordinates for seed points
-        # seed_points = np.vstack([xx_final.ravel(), yy_final.ravel(), np.full_like(xx_final.ravel(), z)]).T
-        #
-        #
-        # tracer.trace(seeds=seed_points, grid=grid, direction=0)
-        # flines = tracer.xs
-
-        # # Visual inspection of 3D field lines
-        # fig_3d = plt.figure()
-        # ax_3d = fig_3d.add_subplot(111, projection='3d')
-        # for seed_point, fline in zip(seed_points, flines):
-        #     color = next(ax_3d._get_lines.prop_cycler)['color']
-        #     # ax_3d.plot(seed_point[0], seed_point[1], seed_point[2], 'o', color=color)
-        #     ax_3d.plot(fline[:, 0], fline[:, 1], fline[:, 2], '-', color=color)
-        # ax_3d.set_xlabel('X')
-        # ax_3d.set_ylabel('Y')
-        # ax_3d.set_zlabel('Z')
-        # ax_3d.set_title('3D Field Lines')
 
         self.update_plot()
 
@@ -778,8 +760,8 @@ class GxBox(QMainWindow):
         b3dtype = self.b3d_model_selector.currentText()
         # print(f'type of self.box.b3d is {type(self.box.b3d)}')
         # print(f'value of self.box.b3d is {self.box.b3d}')
-        # if b3dtype == 'lfff':
-        if self.box.b3d['lfff'] is None:
+        # if b3dtype == 'pot':
+        if self.box.b3d['pot'] is None:
             if self.map_bottom_selector.currentText() != 'br':
                 self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index('br'))
             maglib_lff = mf_lfff()
@@ -791,55 +773,56 @@ class GxBox(QMainWindow):
                 pickle.dump(bnddata, f)
             maglib_lff.set_field(bnddata)
             ## the axis order in res is y, x, z. so we need to swap the first two axes, so that the order becomes x, y, z.
-            res = maglib_lff.lfff_cube(self.box.dims_pix[-1].value)
-            self.box.b3d['lfff'] = {}
-            self.box.b3d['lfff']['bx'] = res['bx'].swapaxes(0, 1)
-            self.box.b3d['lfff']['by'] = res['by'].swapaxes(0, 1)
-            self.box.b3d['lfff']['bz'] = res['bz'].swapaxes(0, 1)
+            res = maglib_lff.lfff_cube(self.box.dims_pix[-1].value, alpha=0.0)
+            self.box.b3d['pot'] = {}
+            self.box.b3d['pot']['bx'] = res['bx'].swapaxes(0, 1)
+            self.box.b3d['pot']['by'] = res['by'].swapaxes(0, 1)
+            self.box.b3d['pot']['bz'] = res['bz'].swapaxes(0, 1)
 
         if b3dtype == 'nlfff':
-            self.box.b3d['nlfff'] = {}
-            bx_lff, by_lff, bz_lff = [self.box.b3d['lfff'][k].swapaxes(0, 1) for k in ("bx", "by", "bz")]
+            if self.box.b3d['nlfff'] is None:
+                self.box.b3d['nlfff'] = {}
+                bx_lff, by_lff, bz_lff = [self.box.b3d['pot'][k].swapaxes(0, 1) for k in ("bx", "by", "bz")]
 
-            # replace bottom boundary of lff solution with initial boundary conditions
-            bvect_bottom = {}
-            bvect_bottom['bz'] = self.sdomaps['br'] if 'br' in self.sdomaps.keys() else self.loadmap('br')
-            bvect_bottom['bx'] = -self.sdomaps['bt'] if 'bt' in self.sdomaps.keys() else -self.loadmap('bt')
-            bvect_bottom['by'] = self.sdomaps['bp'] if 'bp' in self.sdomaps.keys() else self.loadmap('bp')
+                # replace bottom boundary of lff solution with initial boundary conditions
+                bvect_bottom = {}
+                bvect_bottom['bz'] = self.sdomaps['br'] if 'br' in self.sdomaps.keys() else self.loadmap('br')
+                bvect_bottom['bx'] = -self.sdomaps['bt'] if 'bt' in self.sdomaps.keys() else -self.loadmap('bt')
+                bvect_bottom['by'] = self.sdomaps['bp'] if 'bp' in self.sdomaps.keys() else self.loadmap('bp')
 
-            self.bvect_bottom = {}
-            for k in bvect_bottom.keys():
-                self.bvect_bottom[k] = bvect_bottom[k].reproject_to(self.bottom_wcs_header, algorithm="adaptive",
-                                                                    roundtrip_coords=False)
+                self.bvect_bottom = {}
+                for k in bvect_bottom.keys():
+                    self.bvect_bottom[k] = bvect_bottom[k].reproject_to(self.bottom_wcs_header, algorithm="adaptive",
+                                                                        roundtrip_coords=False)
 
-            self.bvect_bottom_data = {}
-            for k in bvect_bottom.keys():
-                self.bvect_bottom_data[k] = self.bvect_bottom[k].data
-                self.bvect_bottom_data[k][np.isnan(self.bvect_bottom_data[k])] = 0.0
-            bx_lff[:, :, 0] = self.bvect_bottom_data['bx']
-            by_lff[:, :, 0] = self.bvect_bottom_data['by']
-            bz_lff[:, :, 0] = self.bvect_bottom_data['bz']
+                self.bvect_bottom_data = {}
+                for k in bvect_bottom.keys():
+                    self.bvect_bottom_data[k] = self.bvect_bottom[k].data
+                    self.bvect_bottom_data[k][np.isnan(self.bvect_bottom_data[k])] = 0.0
+                bx_lff[:, :, 0] = self.bvect_bottom_data['bx']
+                by_lff[:, :, 0] = self.bvect_bottom_data['by']
+                bz_lff[:, :, 0] = self.bvect_bottom_data['bz']
 
-            with open('inputdata.pkl', 'wb') as f:
-                pickle.dump([bx_lff,by_lff,bz_lff], f)
+                with open('inputdata.pkl', 'wb') as f:
+                    pickle.dump([bx_lff, by_lff, bz_lff], f)
 
-            # return
-            import time
-            t0 = time.time()
-            maglib = MagFieldWrapper()
-            maglib.load_cube_vars(bx_lff, by_lff, bz_lff, self.box_res.to(u.cm).value)
-            # maglib.load_cube_vars(bx_lff, by_lff, bz_lff, np.array([0.00143678, 0.00143678, 0.00143678]))
-            res_nlf = maglib.NLFFF()
-            print(f'Time taken to compute NLFFF solution: {time.time() - t0} seconds')
+                # return
+                import time
+                t0 = time.time()
+                maglib = MagFieldWrapper()
+                maglib.load_cube_vars(bx_lff, by_lff, bz_lff, self.box_res.to(u.cm).value)
+                # maglib.load_cube_vars(bx_lff, by_lff, bz_lff, np.array([0.00143678, 0.00143678, 0.00143678]))
+                res_nlf = maglib.NLFFF()
+                print(f'Time taken to compute NLFFF solution: {time.time() - t0} seconds')
 
-            ## the axis order in res_nlf is y, z, x. so we need to swap the first two axes, so that the order becomes x, y, z.
-            bx_nlff, by_nlff, bz_nlff = [res_nlf[k].transpose((2, 0, 1)) for k in ("bx", "by", "bz")]
-            self.box.b3d['nlfff']['bx'] = bx_nlff
-            self.box.b3d['nlfff']['by'] = by_nlff
-            self.box.b3d['nlfff']['bz'] = bz_nlff
+                ## the axis order in res_nlf is y, z, x. so we need to swap the first two axes, so that the order becomes x, y, z.
+                bx_nlff, by_nlff, bz_nlff = [res_nlf[k].transpose((2, 0, 1)) for k in ("bx", "by", "bz")]
+                self.box.b3d['nlfff']['bx'] = bx_nlff
+                self.box.b3d['nlfff']['by'] = by_nlff
+                self.box.b3d['nlfff']['bz'] = bz_nlff
 
-            with open('nlfffdata.pkl', 'wb') as f:
-                pickle.dump(self.box.b3d['nlfff'], f)
+                with open('nlfffdata.pkl', 'wb') as f:
+                    pickle.dump(self.box.b3d['nlfff'], f)
 
         self.visualizer = MagFieldViewer(self.box, parent=self, box_norm_direction=box_norm_direction,
                                          box_view_up=box_view_up, time=self.time, b3dtype=b3dtype)
@@ -1012,9 +995,19 @@ class GxBox(QMainWindow):
         from matplotlib.collections import LineCollection
 
         ax = self.axes
+
+        # Fetch Bmin and Bmax values from input fields
+        try:
+            bmin = float(self.bmin_input.text())
+            bmax = float(self.bmax_input.text())
+        except ValueError:
+            bmin = 0
+            bmax = 1000
+
+
         # Normalize the magnitude values for colormap
-        norm = mcolors.Normalize(vmin=0, vmax=1000)
-        cmap = plt.get_cmap('viridis')
+        norm = mcolors.Normalize(vmin=bmin, vmax=bmax)
+        cmap = plt.get_cmap(self.cmap_selector.currentText())
 
         for streamlines_subset in streamlines:
             coords_hcc = []
@@ -1033,6 +1026,10 @@ class GxBox(QMainWindow):
                 magnitude = field['magnitude']
                 segments = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
                 colors = [cmap(norm(value)) for value in magnitude]  # Colormap for each segment
+                if self.cmap_clip_checkbox.isChecked():
+                    mask = np.logical_and(magnitude >= bmin, magnitude <= bmax)
+                    colors = np.array(colors)[mask]
+                    segments = np.array(segments)[mask[:-1]]
                 lc = LineCollection(segments, colors=colors, linewidths=0.5)
                 ax.add_collection(lc)
                 self.fieldlines_line_collection.append(lc)

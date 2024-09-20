@@ -134,19 +134,31 @@ def set_QLineEdit_text_pos(line_edit, text):
     line_edit.setCursorPosition(0)
 
 
-def read_gxsim_b3d_sav(filename):
+def read_gxsim_b3d_sav(savfile):
+    '''
+    Read the B3D data from the .sav file and save it as a .gxbox file
+    :param savfile: str
+        The path to the .sav file.
+
+
+    '''
     from scipy.io import readsav
     import pickle
-    bdata = readsav(filename)
+    bdata = readsav(savfile)
     bx = bdata['box']['bx'][0]
     by = bdata['box']['by'][0]
     bz = bdata['box']['bz'][0]
-    boxfile = 'hmi.sharp_cea_720s.8088.20220330_172400_TAI.Br.gxbox'
-    with open(boxfile, 'rb') as f:
-        gxboxdata = pickle.load(f)
+    # boxfile = 'hmi.sharp_cea_720s.8088.20220330_172400_TAI.Br.gxbox'
+    # with open(boxfile, 'rb') as f:
+    #     gxboxdata = pickle.load(f)
+    gxboxdata = {}
+    gxboxdata['b3d'] = {}
+    gxboxdata['b3d']['nlfff'] = {}
     gxboxdata['b3d']['nlfff']['bx'] = bx.swapaxes(0,2)
     gxboxdata['b3d']['nlfff']['by'] = by.swapaxes(0,2)
     gxboxdata['b3d']['nlfff']['bz'] = bz.swapaxes(0,2)
-    boxfilenew = filename.replace('.sav', '.gxbox')
+    boxfilenew = savfile.replace('.sav', '.gxbox')
     with open(boxfilenew, 'wb') as f:
         pickle.dump(gxboxdata, f)
+    print(f'{savfile} is saved as {boxfilenew}')
+    return boxfilenew
