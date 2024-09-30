@@ -206,9 +206,7 @@ class PyAmppGUI(QMainWindow):
             box_res = map_bottom.rsun_meters.to(u.Mm) * ((map_bottom.scale[0] * 1. * u.pix).to(u.rad) / u.rad)
             center = map_bottom.center.transform_to(
                 HeliographicStonyhurst(obstime=self.model_time_orig))
-        print("----------------------before model time set")
         self.model_time_edit.setDateTime(QDateTime(self.model_time_orig.to_datetime()))
-        print("----------------------after model time set")
         self.hgs_radio_button.setChecked(True)
         self.coord_x_edit.setTextL(f'{center.lon.to(u.deg).value}')
         self.coord_y_edit.setTextL(f'{center.lat.to(u.deg).value}')
