@@ -100,7 +100,7 @@ class SDOImageDownloader:
                 timestamp_str = re.search(r'\d{8}_\d{6}_TAI', filename)
             if timestamp_str:
                 file_time = self.time.strptime(timestamp_str.group(), '%Y%m%d_%H%M%S_TAI' if '_' in timestamp_str.group() else '%Y-%m-%dT%H%M%SZ')
-                return abs(file_time - self.time).sec <= tolerance.total_seconds()
+                return round(abs(file_time - self.time).sec, 2) <= tolerance.total_seconds()
             return False
 
         if returnfilelist:
