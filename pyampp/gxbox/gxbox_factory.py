@@ -840,6 +840,10 @@ class GxBox(QMainWindow):
         map_bottom = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
         self.map_bottom = map_bottom.reproject_to(self.bottom_wcs_header, algorithm="adaptive",
                                                   roundtrip_coords=False)
+
+        self.box._dims_pix[0] = self.map_bottom.data.shape[0]
+        self.box._dims_pix[1] = self.map_bottom.data.shape[1]
+
         self.map_bottom_im = self.map_bottom.plot(axes=self.axes, autoalign=True)
         # self.update_plot()
         self.canvas.draw()
