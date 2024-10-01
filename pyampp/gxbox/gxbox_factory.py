@@ -28,10 +28,6 @@ from pyampp.gxbox.magfield_viewer import MagFieldViewer
 from pyampp.util.config import *
 from pyampp.util.lff import mf_lfff
 
-base_dir = Path(pyampp.__file__).parent
-nlfff_libpath = Path(base_dir / 'lib' / 'nlfff' / 'binaries' / 'WWNLFFFReconstruction.so').resolve()
-radio_libpath = Path(base_dir / 'lib' / 'grff' / 'binaries' / 'RenderGRFF.so').resolve()
-
 os.environ['OMP_NUM_THREADS'] = '16'  # number of parallel threads
 locale.setlocale(locale.LC_ALL, "C");
 
@@ -775,14 +771,14 @@ class GxBox(QMainWindow):
             ## the axis order in res is y, x, z. so we need to swap the first two axes, so that the order becomes x, y, z.
             res = maglib_lff.lfff_cube(self.box.dims_pix[-1].value, alpha=0.0)
             self.box.b3d['pot'] = {}
-            self.box.b3d['pot']['bx'] = res['bx'].swapaxes(0, 1)
-            self.box.b3d['pot']['by'] = res['by'].swapaxes(0, 1)
+            self.box.b3d['pot']['bx'] = res['by'].swapaxes(0, 1)
+            self.box.b3d['pot']['by'] = res['bx'].swapaxes(0, 1)
             self.box.b3d['pot']['bz'] = res['bz'].swapaxes(0, 1)
 
         if b3dtype == 'nlfff':
             if self.box.b3d['nlfff'] is None:
                 self.box.b3d['nlfff'] = {}
-                bx_lff, by_lff, bz_lff = [self.box.b3d['pot'][k].swapaxes(0, 1) for k in ("bx", "by", "bz")]
+                bx_lff, by_lff, bz_lff = [self.box.b3d['pot'][k].swapaxes(0, 1) for k in ("by", "bx", "bz")]
 
                 # replace bottom boundary of lff solution with initial boundary conditions
                 bvect_bottom = {}
