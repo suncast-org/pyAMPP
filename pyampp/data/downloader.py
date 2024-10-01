@@ -135,6 +135,11 @@ class SDOImageDownloader:
             self._handle_uv(all_files)
         if self.hmi:
             self._handle_hmi(all_files)
+
+        files_to_download = list(all_files.values())
+        if len(files_to_download) > 0:
+            print(files_to_download)
+            self._fetch(files_to_download)
         # Re-check file existence after downloads to update the report
         self.existence_report = self._check_files_exist(self.path, returnfilelist=True)
         return self.existence_report
@@ -151,9 +156,12 @@ class SDOImageDownloader:
             # print(f"Missing EUV passbands: {missing_euv}")
         else:
             missing_euv = AIA_EUV_PASSBANDS
-        for pb in missing_euv:
-            wavelength_attr = a.Wavelength(int(pb) * u.AA)
-            all_files[f'euv_{pb}'] = self._search_and_fetch('aia.lev1_euv_12s', wavelength=wavelength_attr,
+
+        if len(missing_euv) > 0:
+            missing_euv = [int(pb) for pb in missing_euv]
+            wavelength_attr = a.AttrOr([a.Wavelength(pb * u.AA) for pb in missing_euv])
+
+            all_files[f'euv'] = self._search('aia.lev1_euv_12s', wavelength=wavelength_attr,
                                                             segments=a.jsoc.Segment('image'))
 
     def _handle_uv(self, all_files):
@@ -169,9 +177,12 @@ class SDOImageDownloader:
         else:
             missing_uv = AIA_UV_PASSBANDS
             print("No existence report provided, downloading all UV segments.")
-        for pb in missing_uv:
-            wavelength_attr = a.Wavelength(int(pb) * u.AA)
-            all_files[f'uv_{pb}'] = self._search_and_fetch('aia.lev1_uv_24s', wavelength=wavelength_attr,
+
+        if len(missing_uv) > 0:
+            missing_uv = [int(pb) for pb in missing_uv]
+            wavelength_attr = a.AttrOr([a.Wavelength(pb * u.AA) for pb in missing_uv])
+
+            all_files[f'uv'] = self._search('aia.lev1_uv_24s', wavelength=wavelength_attr,
                                                            segments=a.jsoc.Segment('image'))
 
     def _handle_hmi(self, all_files):
@@ -195,15 +206,16 @@ class SDOImageDownloader:
             print("No existence report provided, downloading all HMI M segments.")
             missing_hmi_ic = ['continuum']
             print("No existence report provided, downloading all HMI IC segments.")
-        for seg in missing_hmi_b:
-            segment_attr = a.jsoc.Segment(seg)
-            all_files[f'hmi_b_{seg}'] = self._search_and_fetch('hmi.B_720s', segments=segment_attr)
-        if missing_hmi_m:
-            all_files['hmi_m'] = self._search_and_fetch('hmi.M_720s', segments=a.jsoc.Segment('magnetogram'))
-        if missing_hmi_ic:
-            all_files['hmi_ic'] = self._search_and_fetch('hmi.Ic_noLimbDark_720s', segments=a.jsoc.Segment('continuum'))
 
-    def _search_and_fetch(self, series, segments=None, wavelength=None):
+        if len(missing_hmi_b) > 0:
+            segment_attr = a.AttrAnd([a.jsoc.Segment(seg) for seg in missing_hmi_b])
+            all_files[f'hmi_b'] = self._search('hmi.B_720s', segments=segment_attr)
+        if missing_hmi_m:
+            all_files['hmi_m'] = self._search('hmi.M_720s', segments=a.jsoc.Segment('magnetogram'))
+        if missing_hmi_ic:
+            all_files['hmi_ic'] = self._search('hmi.Ic_noLimbDark_720s', segments=a.jsoc.Segment('continuum'))
+
+    def _search(self, series, segments=None, wavelength=None):
         """
         Searches for and fetches files from JSOC based on series, segments, and wavelength.
 
@@ -225,6 +237,9 @@ class SDOImageDownloader:
         print(f"Searching for {series} with attributes {search_attrs}")
         result = Fido.search(*search_attrs)
         print(f"Found {len(result)} records for download.")
-        fetched_files = Fido.fetch(result, path=self.path, overwrite=False)
+        return result
+
+    def _fetch(self, files_to_download, streams=5):
+        fetched_files = Fido.fetch(*files_to_download, path=self.path, overwrite=False, max_conn=streams)
         print(f"Downloaded {len(fetched_files)} files.")
         return fetched_files
