@@ -1,0 +1,544 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>800</width>
+    <height>695</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Solar Data Model GUI</string>
+  </property>
+  <widget class="QWidget" name="central_widget">
+   <layout class="QVBoxLayout" name="main_layout">
+    <property name="spacing">
+     <number>10</number>
+    </property>
+    <property name="leftMargin">
+     <number>15</number>
+    </property>
+    <property name="topMargin">
+     <number>15</number>
+    </property>
+    <property name="rightMargin">
+     <number>15</number>
+    </property>
+    <property name="bottomMargin">
+     <number>15</number>
+    </property>
+    <item>
+     <layout class="QHBoxLayout">
+      <item>
+       <widget class="QGroupBox" name="data_repository_section">
+        <property name="title">
+         <string>Data Repositories</string>
+        </property>
+        <layout class="QGridLayout" name="gridLayout">
+         <item row="0" column="0">
+          <widget class="QLabel" name="label_sdo_data">
+           <property name="text">
+            <string>SDO Data Repository:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="sdo_data_edit">
+           <property name="toolTip">
+            <string>Path to the SDO data repository</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QPushButton" name="sdo_browse_button">
+           <property name="text">
+            <string>Browse</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="label_gx_model">
+           <property name="text">
+            <string>GX Model Repository:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QLineEdit" name="gx_model_edit">
+           <property name="toolTip">
+            <string>Path to the GX model repository</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="2">
+          <widget class="QPushButton" name="gx_browse_button">
+           <property name="text">
+            <string>Browse</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="label_external_box">
+           <property name="text">
+            <string>External Box Path:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QLineEdit" name="external_box_edit">
+           <property name="toolTip">
+            <string>Path to the external box, if exist.</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="2">
+          <widget class="QPushButton" name="external_browse_button">
+           <property name="text">
+            <string>Browse</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="groupBox">
+      <property name="title">
+       <string>Model Configuration</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_2">
+       <item>
+        <layout class="QHBoxLayout" name="jumpToActionLayout">
+         <item>
+          <widget class="QLabel" name="label_jumpToAction">
+           <property name="text">
+            <string>Jump-to Action:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="jump_to_action_combo">
+          </widget>
+         </item>
+         <item>
+          <spacer name="spacer_jumpToAction">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="modelTimeLayout">
+         <item>
+          <widget class="QLabel" name="label_modelTime">
+           <property name="text">
+            <string>Time [UT]:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QDateTimeEdit" name="model_time_edit">
+           <property name="displayFormat">
+            <string>yyyy-MM-dd HH:mm:ss</string>
+           </property>
+           <property name="calendarPopup">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="spacer_modelTime">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="coordsLayout">
+         <item>
+          <widget class="QLabel" name="coord_label">
+           <property name="text">
+            <string>Center Coords in arcsec:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="coord_x_label">
+           <property name="text">
+            <string>X:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="coord_x_edit">
+           <property name="toolTip">
+            <string>Solar X coordinate of the model center in arcsec</string>
+           </property>
+           <property name="text">
+            <string>0.0</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="coord_y_label">
+           <property name="text">
+            <string>Y:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="coord_y_edit">
+           <property name="toolTip">
+            <string>Solar Y coordinate of the model center in arcsec</string>
+           </property>
+           <property name="text">
+            <string>0.0</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="hpc_radio_button">
+           <property name="toolTip">
+            <string>Use Helioprojective coordinates frame to define the model center</string>
+           </property>
+           <property name="text">
+            <string>Helioprojective</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="hgc_radio_button">
+           <property name="toolTip">
+            <string>Use Heliographic Carrington coordinates frame to define the model center</string>
+           </property>
+           <property name="text">
+            <string>Carrington</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="hgs_radio_button">
+           <property name="toolTip">
+            <string>Use Heliographic Stonyhurst coordinates frame to define the model center</string>
+           </property>
+           <property name="text">
+            <string>Stonyhurst</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="spacer_coords">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="gridLayout">
+         <item>
+          <widget class="QLabel" name="label_gridSize">
+           <property name="text">
+            <string>Grid Size in pix</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_gridX">
+           <property name="text">
+            <string>X:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="grid_x_edit">
+           <property name="toolTip">
+            <string>Number of grid points in the x-direction</string>
+           </property>
+           <property name="text">
+            <string>64</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_gridY">
+           <property name="text">
+            <string>Y:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="grid_y_edit">
+           <property name="toolTip">
+            <string>Number of grid points in the y-direction</string>
+           </property>
+           <property name="text">
+            <string>64</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_gridZ">
+           <property name="text">
+            <string>Z:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="grid_z_edit">
+           <property name="toolTip">
+            <string>Number of grid points in the z-direction</string>
+           </property>
+           <property name="text">
+            <string>64</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="spacer_grid">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="resPaddingLayout">
+         <item>
+          <widget class="QLabel" name="label_resolution">
+           <property name="text">
+            <string>Res. [km]:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="res_edit">
+           <property name="toolTip">
+            <string>Resolution in km</string>
+           </property>
+           <property name="text">
+            <string>1400</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_padding">
+           <property name="text">
+            <string>Padding (%):</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="padding_size_edit">
+           <property name="toolTip">
+            <string>Padding as a percentage of box dimensions, increases each side of the box for extended margins.</string>
+           </property>
+           <property name="text">
+            <string>25</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="spacer_resPadding">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="optionsGroupBox">
+      <property name="title">
+       <string>Options</string>
+      </property>
+      <layout class="QGridLayout" name="gridLayout">
+       <item row="0" column="0">
+        <widget class="QCheckBox" name="download_aia_euv">
+         <property name="text">
+          <string>Download AIA/EUV contextual maps</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QCheckBox" name="download_aia_uv">
+         <property name="text">
+          <string>Download AIA/UV contextual maps</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QCheckBox" name="save_empty_box">
+         <property name="text">
+          <string>Save Empty Box</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QCheckBox" name="save_potential_box">
+         <property name="text">
+          <string>Save Potential Box</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="2">
+        <widget class="QCheckBox" name="save_bounds_box">
+         <property name="text">
+          <string>Save Bounds Box</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QCheckBox" name="stop_after_potential_box">
+         <property name="text">
+          <string>Stop after the potential box is generated</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QCheckBox" name="skip_nlfff_extrapolation">
+         <property name="text">
+          <string>Skip NLFFF extrapolation</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QTextEdit" name="cmd_display_edit">
+      <property name="font">
+       <font>
+        <family>Arial</family>
+        <pointsize>12</pointsize>
+        <weight>50</weight>
+        <italic>false</italic>
+        <bold>false</bold>
+       </font>
+      </property>
+      <property name="readOnly">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="cmd_button_layout">
+      <item>
+       <widget class="QPushButton" name="execute_button">
+        <property name="toolTip">
+         <string>Create GXbox with the given parameters</string>
+        </property>
+        <property name="icon">
+         <iconset>
+          <normaloff>play.svg</normaloff>play.svg</iconset>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="save_button">
+        <property name="toolTip">
+         <string>Save the GXbox</string>
+        </property>
+        <property name="icon">
+         <iconset>
+          <normaloff>save.svg</normaloff>save.svg</iconset>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="clear_button_refresh">
+        <property name="toolTip">
+         <string>Refresh the session</string>
+        </property>
+        <property name="icon">
+         <iconset>
+          <normaloff>refresh.svg</normaloff>refresh.svg</iconset>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="clear_button_clear">
+        <property name="toolTip">
+         <string>Clear the status log</string>
+        </property>
+        <property name="icon">
+         <iconset>
+          <normaloff>clear.svg</normaloff>clear.svg</iconset>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="spacer_cmd_buttons">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>40</width>
+          <height>20</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QTextEdit" name="status_log_edit">
+      <property name="readOnly">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

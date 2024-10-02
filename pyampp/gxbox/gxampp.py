@@ -7,6 +7,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QLineEd
                              QFileDialog)
 from PyQt5.QtGui import QIcon, QFont
 from PyQt5.QtCore import QSize, QDateTime, Qt
+from PyQt5 import uic
+
 from pyampp.util.config import *
 import pyampp
 from pathlib import Path
@@ -20,7 +22,6 @@ import numpy as np
 
 
 base_dir = Path(pyampp.__file__).parent
-svg_dir = base_dir / 'gxbox' / 'UI'
 
 
 class CustomQLineEdit(QLineEdit):
@@ -113,9 +114,7 @@ class PyAmppGUI(QMainWindow):
         Sets up the initial user interface for the main window.
         """
         # Main widget and layout
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.main_layout = QVBoxLayout(self.central_widget)
+        uic.loadUi(Path(__file__).parent / "UI" / "gxampp.ui", self)
 
         # Adding different sections
         self.add_data_repository_section()
@@ -126,60 +125,26 @@ class PyAmppGUI(QMainWindow):
         self.add_status_log()
         self.update_coords_center()
 
-        # Set window properties
-        self.setWindowTitle('Solar Data Model GUI')
-        self.setGeometry(100, 100, 800, 600)  # Modify as needed
         self.update_command_display()
         self.show()
 
     def add_data_repository_section(self):
-        """
-        Adds the data repository section to the main layout.
-        """
-        group_box = QGroupBox("Data Repositories")
-        layout = QGridLayout()
-
-        # SDO Data Repository
-        layout.addWidget(QLabel("SDO Data Repository:"), 0, 0)
-        self.sdo_data_edit = QLineEdit()
         self.sdo_data_edit.setText(DOWNLOAD_DIR)
-        self.sdo_data_edit.setToolTip("Path to the SDO data repository")
         self.sdo_data_edit.returnPressed.connect(self.update_sdo_data_dir)
-        layout.addWidget(self.sdo_data_edit, 0, 1)
-        sdo_browse_button = QPushButton("Browse")
-        sdo_browse_button.clicked.connect(self.open_sdo_file_dialog)
-        layout.addWidget(sdo_browse_button, 0, 2)
+        self.sdo_browse_button.clicked.connect(self.open_sdo_file_dialog)
 
-        # GX Model Repository
-        layout.addWidget(QLabel("GX Model Repository:"), 1, 0)
-        self.gx_model_edit = QLineEdit()
         self.gx_model_edit.setText(GXMODEL_DIR)
-        self.gx_model_edit.setToolTip("Path to the GX model repository")
         self.gx_model_edit.returnPressed.connect(self.update_gxmodel_dir)
-        layout.addWidget(self.gx_model_edit, 1, 1)
-        gx_browse_button = QPushButton("Browse")
-        gx_browse_button.clicked.connect(self.open_gx_file_dialog)
-        layout.addWidget(gx_browse_button, 1, 2)
+        self.gx_browse_button.clicked.connect(self.open_gx_file_dialog)
 
-        # External Box Path
-        layout.addWidget(QLabel("External Box Path:"), 2, 0)
-        self.external_box_edit = QLineEdit()
-        # self.external_box_edit.setText(os.getcwd())
-        self.external_box_edit.setToolTip("Path to the external box, if exist.")
         self.external_box_edit.returnPressed.connect(self.update_external_box_dir)
-        layout.addWidget(self.external_box_edit, 2, 1)
-        external_browse_button = QPushButton("Browse")
-        external_browse_button.clicked.connect(self.open_external_file_dialog)
-        layout.addWidget(external_browse_button, 2, 2)
-
-        group_box.setLayout(layout)
-        self.main_layout.addWidget(group_box)
+        self.external_browse_button.clicked.connect(self.open_external_file_dialog)
 
     def update_sdo_data_dir(self):
         """
         Updates the SDO data directory path based on the user input.
         """
-        new_path = self.sdo_data_edit.text()
+        new_path = self.ui.sdo_data_edit.text()
         self.update_dir(new_path, DOWNLOAD_DIR)
         self.update_command_display()
 
@@ -187,7 +152,7 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the GX model directory path based on the user input.
         """
-        new_path = self.gx_model_edit.text()
+        new_path = self.ui.gx_model_edit.text()
         self.update_dir(new_path, GXMODEL_DIR)
         self.update_command_display()
 
@@ -296,224 +261,51 @@ class PyAmppGUI(QMainWindow):
             self.read_external_box()
 
     def add_model_configuration_section(self):
-        """
-        Adds the model configuration section to the main layout.
-        """
-        group_box = QGroupBox("Model Configuration")
-        main_layout = QVBoxLayout()
-
-        # Jump-to Action
-        jump_to_action_layout = QHBoxLayout()
-        jump_to_action_layout.addWidget(QLabel("Jump-to Action:"))
-        self.jump_to_action_combo = QComboBox()
-        self.jump_to_action_combo.addItems(['none', 'potential', 'nIff', 'lines', 'chromo'])
-        jump_to_action_layout.addWidget(self.jump_to_action_combo)
-        jump_to_action_layout.addStretch()  # Add stretch to push elements to the left
-        main_layout.addLayout(jump_to_action_layout)
-
-        # Model Time
-        self.model_time_layout = QHBoxLayout()
-        self.model_time_layout.addWidget(QLabel("Time [UT]:"))
-
-        self.model_time_edit = QDateTimeEdit()
+        self.jump_to_action_combo.addItems(['none', 'potential', 'NLFFF', 'lines', 'chromo'])
         self.model_time_edit.setDateTime(QDateTime.currentDateTimeUtc())
-        self.model_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.model_time_edit.setCalendarPopup(True)
         self.model_time_edit.setDateTimeRange(QDateTime(2010, 1, 1, 0, 0, 0), QDateTime(QDateTime.currentDateTimeUtc()))
-        self.model_time_edit.setCalendarWidget(QCalendarWidget())
-        self.model_time_edit.setToolTip("Model time in UT")
         self.model_time_edit.dateTimeChanged.connect(self.on_time_input_changed)
-        self.model_time_layout.addWidget(self.model_time_edit)
-        self.model_time_layout.addStretch()  # Add stretch
-        main_layout.addLayout(self.model_time_layout)
 
-        # Model Coordinates
-        coords_layout = QHBoxLayout()
-        self.coord_label = QLabel("Center Coords in arcsec:")
-        coords_layout.addWidget(self.coord_label)
-        self.coord_x_label = QLabel("X:")
-        coords_layout.addWidget(self.coord_x_label)
-        self.coord_x_edit = CustomQLineEdit("0.0")
-        # self.coord_x_edit.setAlignment(Qt.AlignTrailing)
-        self.coord_x_edit.setToolTip("Solar X coordinate of the model center in arcsec")
         self.coord_x_edit.returnPressed.connect(lambda: self.on_coord_x_input_return_pressed(self.coord_x_edit))
-        coords_layout.addWidget(self.coord_x_edit)
-        self.coord_y_label = QLabel("Y:")
-        coords_layout.addWidget(self.coord_y_label)
-        self.coord_y_edit = CustomQLineEdit("0.0")
-        self.coord_y_edit.setToolTip("Solar Y coordinate of the model center in arcsec")
         self.coord_y_edit.returnPressed.connect(lambda: self.on_coord_y_input_return_pressed(self.coord_y_edit))
-        self.coord_x_label.setFixedWidth(30)
-        self.coord_y_label.setFixedWidth(30)
-        self.coord_label.setFixedWidth(150)
-        self.coord_x_edit.setFixedWidth(100)
-        self.coord_y_edit.setFixedWidth(100)
-        coords_layout.addWidget(self.coord_y_edit)
 
-        # Coordinate System
-        self.hpc_radio_button = QRadioButton("Helioprojective")
-        self.hpc_radio_button.setChecked(True)
-        self.hpc_radio_button.setToolTip("Use Helioprojective coordinates frame to define the model center")
         self.hpc_radio_button.toggled.connect(self.update_hpc_state)
-        coords_layout.addWidget(self.hpc_radio_button)
-        self.hgc_radio_button = QRadioButton("Carrington")
-        self.hgc_radio_button.setToolTip("Use Heliographic Carrington coordinates frame to define the model center")
         self.hgc_radio_button.toggled.connect(self.update_hgc_state)
-        coords_layout.addWidget(self.hgc_radio_button)
-        self.hgs_radio_button = QRadioButton("Stonyhurst")
-        self.hgs_radio_button.setToolTip("Use Heliographic Stonyhurst coordinates frame to define the model center")
         self.hgs_radio_button.toggled.connect(self.update_hgs_state)
-        coords_layout.addWidget(self.hgs_radio_button)
-        coords_layout.addStretch()
-        main_layout.addLayout(coords_layout)
 
-        # Model Gridpoints
-        grid_layout = QHBoxLayout()
-        grid_layout.addWidget(QLabel("Grid Size in pix"))
-        grid_layout.addWidget(QLabel("X:"))
-        self.grid_x_edit = CustomQLineEdit("64")
-        self.grid_x_edit.setToolTip("Number of grid points in the x-direction")
         self.grid_x_edit.returnPressed.connect(lambda: self.on_grid_x_input_return_pressed(self.grid_x_edit))
-        self.grid_x_edit.setFixedWidth(100)
-        self.grid_x_edit.setCursorPosition(0)
-        grid_layout.addWidget(self.grid_x_edit)
-        grid_layout.addWidget(QLabel("Y:"))
-        self.grid_y_edit = CustomQLineEdit("64")
-        self.grid_y_edit.setToolTip("Number of grid points in the y-direction")
         self.grid_y_edit.returnPressed.connect(lambda: self.on_grid_y_input_return_pressed(self.grid_y_edit))
-        self.grid_y_edit.setFixedWidth(100)
-        self.grid_y_edit.setCursorPosition(0)
-        grid_layout.addWidget(self.grid_y_edit)
-        grid_layout.addWidget(QLabel("Z:"))
-        self.grid_z_edit = CustomQLineEdit("64")
-        self.grid_z_edit.setToolTip("Number of grid points in the z-direction")
         self.grid_z_edit.returnPressed.connect(lambda: self.on_grid_z_input_return_pressed(self.grid_z_edit))
-        self.grid_z_edit.setFixedWidth(100)
-        self.grid_z_edit.setCursorPosition(0)
-        grid_layout.addWidget(self.grid_z_edit)
-        grid_layout.addStretch()
-        main_layout.addLayout(grid_layout)
-
-        # Resolution and Padding Zone Size
-        res_padding_layout = QHBoxLayout()
-        res_padding_layout.addWidget(QLabel("Res. [km]:"))
-        self.res_edit = CustomQLineEdit('1400')
-        self.res_edit.setFixedWidth(100)
-        self.res_edit.setToolTip("Resolution in km")
-        self.res_edit.setCursorPosition(0)
         self.res_edit.returnPressed.connect(lambda: self.on_res_input_return_pressed(self.res_edit))
-        res_padding_layout.addWidget(self.res_edit)
-        res_padding_layout.addWidget(QLabel("Padding (%):"))
-        self.padding_size_edit = CustomQLineEdit()
-        self.padding_size_edit.setFixedWidth(100)
-        self.padding_size_edit.setCursorPosition(0)
-        self.padding_size_edit.setToolTip(
-            "Padding as a percentage of box dimensions, increases each side of the box for extended margins.")
         self.padding_size_edit.returnPressed.connect(
             lambda: self.on_padding_size_input_return_pressed(self.padding_size_edit))
-        self.padding_size_edit.setText("25")
-        res_padding_layout.addWidget(self.padding_size_edit)
-        res_padding_layout.addStretch()  # Add stretch
-        main_layout.addLayout(res_padding_layout)
-
-        # Set the main layout for the group box
-        group_box.setLayout(main_layout)
-        self.main_layout.addWidget(group_box)
 
     def add_options_section(self):
         """
         Adds the options section to the main layout.
         """
-        group_box = QGroupBox("Options")
-        layout = QGridLayout()
-
-        # Save Options
-        self.save_empty_box = QCheckBox("Save Empty Box")
-        layout.addWidget(self.save_empty_box, 1, 0)
-        self.save_potential_box = QCheckBox("Save Potential Box")
-        layout.addWidget(self.save_potential_box, 1, 1)
-        self.save_bounds_box = QCheckBox("Save Bounds Box")
-        layout.addWidget(self.save_bounds_box, 1, 2)
-
-        # Download Maps
-        self.download_aia_euv = QCheckBox("Download AIA/EUV contextual maps")
-        layout.addWidget(self.download_aia_euv, 0, 0)
-        self.download_aia_uv = QCheckBox("Download AIA/UV contextual maps")
-        layout.addWidget(self.download_aia_uv, 0, 1)
-
-        # Execution Controls
-        self.stop_after_potential_box = QCheckBox("Stop after the potential box is generated")
-        layout.addWidget(self.stop_after_potential_box, 2, 0)
-        self.skip_nlfff_extrapolation = QCheckBox("Skip NLFFF extrapolation")
-        layout.addWidget(self.skip_nlfff_extrapolation, 2, 1)
-
-        group_box.setLayout(layout)
-        self.main_layout.addWidget(group_box)
+        pass
 
     def add_cmd_display(self):
         """
         Adds the command display section to the main layout.
         """
-        # Command Line Equivalent Display
-        self.cmd_display_edit = QTextEdit()
-        self.cmd_display_edit.setReadOnly(True)
-        self.cmd_display_edit.setMaximumHeight(75)  # Adjusted smaller height for the command display area
-
-        # Setting a monospace font and appropriate size
-        font = QFont('Arial', 12)
-        font.setWeight(QFont.Light)
-        self.cmd_display_edit.setFont(font)
-        self.main_layout.addWidget(self.cmd_display_edit)
+        pass
 
     def add_cmd_buttons(self):
         """
         Adds the command buttons to the main layout.
         """
-        # Command Buttons
-        cmd_button_layout = QHBoxLayout()
-        self.execute_button = QPushButton("Execute")
-        self.execute_button.setText("")
-        self.execute_button.setIcon(QIcon(str(svg_dir / 'play.svg')))
         self.execute_button.clicked.connect(self.execute_command)
-        self.execute_button.setToolTip("Create GXbox with the given parameters")
-        self.execute_button.setFixedWidth(50)
-        cmd_button_layout.addWidget(self.execute_button)
-
-        self.save_button = QPushButton("Save")
-        self.save_button.setText("")
-        self.save_button.setIcon(QIcon(str(svg_dir / 'save.svg')))
         self.save_button.clicked.connect(self.save_command)
-        self.save_button.setToolTip("Save the GXbox")
-        self.save_button.setFixedWidth(50)
-        cmd_button_layout.addWidget(self.save_button)
-
-        self.clear_button = QPushButton("Refresh")
-        self.clear_button.setText("")
-        self.clear_button.setIcon(QIcon(str(svg_dir / 'refresh.svg')))
-        self.clear_button.clicked.connect(self.refresh_command)
-        self.clear_button.setToolTip("Refresh the session")
-        self.clear_button.setFixedWidth(50)
-        cmd_button_layout.addWidget(self.clear_button)
-
-        self.clear_button = QPushButton("Clear")
-        self.clear_button.setText("")
-        self.clear_button.setIcon(QIcon(str(svg_dir / 'clear.svg')))
-        self.clear_button.clicked.connect(self.clear_command)
-        self.clear_button.setToolTip("Clear the status log")
-        self.clear_button.setFixedWidth(50)
-        cmd_button_layout.addWidget(self.clear_button)
-        cmd_button_layout.addStretch()  # Add stretch
-        self.main_layout.addLayout(cmd_button_layout)
+        self.clear_button_refresh.clicked.connect(self.refresh_command)
+        self.clear_button_clear.clicked.connect(self.clear_command)
 
     def add_status_log(self):
         """
         Adds the status log section to the main layout.
         """
-        # Status Log
-        self.status_log_edit = QTextEdit()
-        self.status_log_edit.setReadOnly(True)
-        self.status_log_edit.setMinimumHeight(200)  # Adjusted smaller height for the command display area
-        self.main_layout.addWidget(self.status_log_edit)
+        pass
 
     @validate_number
     def on_coord_x_input_return_pressed(self, widget):
