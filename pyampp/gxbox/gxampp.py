@@ -144,7 +144,7 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the SDO data directory path based on the user input.
         """
-        new_path = self.ui.sdo_data_edit.text()
+        new_path = self.sdo_data_edit.text()
         self.update_dir(new_path, DOWNLOAD_DIR)
         self.update_command_display()
 
@@ -152,7 +152,7 @@ class PyAmppGUI(QMainWindow):
         """
         Updates the GX model directory path based on the user input.
         """
-        new_path = self.ui.gx_model_edit.text()
+        new_path = self.gx_model_edit.text()
         self.update_dir(new_path, GXMODEL_DIR)
         self.update_command_display()
 
