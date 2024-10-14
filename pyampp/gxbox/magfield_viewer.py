@@ -515,7 +515,7 @@ class MagFieldViewer(BackgroundPlotter):
         n_points_label = QLabel("# of Field Lines:")
         n_points_label.setToolTip(
             "Enter the number of seed points for the field lines.")
-        self.n_points_input = QLineEdit("10")
+        self.n_points_input = QLineEdit("100")
         self.n_points_input.setToolTip(
             "Enter the number of seed points for the field lines.")
         self.n_points_input.returnPressed.connect(lambda: self._on_n_points_input_returnPressed(self.n_points_input))
