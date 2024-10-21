@@ -168,21 +168,31 @@ def read_b3d_h5(filename):
     """
     Read B3D data from an HDF5 file and populate a dictionary.
 
-Example:
-    b3dbox = read_b3d_h5('path_to_file.h5')
-    ## get the potential field
-    bx_pot = b3dbox['pot']['bx']
-    by_pot = b3dbox['pot']['by']
-    bz_pot = b3dbox['pot']['bz']
-    ## get the NLFFF field
-    bx_nlf = b3dbox['nlfff']['bx']
-    by_nlf = b3dbox['nlfff']['by']
-    bz_nlf = b3dbox['nlfff']['bz']
+    The resulting dictionary will contain keys corresponding to different
+    magnetic field models (e.g., 'pot' for potential fields and 'nlfff' for
+    nonlinear force-free fields), and each model will have sub-keys for
+    the magnetic field components (e.g., 'bx', 'by', 'bz').
 
     :param filename: str
         The path to the HDF5 file.
     :return: dict
         A dictionary containing the B3D data.
+
+    :example:
+
+    .. code-block:: python
+
+        b3dbox = read_b3d_h5('path_to_file.h5')
+
+        # Get the potential field components
+        bx_pot = b3dbox['pot']['bx']
+        by_pot = b3dbox['pot']['by']
+        bz_pot = b3dbox['pot']['bz']
+
+        # Get the NLFFF field components
+        bx_nlf = b3dbox['nlfff']['bx']
+        by_nlf = b3dbox['nlfff']['by']
+        bz_nlf = b3dbox['nlfff']['bz']
     """
     box_b3d = {}
     with h5py.File(filename, 'r') as hdf_file:
