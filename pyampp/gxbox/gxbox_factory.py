@@ -28,8 +28,10 @@ from pyampp.gxbox.magfield_viewer import MagFieldViewer
 from pyampp.util.config import *
 from pyampp.util.lff import mf_lfff
 
+
 os.environ['OMP_NUM_THREADS'] = '16'  # number of parallel threads
 locale.setlocale(locale.LC_ALL, "C");
+
 
 
 ## todo add chrom mask to the tool
@@ -765,8 +767,8 @@ class GxBox(QMainWindow):
             bnddata = self.map_bottom.data
             bnddata[np.isnan(bnddata)] = 0.0
 
-            with open('bnddata.pkl', 'wb') as f:
-                pickle.dump(bnddata, f)
+            # with open('bnddata.pkl', 'wb') as f:
+            #     pickle.dump(bnddata, f)
             maglib_lff.set_field(bnddata)
             ## the axis order in res is y, x, z. so we need to swap the first two axes, so that the order becomes x, y, z.
             res = maglib_lff.lfff_cube(self.box.dims_pix[-1].value, alpha=0.0)
@@ -778,6 +780,8 @@ class GxBox(QMainWindow):
         if b3dtype == 'nlfff':
             if self.box.b3d['nlfff'] is None:
                 self.box.b3d['nlfff'] = {}
+                # if 'lfff' not in self.box.b3d.keys():
+                #     self.box.b3d['lfff'] = {}
                 bx_lff, by_lff, bz_lff = [self.box.b3d['pot'][k].swapaxes(0, 1) for k in ("by", "bx", "bz")]
 
                 # replace bottom boundary of lff solution with initial boundary conditions
@@ -799,10 +803,6 @@ class GxBox(QMainWindow):
                 by_lff[:, :, 0] = self.bvect_bottom_data['by']
                 bz_lff[:, :, 0] = self.bvect_bottom_data['bz']
 
-                with open('inputdata.pkl', 'wb') as f:
-                    pickle.dump([bx_lff, by_lff, bz_lff], f)
-
-                # return
                 import time
                 t0 = time.time()
                 maglib = MagFieldWrapper()
@@ -817,12 +817,12 @@ class GxBox(QMainWindow):
                 self.box.b3d['nlfff']['by'] = by_nlff
                 self.box.b3d['nlfff']['bz'] = bz_nlff
 
-                with open('nlfffdata.pkl', 'wb') as f:
-                    pickle.dump(self.box.b3d['nlfff'], f)
 
         self.visualizer = MagFieldViewer(self.box, parent=self, box_norm_direction=box_norm_direction,
                                          box_view_up=box_view_up, time=self.time, b3dtype=b3dtype)
         self.visualizer.show()
+
+
 
     def update_bottom_map(self, map_name):
         """

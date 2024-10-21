@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import  QMessageBox
 
 import numpy as np
 from astropy.io import fits
+import h5py
 
 def hmi_disambig(azimuth_map, disambig_map, method=2):
     """
@@ -162,3 +163,50 @@ def read_gxsim_b3d_sav(savfile):
         pickle.dump(gxboxdata, f)
     print(f'{savfile} is saved as {boxfilenew}')
     return boxfilenew
+
+def read_b3d_h5(filename):
+    """
+    Read B3D data from an HDF5 file and populate a dictionary.
+
+Example:
+    b3dbox = read_b3d_h5('path_to_file.h5')
+    ## get the potential field
+    bx_pot = b3dbox['pot']['bx']
+    by_pot = b3dbox['pot']['by']
+    bz_pot = b3dbox['pot']['bz']
+    ## get the NLFFF field
+    bx_nlf = b3dbox['nlfff']['bx']
+    by_nlf = b3dbox['nlfff']['by']
+    bz_nlf = b3dbox['nlfff']['bz']
+
+    :param filename: str
+        The path to the HDF5 file.
+    :return: dict
+        A dictionary containing the B3D data.
+    """
+    box_b3d = {}
+    with h5py.File(filename, 'r') as hdf_file:
+        for model_type in hdf_file.keys():
+            group = hdf_file[model_type]
+            box_b3d[model_type] = {}
+            for component in group.keys():
+                box_b3d[model_type][component] = group[component][:]
+    return box_b3d
+
+def write_b3d_h5(filename, box_b3d):
+    """
+    Write B3D data to an HDF5 file from a dictionary.
+
+    :param filename: str
+        The path to the HDF5 file.
+    :param box_b3d: dict
+        A dictionary containing the B3D data to be written.
+    """
+    with h5py.File(filename, 'w') as hdf_file:
+        for model_type, components in box_b3d.items():
+            if components is None:
+                print(f"Warning: {model_type} components are None, skipping.")
+                continue
+            group = hdf_file.create_group(model_type)
+            for component, data in components.items():
+                group.create_dataset(component, data=data)

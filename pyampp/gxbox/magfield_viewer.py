@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from astropy.time import Time
-from pyampp.gxbox.boxutils import validate_number
+from pyampp.gxbox.boxutils import validate_number, read_b3d_h5, write_b3d_h5
 import pickle
 import vtk
 
@@ -534,7 +534,20 @@ class MagFieldViewer(BackgroundPlotter):
         else:
             self.send_button.setToolTip(f"Send the field lines to {self.parent.__class__}.")
         self.send_button.clicked.connect(self.send_streamlines)
+
+        self.load_box_button = QPushButton("Load Box")
+        self.load_box_button.setToolTip("Load the box data from a .hd5 file.")
+        self.load_box_button.clicked.connect(self.load_box)
+
+
+        self.save_box_button = QPushButton("Save Box")
+        self.save_box_button.setToolTip("Save the box data to a .hd5 file.")
+        self.save_box_button.clicked.connect(self.save_box)
+
+
         action_layout.addWidget(self.send_button)
+        action_layout.addWidget(self.load_box_button)
+        action_layout.addWidget(self.save_box_button)
 
         # self.update_button = QPushButton("Update")
         # self.update_button.clicked.connect(self.update_plot)
@@ -1282,3 +1295,15 @@ class MagFieldViewer(BackgroundPlotter):
                         streamlines.append(sphere['streamlines'])
             if streamlines != []:
                 self.parent.plot_fieldlines(streamlines, z_base=self.grid_zbase)
+
+
+    def save_box(self):
+        box_dims_str = 'x'.join(map(str, self.box.dims_pix))
+        default_filename = f'b3d_data_{self.box._frame_obs.obstime.to_datetime().strftime("%Y%m%dT%H%M%S")}_dim{box_dims_str}.h5'
+        filename = QFileDialog.getSaveFileName(self, "Save Box", default_filename, "HDF5 Files (*.h5)")[0]
+        write_b3d_h5(filename, self.box.b3d)
+
+    def load_box(self):
+        default_filename = "b3d_data.h5"
+        filename = QFileDialog.getOpenFileName(self, "Load Box", default_filename, "HDF5 Files (*.h5)")[0]
+        read_b3d_h5(filename, self.box.b3d)
