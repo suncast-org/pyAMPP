@@ -52,6 +52,47 @@ def hmi_disambig(azimuth_map, disambig_map, method=2):
 
 
 def hmi_b2ptr(map_field, map_inclination, map_azimuth):
+    '''
+    Converts the magnetic field components from SDO/HMI
+    data from field strength, inclination, and azimuth into components of the
+    magnetic field in the local heliographic coordinate system (B_phi, B_theta, B_r).
+
+    This function transforms the magnetic field vector in the local (xi, eta, zeta)
+    system to the heliographic (phi, theta, r) system. The transformation accounts for
+    the observer's position and orientation relative to the Sun.
+
+    :param map_field: `sunpy.map.Map`,
+        The magnetic field strength map from HMI, given in Gauss.
+
+    :param map_inclination: `sunpy.map.Map`,
+        The magnetic field inclination angle map from HMI, in degrees, where 0 degrees is
+        parallel to the radial direction.
+
+    :param map_azimuth: `sunpy.map.Map`,
+        The magnetic field azimuth angle map from HMI, in degrees, measured counterclockwise
+        from the north in the plane perpendicular to the radial direction.
+
+    :return: tuple,
+        A tuple containing the three magnetic field component maps in the heliographic
+        coordinate system:
+
+        - `map_bp` (`sunpy.map.Map`): The magnetic field component in the phi direction (B_phi).
+        - `map_bt` (`sunpy.map.Map`): The magnetic field component in the theta direction (B_theta).
+        - `map_br` (`sunpy.map.Map`): The magnetic field component in the radial direction (B_r).
+
+    :example:
+
+    .. code-block:: python
+
+        # Load the HMI field, inclination, and azimuth maps
+        map_field = sunpy.map.Map('hmi_field.fits')
+        map_inclination = sunpy.map.Map('hmi_inclination.fits')
+        map_azimuth = sunpy.map.Map('hmi_azimuth.fits')
+
+        # Convert to heliographic coordinates
+        map_bp, map_bt, map_br = hmi_b2ptr(map_field, map_inclination, map_azimuth)
+
+    '''
     sz = map_field.data.shape
     ny, nx = sz
 
@@ -105,9 +146,9 @@ def validate_number(func):
     """
     Decorator to validate if the input in the widget is a number.
 
-    :param func: function
+    :param func: function,
         The function to wrap.
-    :return: function
+    :return: function ,
         The wrapped function.
     """
 
@@ -126,9 +167,9 @@ def set_QLineEdit_text_pos(line_edit, text):
     """
     Sets the text of the QLineEdit and moves the cursor to the beginning.
 
-    :param line_edit: QLineEdit
+    :param line_edit: QLineEdit,
         The QLineEdit widget.
-    :param text: str
+    :param text: str,
         The text to set.
     """
     line_edit.setText(text)
@@ -138,7 +179,7 @@ def set_QLineEdit_text_pos(line_edit, text):
 def read_gxsim_b3d_sav(savfile):
     '''
     Read the B3D data from the .sav file and save it as a .gxbox file
-    :param savfile: str
+    :param savfile: str,
         The path to the .sav file.
 
 
@@ -173,9 +214,9 @@ def read_b3d_h5(filename):
     nonlinear force-free fields), and each model will have sub-keys for
     the magnetic field components (e.g., 'bx', 'by', 'bz').
 
-    :param filename: str
+    :param filename: str,
         The path to the HDF5 file.
-    :return: dict
+    :return: dict,
         A dictionary containing the B3D data.
 
     :example:
@@ -207,9 +248,9 @@ def write_b3d_h5(filename, box_b3d):
     """
     Write B3D data to an HDF5 file from a dictionary.
 
-    :param filename: str
+    :param filename: str,
         The path to the HDF5 file.
-    :param box_b3d: dict
+    :param box_b3d: dict,
         A dictionary containing the B3D data to be written.
     """
     with h5py.File(filename, 'w') as hdf_file:
