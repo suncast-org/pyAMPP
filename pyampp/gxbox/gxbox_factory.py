@@ -1103,7 +1103,7 @@ def main():
     parser.add_argument('--hgc', action='store_true', help='Use Heliographic Carrington coordinates')
     parser.add_argument('--hgs', action='store_true', help='Use Heliographic Stonyhurst coordinates')
     parser.add_argument('--box_dims', nargs=3, type=int, default=[64, 64, 64],
-                        help='Box dimensions in pixels as three integers [dx, dy, dz]')
+                        help='Box dimensions in pixels as three integers')
     parser.add_argument('--box_res', type=float, default=1.4, help='Box resolution in Mm per pixel')
     parser.add_argument('--observer', help='Observer location, default is Earth')
     parser.add_argument('--pad_frac', type=float, default=0.25,
