@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>643</width>
+    <height>273</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>GxBox Map Viewer</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <property name="spacing">
+     <number>10</number>
+    </property>
+    <property name="leftMargin">
+     <number>15</number>
+    </property>
+    <property name="topMargin">
+     <number>15</number>
+    </property>
+    <property name="rightMargin">
+     <number>15</number>
+    </property>
+    <property name="bottomMargin">
+     <number>15</number>
+    </property>
+    <item>
+     <layout class="QVBoxLayout" name="canvasLayout"/>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="controlLayout">
+      <item>
+       <widget class="QGroupBox" name="mapControlGroup">
+        <property name="title">
+         <string>Map Controls</string>
+        </property>
+        <layout class="QVBoxLayout" name="mapControlLayout">
+         <item>
+          <layout class="QHBoxLayout" name="mapControlLayout1">
+           <item>
+            <widget class="QLabel" name="mapBottomSelectorLabel">
+             <property name="text">
+              <string>Bottom Map:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="mapBottomSelector"/>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="mapControlLayout2">
+           <item>
+            <widget class="QLabel" name="mapContextSelectorLabel">
+             <property name="text">
+              <string>Context Map:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="mapContextSelector"/>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="mapControlLayout3">
+           <item>
+            <widget class="QLabel" name="b3dModelSelectorLabel">
+             <property name="text">
+              <string>3D Mag. Model:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="b3dModelSelector"/>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="fieldlineControlGroup">
+        <property name="title">
+         <string>Field Line Controls</string>
+        </property>
+        <layout class="QVBoxLayout" name="fieldlineControlLayout">
+         <item>
+          <layout class="QHBoxLayout" name="fieldlineControlLayout1">
+           <item>
+            <widget class="QPushButton" name="visualizeButton">
+             <property name="text">
+              <string>3D viewer</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="toggleFieldlinesButton">
+             <property name="text">
+              <string>Hide</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="clearFieldlinesButton">
+             <property name="text">
+              <string>Clear</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="saveFieldlinesButton">
+             <property name="text">
+              <string>Save</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="fieldlineControlLayout2">
+           <item>
+            <widget class="QLabel" name="bminmaxLabel">
+             <property name="text">
+              <string>Bmin/Bmax [G]:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLineEdit" name="bminInput">
+             <property name="text">
+              <string>0</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLineEdit" name="bmaxInput">
+             <property name="text">
+              <string>1000</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="fieldlineControlLayout3">
+           <item>
+            <widget class="QLabel" name="cmapLabel">
+             <property name="text">
+              <string>cmap:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QComboBox" name="cmapSelector"/>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="cmapClipCheckbox">
+             <property name="text">
+              <string>Clip</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
