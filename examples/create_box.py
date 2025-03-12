@@ -1,8 +1,13 @@
+#!/usr/bin/env python3
+
 import astropy.time
 import sunpy.sun.constants
 from astropy.coordinates import SkyCoord
 from sunpy.coordinates import Heliocentric, Helioprojective,get_earth
 import astropy.units as u
+
+from PyQt5.QtWidgets import QApplication
+app = QApplication([])
 from pyampp.gxbox.gxbox_factory import GxBox
 
 time = astropy.time.Time('2014-11-01T16:40:00')
@@ -21,7 +26,7 @@ box_res = 1.4 * u.Mm
 
 gxbox = GxBox(time, observer, box_origin, box_dimensions)
 gxbox.show()
-
+app.exec_()
 
 # ## process hmi map
 # from pyampp.util.config import HMI_B_SEGMENTS

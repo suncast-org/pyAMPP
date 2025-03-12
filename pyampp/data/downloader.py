@@ -3,7 +3,8 @@ import os
 import astropy.units as u
 from sunpy.net import Fido, attrs as a
 from glob import glob
-
+from datetime import timedelta
+import re
 
 class SDOImageDownloader:
     """
@@ -69,31 +70,6 @@ class SDOImageDownloader:
         }
         return patterns
 
-    # def _check_files_exist(self, datadir, returnfilelist=False):
-    #     """
-    #     Checks if the files exist in the specified directory based on pre-defined patterns.
-    #
-    #     :param datadir: The directory where files are expected to be located.
-    #     :type datadir: str
-    #     :param returnfilelist: Whether to return the first file found for each pattern, defaults to False.
-    #     :type returnfilelist: bool, optional
-    #     :return: A dictionary indicating file existence or paths for each data category.
-    #     :rtype: dict
-    #     """
-    #     patterns = self._generate_filename_patterns(datadir)
-    #     existence_report = {}
-    #     for category, patterns_dict in patterns.items():
-    #         existence_report[category] = {}
-    #         for key, pattern in patterns_dict.items():
-    #             found_files = glob(pattern)
-    #             if returnfilelist:
-    #                 # Return the first file found for each pattern if any are found, else None
-    #                 # print(found_files)
-    #                 existence_report[category][key] = found_files[0] if found_files else None
-    #             else:
-    #                 # Return True if any files are found, False otherwise
-    #                 existence_report[category][key] = bool(found_files)
-    #     return existence_report
 
     def _check_files_exist(self, datadir, returnfilelist=False):
         """
@@ -108,19 +84,38 @@ class SDOImageDownloader:
         """
         patterns = self._generate_filename_patterns(datadir)
         existence_report = {}
+
+        time_tolerances = {
+            'euv': timedelta(seconds=12),
+            'uv': timedelta(seconds=24),
+            'hmi_b': timedelta(seconds=720),
+            'hmi_m': timedelta(seconds=720),
+            'hmi_ic': timedelta(seconds=720)
+        }
+
+        def file_within_tolerance(filepath, tolerance):
+            filename = os.path.basename(filepath)
+            timestamp_str = re.search(r'\d{4}-\d{2}-\d{2}T\d{6}Z', filename)
+            if not timestamp_str:
+                timestamp_str = re.search(r'\d{8}_\d{6}_TAI', filename)
+            if timestamp_str:
+                file_time = self.time.strptime(timestamp_str.group(), '%Y%m%d_%H%M%S_TAI' if '_' in timestamp_str.group() else '%Y-%m-%dT%H%M%SZ')
+                return round(abs(file_time - self.time).sec, 2) <= tolerance.total_seconds()
+            return False
+
         if returnfilelist:
             for category, patterns_dict in patterns.items():
                 for key, pattern in patterns_dict.items():
                     found_files = glob(pattern)
-                    # Return the first file found for each pattern if any are found, else None
-                    # print(found_files)
+                    found_files = glob(pattern)
+                    found_files = [f for f in found_files if file_within_tolerance(f, time_tolerances[category])]
                     existence_report[key] = found_files[0] if found_files else None
         else:
             for category, patterns_dict in patterns.items():
                 existence_report[category] = {}
                 for key, pattern in patterns_dict.items():
                     found_files = glob(pattern)
-                    # Return True if any files are found, False otherwise
+                    found_files = [f for f in found_files if file_within_tolerance(f, time_tolerances[category])]
                     existence_report[category][key] = bool(found_files)
         return existence_report
 
@@ -140,6 +135,11 @@ class SDOImageDownloader:
             self._handle_uv(all_files)
         if self.hmi:
             self._handle_hmi(all_files)
+
+        files_to_download = list(all_files.values())
+        if len(files_to_download) > 0:
+            print(files_to_download)
+            self._fetch(files_to_download)
         # Re-check file existence after downloads to update the report
         self.existence_report = self._check_files_exist(self.path, returnfilelist=True)
         return self.existence_report
@@ -156,9 +156,12 @@ class SDOImageDownloader:
             # print(f"Missing EUV passbands: {missing_euv}")
         else:
             missing_euv = AIA_EUV_PASSBANDS
-        for pb in missing_euv:
-            wavelength_attr = a.Wavelength(int(pb) * u.AA)
-            all_files[f'euv_{pb}'] = self._search_and_fetch('aia.lev1_euv_12s', wavelength=wavelength_attr,
+
+        if len(missing_euv) > 0:
+            missing_euv = [int(pb) for pb in missing_euv]
+            wavelength_attr = a.AttrOr([a.Wavelength(pb * u.AA) for pb in missing_euv])
+
+            all_files[f'euv'] = self._search('aia.lev1_euv_12s', wavelength=wavelength_attr,
                                                             segments=a.jsoc.Segment('image'))
 
     def _handle_uv(self, all_files):
@@ -174,9 +177,12 @@ class SDOImageDownloader:
         else:
             missing_uv = AIA_UV_PASSBANDS
             print("No existence report provided, downloading all UV segments.")
-        for pb in missing_uv:
-            wavelength_attr = a.Wavelength(int(pb) * u.AA)
-            all_files[f'uv_{pb}'] = self._search_and_fetch('aia.lev1_uv_24s', wavelength=wavelength_attr,
+
+        if len(missing_uv) > 0:
+            missing_uv = [int(pb) for pb in missing_uv]
+            wavelength_attr = a.AttrOr([a.Wavelength(pb * u.AA) for pb in missing_uv])
+
+            all_files[f'uv'] = self._search('aia.lev1_uv_24s', wavelength=wavelength_attr,
                                                            segments=a.jsoc.Segment('image'))
 
     def _handle_hmi(self, all_files):
@@ -200,15 +206,16 @@ class SDOImageDownloader:
             print("No existence report provided, downloading all HMI M segments.")
             missing_hmi_ic = ['continuum']
             print("No existence report provided, downloading all HMI IC segments.")
-        for seg in missing_hmi_b:
-            segment_attr = a.jsoc.Segment(seg)
-            all_files[f'hmi_b_{seg}'] = self._search_and_fetch('hmi.B_720s', segments=segment_attr)
-        if missing_hmi_m:
-            all_files['hmi_m'] = self._search_and_fetch('hmi.M_720s', segments=a.jsoc.Segment('magnetogram'))
-        if missing_hmi_ic:
-            all_files['hmi_ic'] = self._search_and_fetch('hmi.Ic_noLimbDark_720s', segments=a.jsoc.Segment('continuum'))
 
-    def _search_and_fetch(self, series, segments=None, wavelength=None):
+        if len(missing_hmi_b) > 0:
+            segment_attr = a.AttrAnd([a.jsoc.Segment(seg) for seg in missing_hmi_b])
+            all_files[f'hmi_b'] = self._search('hmi.B_720s', segments=segment_attr)
+        if missing_hmi_m:
+            all_files['hmi_m'] = self._search('hmi.M_720s', segments=a.jsoc.Segment('magnetogram'))
+        if missing_hmi_ic:
+            all_files['hmi_ic'] = self._search('hmi.Ic_noLimbDark_720s', segments=a.jsoc.Segment('continuum'))
+
+    def _search(self, series, segments=None, wavelength=None):
         """
         Searches for and fetches files from JSOC based on series, segments, and wavelength.
 
@@ -230,6 +237,9 @@ class SDOImageDownloader:
         print(f"Searching for {series} with attributes {search_attrs}")
         result = Fido.search(*search_attrs)
         print(f"Found {len(result)} records for download.")
-        fetched_files = Fido.fetch(result, path=self.path, overwrite=False)
+        return result
+
+    def _fetch(self, files_to_download, streams=5):
+        fetched_files = Fido.fetch(*files_to_download, path=self.path, overwrite=False, max_conn=streams)
         print(f"Downloaded {len(fetched_files)} files.")
         return fetched_files
