@@ -868,16 +868,17 @@ class MagFieldViewer(BackgroundPlotter):
         bx = self.box.b3d[self.b3dtype]['bx']
         by = self.box.b3d[self.b3dtype]['by']
         bz = self.box.b3d[self.b3dtype]['bz']
-        vectors = np.c_[bx.ravel(order='F'), by.ravel(order='F'), bz.ravel(order='F')]
+
 
         self.grid = pv.ImageData()
         self.grid.dimensions = (len(x), len(y), len(z))
         self.grid.spacing = (x[1] - x[0], y[1] - y[0], z[1] - z[0])
         self.grid.origin = (x.min(), y.min(), z.min())
-        self.grid['vectors'] = vectors
+
         self.grid['bx'] = bx.ravel(order='F')
         self.grid['by'] = by.ravel(order='F')
         self.grid['bz'] = bz.ravel(order='F')
+        self.grid['vectors'] = np.c_[self.grid['bx'] , self.grid['by'], self.grid['bz']]
         self.scalar_selector_items.extend(['bx', 'by', 'bz'])
 
         self.grid_bottom = pv.ImageData()
@@ -1021,6 +1022,8 @@ class MagFieldViewer(BackgroundPlotter):
                                                         cmap='gray', pickable=False, reset_camera=False,
                                                         show_scalar_bar=False)
         else:
+            if slice_z==0:
+                slice_z = 1.0e-6
             new_slice = self.grid.slice(normal='z', origin=(self.grid.origin[0], self.grid.origin[1], slice_z))
             if self.bottom_slice_actor is None:
                 self.bottom_slice_actor = self.add_mesh(new_slice, scalars=scalar, clim=(vmin, vmax), show_edges=False,

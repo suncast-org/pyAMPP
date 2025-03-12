@@ -24,7 +24,8 @@ dependencies = ["sunpy[all]",
     "pyvistaqt",
     "pyqt5",
     "QtPy",
-    "qtrangeslider"]
+    "qtrangeslider",
+    "scipy",]
 dynamic = ["version"]
 
 [project.optional-dependencies]

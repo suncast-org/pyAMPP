@@ -17,7 +17,8 @@ from astropy.time import Time
 from matplotlib import colormaps as mplcmaps
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-from pyAMaFiL.mag_field_wrapper import MagFieldWrapper
+from pyAMaFiL.mag_field_proc import MagFieldProcessor
+from pyAMaFiL.mag_field_lin_fff import MagFieldLinFFF
 from sunpy.coordinates import Heliocentric, HeliographicStonyhurst, Helioprojective, get_earth
 from sunpy.map import Map, coordinate_is_on_solar_disk, make_fitswcs_header
 
@@ -26,7 +27,6 @@ from pyampp.data import downloader
 from pyampp.gxbox.boxutils import hmi_b2ptr, hmi_disambig
 from pyampp.gxbox.magfield_viewer import MagFieldViewer
 from pyampp.util.config import *
-from pyampp.util.lff import mf_lfff
 
 
 os.environ['OMP_NUM_THREADS'] = '16'  # number of parallel threads
@@ -531,6 +531,7 @@ class GxBox(QMainWindow):
         if mapname in self.sdomaps.keys():
             return self.sdomaps[mapname]
 
+        print(f'fov_coords: {fov_coords}')
         loaded_map = Map(self.sdofitsfiles[mapname])
         fov_coords = self.corr_fov_coords(loaded_map, fov_coords)
         loaded_map = loaded_map.submap(fov_coords[0], top_right=fov_coords[1])
@@ -759,26 +760,25 @@ class GxBox(QMainWindow):
         # print(f'type of self.box.b3d is {type(self.box.b3d)}')
         # print(f'value of self.box.b3d is {self.box.b3d}')
         # if b3dtype == 'pot':
-        if self.box.b3d['pot'] is None:
-            if self.map_bottom_selector.currentText() != 'br':
-                self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index('br'))
-            maglib_lff = mf_lfff()
-            ## todo ask Alexey how to get rid of the nan value.
-            bnddata = self.map_bottom.data
-            bnddata[np.isnan(bnddata)] = 0.0
+        if b3dtype == 'nlfff' and self.box.b3d['nlfff'] is not None:
+            pass
+        else:
+            if self.box.b3d['pot'] is None:
+                if self.map_bottom_selector.currentText() != 'br':
+                    self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index('br'))
+                maglib_lff = MagFieldLinFFF()
+                bnddata = self.map_bottom.data
+                bnddata[np.isnan(bnddata)] = 0.0
 
-            # with open('bnddata.pkl', 'wb') as f:
-            #     pickle.dump(bnddata, f)
-            maglib_lff.set_field(bnddata)
-            ## the axis order in res is y, x, z. so we need to swap the first two axes, so that the order becomes x, y, z.
-            res = maglib_lff.lfff_cube(self.box.dims_pix[-1].value, alpha=0.0)
-            self.box.b3d['pot'] = {}
-            self.box.b3d['pot']['bx'] = res['by'].swapaxes(0, 1)
-            self.box.b3d['pot']['by'] = res['bx'].swapaxes(0, 1)
-            self.box.b3d['pot']['bz'] = res['bz'].swapaxes(0, 1)
+                maglib_lff.set_field(bnddata)
+                ## the axis order in res is y, x, z. so we need to swap the first two axes, so that the order becomes x, y, z.
+                pot_res = maglib_lff.lfff_cube(nz = self.box.dims_pix[-1].value, alpha=0.0)
+                self.box.b3d['pot'] = {}
+                self.box.b3d['pot']['bx'] = pot_res['by'].swapaxes(0, 1)
+                self.box.b3d['pot']['by'] = pot_res['bx'].swapaxes(0, 1)
+                self.box.b3d['pot']['bz'] = pot_res['bz'].swapaxes(0, 1)
 
-        if b3dtype == 'nlfff':
-            if self.box.b3d['nlfff'] is None:
+            if b3dtype == 'nlfff':
                 self.box.b3d['nlfff'] = {}
                 # if 'lfff' not in self.box.b3d.keys():
                 #     self.box.b3d['lfff'] = {}
@@ -805,14 +805,14 @@ class GxBox(QMainWindow):
 
                 import time
                 t0 = time.time()
-                maglib = MagFieldWrapper()
-                maglib.load_cube_vars(bx_lff, by_lff, bz_lff, self.box_res.to(u.cm).value)
-                # maglib.load_cube_vars(bx_lff, by_lff, bz_lff, np.array([0.00143678, 0.00143678, 0.00143678]))
+                print(f'Starting NLFFF computation...')
+                maglib = MagFieldProcessor()
+                maglib.load_cube_vars(pot_res)
+
                 res_nlf = maglib.NLFFF()
                 print(f'Time taken to compute NLFFF solution: {time.time() - t0} seconds')
 
-                ## the axis order in res_nlf is y, z, x. so we need to swap the first two axes, so that the order becomes x, y, z.
-                bx_nlff, by_nlff, bz_nlff = [res_nlf[k].transpose((2, 0, 1)) for k in ("bx", "by", "bz")]
+                bx_nlff, by_nlff, bz_nlff = [res_nlf[k].swapaxes(0, 1) for k in ("by", "bx", "bz")]
                 self.box.b3d['nlfff']['bx'] = bx_nlff
                 self.box.b3d['nlfff']['by'] = by_nlff
                 self.box.b3d['nlfff']['bz'] = bz_nlff
@@ -837,8 +837,8 @@ class GxBox(QMainWindow):
         self.map_bottom = map_bottom.reproject_to(self.bottom_wcs_header, algorithm="adaptive",
                                                   roundtrip_coords=False)
 
-        self.box._dims_pix[0] = self.map_bottom.data.shape[0]
-        self.box._dims_pix[1] = self.map_bottom.data.shape[1]
+        self.box._dims_pix[0] = self.map_bottom.data.shape[1]
+        self.box._dims_pix[1] = self.map_bottom.data.shape[0]
 
         self.map_bottom_im = self.map_bottom.plot(axes=self.axes, autoalign=True)
         # self.update_plot()
