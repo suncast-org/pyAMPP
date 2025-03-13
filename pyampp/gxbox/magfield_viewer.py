@@ -885,7 +885,7 @@ class MagFieldViewer(BackgroundPlotter):
         self.grid_bottom.dimensions = (len(x), len(y), 1)
         self.grid_bottom.spacing = (x[1] - x[0], y[1] - y[0], 0)
         self.grid_bottom.origin = (x.min(), y.min(), z.min())
-        self.bottom_name = self.parent.map_bottom_selector.currentText()
+        self.bottom_name = self.parent.mapBottomSelector.currentText()
         self.grid_bottom[self.bottom_name] = self.parent.map_bottom.data.T.ravel(order='F')
         self.scalar_selector_items.append(self.bottom_name)
 

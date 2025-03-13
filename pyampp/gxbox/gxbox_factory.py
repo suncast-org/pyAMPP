@@ -12,6 +12,8 @@ import numpy as np
 from PyQt5.QtWidgets import QApplication, QComboBox,QCheckBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit, \
     QMainWindow, \
     QPushButton, QVBoxLayout, QWidget
+from PyQt5 import uic
+
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 from matplotlib import colormaps as mplcmaps
@@ -612,23 +614,16 @@ class GxBox(QMainWindow):
         """
         Initializes the user interface for the GxBox application.
         """
-        self.setWindowTitle('GxBox Map Viewer')
-        # self.setGeometry(100, 100, 800, 600)
-        # Create a central widget
-        central_widget = QWidget(self)
-        self.setCentralWidget(central_widget)
-
-        # Layout
-        main_layout = QVBoxLayout(central_widget)
-        control_layout = QHBoxLayout()
+        uic.loadUi(Path(__file__).parent / "UI" / "gxbox.ui", self)
 
         # Matplotlib Figure
         self.fig = plt.Figure()
         self.canvas = FigureCanvas(self.fig)
-        main_layout.addWidget(self.canvas)
+        self.canvasLayout.addWidget(self.canvas)
 
         # Add Matplotlib Navigation Toolbar
         self.toolbar = NavigationToolbar(self.canvas, self)
+
         main_layout.addWidget(self.toolbar)
 
         map_control_group = QGroupBox("Map Controls")
@@ -748,7 +743,10 @@ class GxBox(QMainWindow):
         fieldline_control_group.setFixedHeight(160)
         # fieldline_control_group.adjustSize()
 
-        main_layout.addLayout(control_layout)
+
+        self.cmapSelector.addItems(sorted(list(mplcmaps)))  # List all available colormaps
+        self.cmapSelector.setCurrentText("viridis")  # Set a default colormap
+        self.cmapClipCheckbox.setChecked(False)
 
         if self.external_box is not None:
             if os.path.isfile(self.external_box):
@@ -772,7 +770,7 @@ class GxBox(QMainWindow):
         """
         box_norm_direction = self.box_norm_direction()
         box_view_up = self.box_view_up()
-        b3dtype = self.b3d_model_selector.currentText()
+        b3dtype = self.b3dModelSelector.currentText()
         # print(f'type of self.box.b3d is {type(self.box.b3d)}')
         # print(f'value of self.box.b3d is {self.box.b3d}')
         # if b3dtype == 'pot':
@@ -922,9 +920,9 @@ class GxBox(QMainWindow):
             lc.set_visible(self.fieldlines_show_status)
 
         if self.fieldlines_show_status:
-            self.toggle_fieldlines_button.setText("Hide")
+            self.toggleFieldlinesButton.setText("Hide")
         else:
-            self.toggle_fieldlines_button.setText("Show")
+            self.toggleFieldlinesButton.setText("Show")
 
         self.canvas.draw()
 
@@ -1031,8 +1029,8 @@ class GxBox(QMainWindow):
 
         # Fetch Bmin and Bmax values from input fields
         try:
-            bmin = float(self.bmin_input.text())
-            bmax = float(self.bmax_input.text())
+            bmin = float(self.bminInput.text())
+            bmax = float(self.bmaxInput.text())
         except ValueError:
             bmin = 0
             bmax = 1000
@@ -1040,6 +1038,7 @@ class GxBox(QMainWindow):
 
 
         # Normalize the magnitude values for colormap
+
         cmap = plt.get_cmap(self.cmap_selector.currentText())
         # Check if bounds input box is empty
         bounds_text = self.discrete_cmap_bounds_input.text()
@@ -1066,6 +1065,7 @@ class GxBox(QMainWindow):
                 magnitude = field['magnitude']
                 segments = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
                 colors = [cmap(norm(value)) for value in magnitude]  # Colormap for each segment
+
                 if self.bmin_clip_checkbox.isChecked() or self.bmax_clip_checkbox.isChecked():
                     bmin=0.0
                     bmax=5e6 ## an unrealistic large B field value for solar corona
