@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>643</width>
-    <height>273</height>
+    <height>551</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -160,7 +160,7 @@
               <string>Clip</string>
              </property>
             </widget>
-            </item>
+           </item>
           </layout>
          </item>
          <item>
@@ -175,20 +175,45 @@
            <item>
             <widget class="QComboBox" name="cmapSelector"/>
            </item>
-<!--           <item>-->
-<!--            <widget class="QCheckBox" name="cmapClipCheckbox">-->
-<!--             <property name="text">-->
-<!--              <string>Clip</string>-->
-<!--             </property>-->
-<!--            </widget>-->
-<!--           </item>-->
            <item>
             <widget class="QLineEdit" name="cmapDiscreteBoundsInput">
              <property name="text">
-              <string></string>
+              <string/>
              </property>
              <property name="placeholderText">
               <string>Enter bounds (comma-separated)</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="horizontalLayout_2">
+           <item>
+            <widget class="QLabel" name="lineWidthlabel">
+             <property name="text">
+              <string>width:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLineEdit" name="LineWidthInput">
+             <property name="text">
+              <string>0.5</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="LineAlphaLabel">
+             <property name="text">
+              <string>alpha:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLineEdit" name="LineAlphaInput">
+             <property name="text">
+              <string>1.0</string>
              </property>
             </widget>
            </item>
