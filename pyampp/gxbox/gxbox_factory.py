@@ -852,6 +852,7 @@ class GxBox(QMainWindow):
             self.axes_world_coords = self.get_axes_world_coords
         self.fig.clear()
         self.axes = self.fig.add_subplot(projection=self.map_context)
+        self.axes.set_facecolor('black')
         ax = self.axes
         self.map_context_im = self.map_context.plot(axes=ax)
         self.map_context.draw_grid(axes=ax, color='w', lw=0.5)
@@ -988,7 +989,8 @@ class GxBox(QMainWindow):
                 #     mask = np.logical_and(magnitude >= bmin, magnitude <= bmax)
                 #     colors = np.array(colors)[mask]
                 #     segments = np.array(segments)[mask[:-1]]
-                lc = LineCollection(segments, colors=colors, linewidths=0.5)
+                lc = LineCollection(segments, colors=colors, linewidths=float(self.LineWidthInput.text()))
+                lc.set_alpha(float(self.LineAlphaInput.text()))
                 ax.add_collection(lc)
                 self.fieldlines_line_collection.append(lc)
                 if not self.fieldlines_show_status:
