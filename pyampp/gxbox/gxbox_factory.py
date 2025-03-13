@@ -623,130 +623,36 @@ class GxBox(QMainWindow):
 
         # Add Matplotlib Navigation Toolbar
         self.toolbar = NavigationToolbar(self.canvas, self)
+        self.canvasLayout.addWidget(self.toolbar)
 
-        main_layout.addWidget(self.toolbar)
+        self.mapBottomSelector.addItems(list(self.avaliable_maps))
+        self.mapBottomSelector.setCurrentIndex(self.avaliable_maps.index(self.init_map_bottom_name))
+        self.mapBottomSelector.currentTextChanged.connect(self.update_bottom_map)
 
-        map_control_group = QGroupBox("Map Controls")
-        # Horizontal layout for dropdowns and labels
-        map_control_layout = QVBoxLayout()
-        map_control_layout1 = QHBoxLayout()
-        map_control_layout2 = QHBoxLayout()
-        map_control_layout3 = QHBoxLayout()
+        self.mapContextSelector.addItems(list(self.avaliable_maps))
+        self.mapContextSelector.setCurrentIndex(self.avaliable_maps.index(self.init_map_context_name))
+        self.mapContextSelector.currentTextChanged.connect(self.update_context_map)
 
+        self.visualizeButton.setToolTip("Visualize the 3D magnetic field.")
+        self.visualizeButton.clicked.connect(self.visualize_3d_magnetic_field)
 
-        # Dropdown for bottom map selection
-        self.map_bottom_selector = QComboBox()
-        self.map_bottom_selector.addItems(list(self.avaliable_maps))
-        self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index(self.init_map_bottom_name))
-        self.map_bottom_selector.setMaximumWidth(100)
-        self.map_bottom_selector_label = QLabel("Bottom Map:")
-        map_control_layout1.addWidget(self.map_bottom_selector_label)
-        map_control_layout1.addWidget(self.map_bottom_selector)
-
-        # Dropdown for context map selection
-        self.map_context_selector = QComboBox()
-        self.map_context_selector.addItems(list(self.avaliable_maps))
-        self.map_context_selector.setCurrentIndex(self.avaliable_maps.index(self.init_map_context_name))
-        self.map_context_selector.setMaximumWidth(100)
-        self.map_context_selector_label = QLabel("Context Map:")
-        map_control_layout2.addWidget(self.map_context_selector_label)
-        map_control_layout2.addWidget(self.map_context_selector)
-
-        # Dropdown for 3D magnetic model selection
-        self.b3d_model_selector = QComboBox()
-        self.b3d_model_selector.addItems(self.box.b3dtype)
-        self.b3d_model_selector.setCurrentIndex(0)
-        self.b3d_model_selector_label = QLabel("3D Mag. Model:")
-        map_control_layout3.addWidget(self.b3d_model_selector_label)
-        map_control_layout3.addWidget(self.b3d_model_selector)
-
-        map_control_layout.addLayout(map_control_layout1)
-        map_control_layout.addLayout(map_control_layout2)
-        map_control_layout.addLayout(map_control_layout3)
-        map_control_group.setLayout(map_control_layout)
-        control_layout.addWidget(map_control_group)
-        map_control_group.setFixedHeight(160)
-        # map_control_group.adjustSize()
-
-        # Connect dropdowns to their respective handlers
-        self.map_bottom_selector.currentTextChanged.connect(self.update_bottom_map)
-        self.map_context_selector.currentTextChanged.connect(self.update_context_map)
-
-        fieldline_control_group = QGroupBox("Field Line Controls")
-        fieldline_control_layout = QVBoxLayout()
-        fieldline_control_layout1 = QHBoxLayout()
-        fieldline_control_layout2 = QHBoxLayout()
-        fieldline_control_layout3 = QHBoxLayout()
-
-        # Add the visualize button
-        self.visualize_button = QPushButton("3D viewer")
-        self.visualize_button.setToolTip("Visualize the 3D magnetic field.")
-        self.visualize_button.clicked.connect(self.visualize_3d_magnetic_field)
-        fieldline_control_layout1.addWidget(self.visualize_button)
-
-        self.toggle_fieldlines_button = QPushButton("Hide")
-        self.toggle_fieldlines_button.setToolTip("Toggle the visibility of the field lines.")
-        self.toggle_fieldlines_button.clicked.connect(self.toggle_fieldlines_visibility)
-        fieldline_control_layout1.addWidget(self.toggle_fieldlines_button)
-
-        self.clear_fieldlines_button = QPushButton("Clear")
-        self.clear_fieldlines_button.setToolTip("Clear the field lines.")
-        self.clear_fieldlines_button.clicked.connect(self.clear_fieldlines)
-        fieldline_control_layout1.addWidget(self.clear_fieldlines_button)
-
-        self.save_fieldlines_button = QPushButton("Save")
-        self.save_fieldlines_button.setToolTip("Save the field lines to a file.")
-        self.save_fieldlines_button.clicked.connect(
+        self.toggleFieldlinesButton.setToolTip("Toggle the visibility of the field lines.")
+        self.toggleFieldlinesButton.clicked.connect(self.toggle_fieldlines_visibility)
+        self.clearFieldlinesButton.setToolTip("Clear the field lines.")
+        self.clearFieldlinesButton.clicked.connect(self.clear_fieldlines)
+        self.saveFieldlinesButton.setToolTip("Save the field lines to a file.")
+        self.saveFieldlinesButton.clicked.connect(
             lambda: self.save_fieldlines(f'fieldlines_{self.time.to_datetime().strftime("%Y%m%dT%H%M%S")}.pkl'))
-        fieldline_control_layout1.addWidget(self.save_fieldlines_button)
 
-        self.bminmax_label = QLabel("Bmin/Bmax [G]:")
-        self.bmin_input = QLineEdit(self)
-        self.bmin_input.setText("0")  # Set default value
-        self.bmin_clip_checkbox = QCheckBox("Clip")
-        self.bmin_clip_checkbox.setChecked(False)
-        self.bmax_input = QLineEdit(self)
-        self.bmax_input.setText("1000")  # Set default value
-        self.bmax_clip_checkbox = QCheckBox("Clip")
-        self.bmax_clip_checkbox.setChecked(False)
+        self.b3dModelSelector.addItems(self.box.b3dtype)
+        self.b3dModelSelector.setCurrentIndex(0)
 
-        fieldline_control_layout2.addWidget(self.bminmax_label)
-        fieldline_control_layout2.addWidget(self.bmin_input)
-        fieldline_control_layout2.addWidget(self.bmin_clip_checkbox)
-        fieldline_control_layout2.addWidget(self.bmax_input)
-        fieldline_control_layout2.addWidget(self.bmax_clip_checkbox)
-
-        self.cmap_selector = QComboBox(self)
-        self.cmap_selector.addItems(sorted(list(mplcmaps)))  # List all available colormaps
-        self.cmap_selector.setCurrentText("viridis")  # Set a default colormap
-        self.cmap_selector.setMaximumWidth(200)
-        self.discrete_cmap_bounds_input = QLineEdit(self)
-        self.discrete_cmap_bounds_input.setPlaceholderText("Enter bounds (comma-separated)")
-
-
-        # self.cmap_clip_checkbox = QCheckBox("Clip")
-        # self.cmap_clip_checkbox.setChecked(False)
-        # self.cmap_clip_checkbox.clicked.connect(self.toggle_cmap_clip)
-
-        fieldline_control_layout3.addWidget(QLabel("cmap:"))
-        fieldline_control_layout3.addWidget(self.cmap_selector)
-        # fieldline_control_layout3.addWidget(self.cmap_clip_checkbox)
-        fieldline_control_layout3.addWidget(self.discrete_cmap_bounds_input)
-        fieldline_control_layout3.setStretch(0, 1)
-
-        fieldline_control_layout.addLayout(fieldline_control_layout1)
-        fieldline_control_layout.addLayout(fieldline_control_layout2)
-        fieldline_control_layout.addLayout(fieldline_control_layout3)
-
-        fieldline_control_group.setLayout(fieldline_control_layout)
-        control_layout.addWidget(fieldline_control_group)
-        fieldline_control_group.setFixedHeight(160)
-        # fieldline_control_group.adjustSize()
-
+        self.bminClipCheckbox.setChecked(False)
+        self.bmaxClipCheckbox.setChecked(False)
 
         self.cmapSelector.addItems(sorted(list(mplcmaps)))  # List all available colormaps
         self.cmapSelector.setCurrentText("viridis")  # Set a default colormap
-        self.cmapClipCheckbox.setChecked(False)
+        # self.cmapClipCheckbox.setChecked(False)
 
         if self.external_box is not None:
             if os.path.isfile(self.external_box):
@@ -778,8 +684,8 @@ class GxBox(QMainWindow):
             pass
         else:
             if self.box.b3d['pot'] is None:
-                if self.map_bottom_selector.currentText() != 'br':
-                    self.map_bottom_selector.setCurrentIndex(self.avaliable_maps.index('br'))
+                if self.mapBottomSelector.currentText() != 'br':
+                    self.mapBottomSelector.setCurrentIndex(self.avaliable_maps.index('br'))
                 maglib_lff = MagFieldLinFFF()
                 bnddata = self.map_bottom.data
                 bnddata[np.isnan(bnddata)] = 0.0
@@ -900,11 +806,11 @@ class GxBox(QMainWindow):
     #     Toggles the clipping of the colormap.
     #     """
     #     if self.cmap_clip_checkbox.isChecked():
-    #         self.bmax_clip_checkbox.setChecked(True)
-    #         self.bmin_clip_checkbox.setChecked(True)
+    #         self.bmaxClipCheckbox.setChecked(True)
+    #         self.bminClipCheckbox.setChecked(True)
     #     else:
-    #         self.bmax_clip_checkbox.setChecked(False)
-    #         self.bmin_clip_checkbox.setChecked(False)
+    #         self.bmaxClipCheckbox.setChecked(False)
+    #         self.bminClipCheckbox.setChecked(False)
 
     def toggle_fieldlines_visibility(self):
         """
@@ -1039,9 +945,9 @@ class GxBox(QMainWindow):
 
         # Normalize the magnitude values for colormap
 
-        cmap = plt.get_cmap(self.cmap_selector.currentText())
+        cmap = plt.get_cmap(self.cmapSelector.currentText())
         # Check if bounds input box is empty
-        bounds_text = self.discrete_cmap_bounds_input.text()
+        bounds_text = self.cmapDiscreteBoundsInput.text()
         if bounds_text:
             bounds = list(map(float, bounds_text.split(',')))
             norm = mcolors.BoundaryNorm(bounds, cmap.N)
@@ -1066,19 +972,19 @@ class GxBox(QMainWindow):
                 segments = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
                 colors = [cmap(norm(value)) for value in magnitude]  # Colormap for each segment
 
-                if self.bmin_clip_checkbox.isChecked() or self.bmax_clip_checkbox.isChecked():
+                if self.bminClipCheckbox.isChecked() or self.bmaxClipCheckbox.isChecked():
                     bmin=0.0
                     bmax=5e6 ## an unrealistic large B field value for solar corona
-                    if self.bmin_clip_checkbox.isChecked():
-                        bmin = float(self.bmin_input.text())
-                    if self.bmax_clip_checkbox.isChecked():
-                        bmax = float(self.bmax_input.text())
+                    if self.bminClipCheckbox.isChecked():
+                        bmin = float(self.bminInput.text())
+                    if self.bmaxClipCheckbox.isChecked():
+                        bmax = float(self.bmaxInput.text())
                     mask = np.logical_and(magnitude >= bmin, magnitude <= bmax)
                     colors = np.array(colors)[mask]
                     segments = np.array(segments)[mask[:-1]]
                 # if self.cmap_clip_checkbox.isChecked():
-                #     bmin = float(self.bmin_input.text())
-                #     bmax = float(self.bmax_input.text())
+                #     bmin = float(self.bminInput.text())
+                #     bmax = float(self.bmaxInput.text())
                 #     mask = np.logical_and(magnitude >= bmin, magnitude <= bmax)
                 #     colors = np.array(colors)[mask]
                 #     segments = np.array(segments)[mask[:-1]]

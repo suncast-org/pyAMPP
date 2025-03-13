@@ -141,12 +141,26 @@
             </widget>
            </item>
            <item>
+            <widget class="QCheckBox" name="bminClipCheckbox">
+             <property name="text">
+              <string>Clip</string>
+             </property>
+            </widget>
+           </item>
+           <item>
             <widget class="QLineEdit" name="bmaxInput">
              <property name="text">
               <string>1000</string>
              </property>
             </widget>
            </item>
+           <item>
+            <widget class="QCheckBox" name="bmaxClipCheckbox">
+             <property name="text">
+              <string>Clip</string>
+             </property>
+            </widget>
+            </item>
           </layout>
          </item>
          <item>
@@ -161,10 +175,20 @@
            <item>
             <widget class="QComboBox" name="cmapSelector"/>
            </item>
+<!--           <item>-->
+<!--            <widget class="QCheckBox" name="cmapClipCheckbox">-->
+<!--             <property name="text">-->
+<!--              <string>Clip</string>-->
+<!--             </property>-->
+<!--            </widget>-->
+<!--           </item>-->
            <item>
-            <widget class="QCheckBox" name="cmapClipCheckbox">
+            <widget class="QLineEdit" name="cmapDiscreteBoundsInput">
              <property name="text">
-              <string>Clip</string>
+              <string></string>
+             </property>
+             <property name="placeholderText">
+              <string>Enter bounds (comma-separated)</string>
              </property>
             </widget>
            </item>
