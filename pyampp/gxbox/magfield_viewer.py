@@ -1309,4 +1309,6 @@ class MagFieldViewer(BackgroundPlotter):
     def load_box(self):
         default_filename = "b3d_data.h5"
         filename = QFileDialog.getOpenFileName(self, "Load Box", default_filename, "HDF5 Files (*.h5)")[0]
-        read_b3d_h5(filename, self.box.b3d)
+        self.box.b3d = read_b3d_h5(filename)
+        self.init_grid()
+        self.update_plot()
