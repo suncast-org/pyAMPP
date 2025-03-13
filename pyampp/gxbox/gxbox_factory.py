@@ -24,7 +24,7 @@ from sunpy.map import Map, coordinate_is_on_solar_disk, make_fitswcs_header
 
 import pyampp
 from pyampp.data import downloader
-from pyampp.gxbox.boxutils import hmi_b2ptr, hmi_disambig
+from pyampp.gxbox.boxutils import hmi_b2ptr, hmi_disambig, read_b3d_h5
 from pyampp.gxbox.magfield_viewer import MagFieldViewer
 from pyampp.util.config import *
 
@@ -405,6 +405,7 @@ class GxBox(QMainWindow):
         ## this is the origin of the box, i.e., the center of the box bottom
         self.box_origin = box_orig
         self.sdofitsfiles = None
+        print('observer:', self.box_origin)
         self.frame_hcc = Heliocentric(observer=self.box_origin, obstime=self.time)
         self.frame_obs = Helioprojective(observer=self.observer, obstime=self.time)
         self.frame_hgs = HeliographicStonyhurst(obstime=self.time)
@@ -422,6 +423,7 @@ class GxBox(QMainWindow):
         self.fieldlines_show_status = True  # Initial status of the fieldlines visibility
         self.map_context_im = None
         self.map_bottom_im = None
+        self.pot_res = None
 
         ## this is a dummy map. it should be replaced by a real map from inputs.
         self.instrument_map = self.make_dummy_map(self.box_origin.transform_to(self.frame_obs))
@@ -480,10 +482,13 @@ class GxBox(QMainWindow):
         return normal_vector
 
     def load_gxbox(self, boxfile):
-        with open(boxfile, 'rb') as f:
-            gxboxdata = pickle.load(f)
-            for b3dtype in self.box.b3dtype:
-                self.box.b3d[b3dtype] = gxboxdata['b3d'][b3dtype] if b3dtype in gxboxdata['b3d'].keys() else None
+        if os.path.basename(boxfile).endswith('.gxbox'):
+            with open(boxfile, 'rb') as f:
+                gxboxdata = pickle.load(f)
+                for b3dtype in self.box.b3dtype:
+                    self.box.b3d[b3dtype] = gxboxdata['b3d'][b3dtype] if b3dtype in gxboxdata['b3d'].keys() else None
+        elif os.path.basename(boxfile).endswith('.h5'):
+            self.box.b3d = read_b3d_h5(boxfile)
 
     @property
     def avaliable_maps(self):
@@ -703,24 +708,35 @@ class GxBox(QMainWindow):
         self.bminmax_label = QLabel("Bmin/Bmax [G]:")
         self.bmin_input = QLineEdit(self)
         self.bmin_input.setText("0")  # Set default value
+        self.bmin_clip_checkbox = QCheckBox("Clip")
+        self.bmin_clip_checkbox.setChecked(False)
         self.bmax_input = QLineEdit(self)
         self.bmax_input.setText("1000")  # Set default value
+        self.bmax_clip_checkbox = QCheckBox("Clip")
+        self.bmax_clip_checkbox.setChecked(False)
 
         fieldline_control_layout2.addWidget(self.bminmax_label)
         fieldline_control_layout2.addWidget(self.bmin_input)
+        fieldline_control_layout2.addWidget(self.bmin_clip_checkbox)
         fieldline_control_layout2.addWidget(self.bmax_input)
+        fieldline_control_layout2.addWidget(self.bmax_clip_checkbox)
 
         self.cmap_selector = QComboBox(self)
         self.cmap_selector.addItems(sorted(list(mplcmaps)))  # List all available colormaps
         self.cmap_selector.setCurrentText("viridis")  # Set a default colormap
         self.cmap_selector.setMaximumWidth(200)
+        self.discrete_cmap_bounds_input = QLineEdit(self)
+        self.discrete_cmap_bounds_input.setPlaceholderText("Enter bounds (comma-separated)")
 
-        self.cmap_clip_checkbox = QCheckBox("Clip")
-        self.cmap_clip_checkbox.setChecked(False)
+
+        # self.cmap_clip_checkbox = QCheckBox("Clip")
+        # self.cmap_clip_checkbox.setChecked(False)
+        # self.cmap_clip_checkbox.clicked.connect(self.toggle_cmap_clip)
 
         fieldline_control_layout3.addWidget(QLabel("cmap:"))
         fieldline_control_layout3.addWidget(self.cmap_selector)
-        fieldline_control_layout3.addWidget(self.cmap_clip_checkbox)
+        # fieldline_control_layout3.addWidget(self.cmap_clip_checkbox)
+        fieldline_control_layout3.addWidget(self.discrete_cmap_bounds_input)
         fieldline_control_layout3.setStretch(0, 1)
 
         fieldline_control_layout.addLayout(fieldline_control_layout1)
@@ -772,11 +788,11 @@ class GxBox(QMainWindow):
 
                 maglib_lff.set_field(bnddata)
                 ## the axis order in res is y, x, z. so we need to swap the first two axes, so that the order becomes x, y, z.
-                pot_res = maglib_lff.lfff_cube(nz = self.box.dims_pix[-1].value, alpha=0.0)
+                self.pot_res = maglib_lff.lfff_cube(nz = self.box.dims_pix[-1].value, alpha=0.0)
                 self.box.b3d['pot'] = {}
-                self.box.b3d['pot']['bx'] = pot_res['by'].swapaxes(0, 1)
-                self.box.b3d['pot']['by'] = pot_res['bx'].swapaxes(0, 1)
-                self.box.b3d['pot']['bz'] = pot_res['bz'].swapaxes(0, 1)
+                self.box.b3d['pot']['bx'] = self.pot_res['by'].swapaxes(0, 1)
+                self.box.b3d['pot']['by'] = self.pot_res['bx'].swapaxes(0, 1)
+                self.box.b3d['pot']['bz'] = self.pot_res['bz'].swapaxes(0, 1)
 
             if b3dtype == 'nlfff':
                 self.box.b3d['nlfff'] = {}
@@ -807,7 +823,7 @@ class GxBox(QMainWindow):
                 t0 = time.time()
                 print(f'Starting NLFFF computation...')
                 maglib = MagFieldProcessor()
-                maglib.load_cube_vars(pot_res)
+                maglib.load_cube_vars(self.pot_res)
 
                 res_nlf = maglib.NLFFF()
                 print(f'Time taken to compute NLFFF solution: {time.time() - t0} seconds')
@@ -853,7 +869,13 @@ class GxBox(QMainWindow):
         """
         if self.map_context_im is not None:
             self.map_context_im.remove()
+        if map_name in HMI_B_SEGMENTS + HMI_B_PRODUCTS + ['magnetogram', 'continuum']:
+            map_context_prev = self.map_context
         self.map_context = self.sdomaps[map_name] if map_name in self.sdomaps.keys() else self.loadmap(map_name)
+        if map_name in HMI_B_SEGMENTS+HMI_B_PRODUCTS + ['magnetogram','continuum']:
+            self.map_context = self.map_context.rotate(order=3)
+            self.map_context = self.map_context.reproject_to(map_context_prev.wcs)
+        # else:
         self.map_context_im = self.map_context.plot(axes=self.axes)
         self.canvas.draw()
 
@@ -874,6 +896,17 @@ class GxBox(QMainWindow):
         world_coords = SkyCoord(Tx=coords_world.Tx, Ty=coords_world.Ty, frame=self.map_context.coordinate_frame)
         pixel_coords_x, pixel_coords_y = self.map_context.wcs.world_to_pixel(world_coords)
         return pixel_coords_x, pixel_coords_y
+
+    # def toggle_cmap_clip(self):
+    #     """
+    #     Toggles the clipping of the colormap.
+    #     """
+    #     if self.cmap_clip_checkbox.isChecked():
+    #         self.bmax_clip_checkbox.setChecked(True)
+    #         self.bmin_clip_checkbox.setChecked(True)
+    #     else:
+    #         self.bmax_clip_checkbox.setChecked(False)
+    #         self.bmin_clip_checkbox.setChecked(False)
 
     def toggle_fieldlines_visibility(self):
         """
@@ -1005,9 +1038,16 @@ class GxBox(QMainWindow):
             bmax = 1000
 
 
+
         # Normalize the magnitude values for colormap
-        norm = mcolors.Normalize(vmin=bmin, vmax=bmax)
         cmap = plt.get_cmap(self.cmap_selector.currentText())
+        # Check if bounds input box is empty
+        bounds_text = self.discrete_cmap_bounds_input.text()
+        if bounds_text:
+            bounds = list(map(float, bounds_text.split(',')))
+            norm = mcolors.BoundaryNorm(bounds, cmap.N)
+        else:
+            norm = mcolors.Normalize(vmin=bmin, vmax=bmax)
 
         for streamlines_subset in streamlines:
             coords_hcc = []
@@ -1026,10 +1066,22 @@ class GxBox(QMainWindow):
                 magnitude = field['magnitude']
                 segments = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
                 colors = [cmap(norm(value)) for value in magnitude]  # Colormap for each segment
-                if self.cmap_clip_checkbox.isChecked():
+                if self.bmin_clip_checkbox.isChecked() or self.bmax_clip_checkbox.isChecked():
+                    bmin=0.0
+                    bmax=5e6 ## an unrealistic large B field value for solar corona
+                    if self.bmin_clip_checkbox.isChecked():
+                        bmin = float(self.bmin_input.text())
+                    if self.bmax_clip_checkbox.isChecked():
+                        bmax = float(self.bmax_input.text())
                     mask = np.logical_and(magnitude >= bmin, magnitude <= bmax)
                     colors = np.array(colors)[mask]
                     segments = np.array(segments)[mask[:-1]]
+                # if self.cmap_clip_checkbox.isChecked():
+                #     bmin = float(self.bmin_input.text())
+                #     bmax = float(self.bmax_input.text())
+                #     mask = np.logical_and(magnitude >= bmin, magnitude <= bmax)
+                #     colors = np.array(colors)[mask]
+                #     segments = np.array(segments)[mask[:-1]]
                 lc = LineCollection(segments, colors=colors, linewidths=0.5)
                 ax.add_collection(lc)
                 self.fieldlines_line_collection.append(lc)
@@ -1130,11 +1182,11 @@ def main():
                               rsun=696 * u.Mm, frame='helioprojective')
     elif args.hgc:
         box_origin = SkyCoord(lon=coords[0] * u.deg, lat=coords[1] * u.deg, obstime=time,
-                              radius=696 * u.Mm,
+                              radius=696 * u.Mm, observer=observer,
                               frame='heliographic_carrington')
     elif args.hgs:
         box_origin = SkyCoord(lon=coords[0] * u.deg, lat=coords[1] * u.deg, obstime=time,
-                              radius=696 * u.Mm,
+                              radius=696 * u.Mm, observer=observer,
                               frame='heliographic_stonyhurst')
     else:
         raise ValueError("Coordinate frame not specified or unknown.")
