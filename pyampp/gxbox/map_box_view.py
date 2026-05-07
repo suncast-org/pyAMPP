@@ -42,6 +42,14 @@ from sunpy.coordinates import (
 )
 from sunpy.visualization import colormaps as sunpy_colormaps
 
+from pyampp.geometry import (
+    local_cartesian_to_world,
+    observer_rectangle_to_hpc_corners,
+    project_box_front_face_to_observer_hpc,
+    project_coordinate_edges_to_observer_hpc,
+    project_world_to_observer_hpc,
+    project_world_to_pixel,
+)
 from .box import Box
 from .boxutils import load_sunpy_map_compat, map_from_data_header_compat
 from .observer_restore import (
@@ -2941,16 +2949,20 @@ class MapBoxDisplayWidget(QWidget):
                     # Mirror the legacy GxBox field-line overlay behavior:
                     # convert streamline coords from HCC to observer HPC, project to
                     # map pixels, then render pixel-space LineCollection segments.
-                    coord_hcc = SkyCoord(
-                        x=coord[:, 0] * u.Mm,
-                        y=coord[:, 1] * u.Mm,
-                        z=(coord[:, 2] + self._fieldline_z_base) * u.Mm,
+                    coord_world = local_cartesian_to_world(
+                        coord,
                         frame=frame_hcc,
+                        z_base_mm=self._fieldline_z_base,
                     )
-                    coord_hpc = coord_hcc.transform_to(frame_obs)
-                    xpix, ypix = self._current_map.world_to_pixel(coord_hpc)
-                    x = np.asarray(xpix.value if hasattr(xpix, "value") else xpix, dtype=float)
-                    y = np.asarray(ypix.value if hasattr(ypix, "value") else ypix, dtype=float)
+                    coord_hpc = project_world_to_observer_hpc(
+                        coord_world,
+                        observer=current_observer,
+                        obstime=current_obstime,
+                    )
+                    projected = project_world_to_pixel(coord_hpc, self._current_map)
+                    if projected is None:
+                        continue
+                    x, y = projected
                     magnitude = np.asarray(field["magnitude"], dtype=float)
                     if x.size < 2 or y.size < 2 or magnitude.size < 2:
                         continue
@@ -3924,10 +3936,13 @@ class MapBoxDisplayWidget(QWidget):
                     fov_box.as_observer_metadata(square=bool(self._state.square_fov))
                 )
                 if corners_world is not None and len(corners_world) == 8:
-                    return [
-                        SkyCoord([corners_world[i], corners_world[j]]).transform_to(frame_obs)
-                        for i, j in _BOX_EDGE_INDEX_PAIRS
-                    ]
+                    projected_edges = project_coordinate_edges_to_observer_hpc(
+                        corners_world,
+                        edge_pairs=_BOX_EDGE_INDEX_PAIRS,
+                        frame_obs=frame_obs,
+                    )
+                    if projected_edges is not None:
+                        return projected_edges
 
         fov_like = fov_rect or fov_box
         if fov_like is None:
@@ -3939,22 +3954,23 @@ class MapBoxDisplayWidget(QWidget):
         source_frame = Helioprojective(observer=source_observer, obstime=source_obstime)
         half_w = 0.5 * max(float(fov_like.width_arcsec), 1e-3)
         half_h = 0.5 * max(float(fov_like.height_arcsec), 1e-3)
-        base_corners = [
-            SkyCoord(Tx=(float(fov_like.center_x_arcsec) - half_w) * u.arcsec,
-                     Ty=(float(fov_like.center_y_arcsec) - half_h) * u.arcsec,
-                     frame=source_frame),
-            SkyCoord(Tx=(float(fov_like.center_x_arcsec) + half_w) * u.arcsec,
-                     Ty=(float(fov_like.center_y_arcsec) - half_h) * u.arcsec,
-                     frame=source_frame),
-            SkyCoord(Tx=(float(fov_like.center_x_arcsec) - half_w) * u.arcsec,
-                     Ty=(float(fov_like.center_y_arcsec) + half_h) * u.arcsec,
-                     frame=source_frame),
-            SkyCoord(Tx=(float(fov_like.center_x_arcsec) + half_w) * u.arcsec,
-                     Ty=(float(fov_like.center_y_arcsec) + half_h) * u.arcsec,
-                     frame=source_frame),
-        ]
-        corners = base_corners + [c for c in base_corners]
-        return [SkyCoord([corners[i], corners[j]]).transform_to(frame_obs) for i, j in _BOX_EDGE_INDEX_PAIRS]
+        base_corners = observer_rectangle_to_hpc_corners(
+            xc_arcsec=float(fov_like.center_x_arcsec),
+            yc_arcsec=float(fov_like.center_y_arcsec),
+            xsize_arcsec=2.0 * half_w,
+            ysize_arcsec=2.0 * half_h,
+            observer=source_observer,
+            obstime=source_obstime,
+        )
+        if base_corners is None or len(base_corners) != 4:
+            return []
+        corners = SkyCoord(list(base_corners) + list(base_corners))
+        projected_edges = project_coordinate_edges_to_observer_hpc(
+            corners,
+            edge_pairs=_BOX_EDGE_INDEX_PAIRS,
+            frame_obs=frame_obs,
+        )
+        return projected_edges or []
 
     def _fov_box_projected_face(self, smap) -> SkyCoord | None:
         if self._state is None or self._state.fov_box is None:
@@ -3978,22 +3994,7 @@ class MapBoxDisplayWidget(QWidget):
         )
         if corners_world is None or len(corners_world) != 8:
             return None
-        try:
-            corners_obs = corners_world.transform_to(frame_obs)
-            face_a = np.array([0, 1, 3, 2], dtype=int)
-            face_b = np.array([4, 5, 7, 6], dtype=int)
-
-            def _mean_distance(indices: np.ndarray) -> float:
-                try:
-                    return float(np.nanmean(corners_obs[indices].distance.to_value(u.Mm)))
-                except Exception:
-                    return np.inf
-
-            face = face_a if _mean_distance(face_a) <= _mean_distance(face_b) else face_b
-            ordered = [corners_obs[int(i)] for i in face] + [corners_obs[int(face[0])]]
-            return SkyCoord(ordered)
-        except Exception:
-            return None
+        return project_box_front_face_to_observer_hpc(corners_world, frame_obs=frame_obs)
 
     def _box_bounds_to_fov_selection(self, box, smap) -> DisplayFovSelection:
         bounds = box.bounds_coords.transform_to(
