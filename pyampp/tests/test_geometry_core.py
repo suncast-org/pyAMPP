@@ -97,6 +97,15 @@ def test_public_geometry_core_projects_vectorized_polyline_to_pixels() -> None:
     assert np.all(np.isfinite(pixels[1]))
 
 
+def test_local_cartesian_to_world_rejects_nonfinite_rows() -> None:
+    box, _obs_time, _observer, _frame_obs = _make_test_box()
+    local = np.array([[0.0, 0.0, 0.0], [np.nan, 1.0, 2.0]], dtype=float)
+
+    world = local_cartesian_to_world(local, frame=getattr(getattr(box, "_center", None), "frame", None), z_base_mm=0.0)
+
+    assert world is None
+
+
 def test_public_geometry_core_reconstructs_saved_fov_box_corners() -> None:
     box, obs_time, observer, _frame_obs = _make_test_box()
     world = observer_fov_box_to_world_corners(

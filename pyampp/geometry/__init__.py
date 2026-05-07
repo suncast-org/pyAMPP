@@ -6,8 +6,6 @@ can import without depending on the gxbox viewer entrypoints.
 """
 
 from .core import (
-    Box,
-    BoxGeometryMixin,
     compute_inscribing_fov_box_from_world,
     compute_inscribing_fov_from_hpc,
     compute_inscribing_fov_from_world,
@@ -31,8 +29,6 @@ from .observer import (
 )
 
 __all__ = [
-    "Box",
-    "BoxGeometryMixin",
     "compute_inscribing_fov_box_from_world",
     "compute_inscribing_fov_from_hpc",
     "compute_inscribing_fov_from_world",
@@ -51,4 +47,18 @@ __all__ = [
     "resolve_observer_from_metadata",
     "resolve_observer_with_info",
     "resolve_sdo_observer_from_b3d",
+    "Box",
+    "BoxGeometryMixin",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"Box", "BoxGeometryMixin"}:
+        from .core import Box, BoxGeometryMixin
+
+        exports = {
+            "Box": Box,
+            "BoxGeometryMixin": BoxGeometryMixin,
+        }
+        return exports[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -71,7 +71,7 @@ Function Contracts
 
 - Input: an ``(N, 3)`` array of local Cartesian points in Mm
 - Output: a vectorized ``SkyCoord`` in the supplied world frame
-- Returns ``None`` when inputs are missing or invalid
+- Returns ``None`` when inputs are missing, invalid, or contain non-finite rows
 
 ``project_world_to_observer_hpc(world, observer=None, obstime=None, frame_obs=None)``
 
