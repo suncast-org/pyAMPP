@@ -13,6 +13,53 @@ from scipy.io import readsav
 
 from pyampp.gxbox.boxutils import extract_sav_refmaps, serialize_sav_index_header
 from pyampp.gxbox.gx_box2id import gx_box2id
+from pyampp.geometry.contract import complete_geometry_contract
+
+def _apply_geometry_contract_to_h5(h5_path: Path) -> None:
+    """
+    Complete and store geometry contract in an existing HDF5 file.
+    
+    Reads model groups from H5, computes GeometryContract, and stores it
+    in metadata/geometry_contract. This ensures that downstream consumers
+    have complete Tier 1+2 geometry without fallback branching.
+    """
+    try:
+        from pyampp.gxbox.boxutils import read_b3d_h5
+    except ImportError:
+        # If boxutils not available, skip contract completion (non-fatal)
+        return
+    
+    try:
+        model_dict = read_b3d_h5(str(h5_path))
+    except Exception:
+        # Skip if model cannot be read
+        return
+    
+    try:
+        contract = complete_geometry_contract(model_dict, strict=False)
+    except Exception:
+        # Skip if contract completion fails
+        return
+    
+    if contract is None:
+        # No complete Tier 1 metadata; skip
+        return
+    
+    try:
+        with h5py.File(h5_path, "r+") as f:
+            g_meta = _ensure_group(f, "metadata")
+            g_contract = _ensure_group(g_meta, "geometry_contract")
+            
+            contract_dict = contract.to_dict()
+            for key, value in contract_dict.items():
+                if isinstance(value, str):
+                    value = np.bytes_(value)
+                elif isinstance(value, (int, float)):
+                    value = np.array(value)
+                _replace_dataset(g_contract, key, value)
+    except Exception:
+        # Non-fatal: if contract storage fails, model is still usable
+        pass
 
 
 def _decode_if_bytes(v: Any) -> Any:
@@ -446,6 +493,9 @@ def build_h5_from_sav(sav_path: Path, out_h5: Path, template_h5: Path | None = N
             _replace_dataset(map_group, "data", np.asarray(map_data))
             _replace_dataset(map_group, "wcs_header", np.bytes_(map_header))
             map_group.attrs["order_index"] = np.int64(order_index)
+
+        # Complete and store geometry contract for downstream use
+        _apply_geometry_contract_to_h5(out_h5)
 
     return out_h5
 

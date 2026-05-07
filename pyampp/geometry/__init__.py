@@ -18,6 +18,15 @@ from .core import (
     project_world_to_observer_hpc,
     project_world_to_pixel,
 )
+from .contract import (
+    GeometryContract,
+    RSUN_HMI_METERS,
+    complete_geometry_contract,
+    infer_box_dims,
+    infer_voxel_resolution,
+    infer_world_anchor_defaults,
+    infer_obstime,
+)
 from .observer import (
     build_ephemeris_from_pb0r,
     build_pb0r_metadata_from_ephemeris,
