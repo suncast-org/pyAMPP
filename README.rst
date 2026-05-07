@@ -15,6 +15,8 @@ Format and viewer references:
 
 - Upgraded HDF5 stage format (NONE/BND/POT/NAS/NAS.GEN/NAS.CHR):
   ``docs/model_hdf5_format.rst``
+- Public geometry API and migration status:
+  ``docs/geometry_api.rst``
 - Practical ``gx-fov2box`` CLI guide:
   ``docs/gx_fov2box_usage.rst``
 - Main GUI workflow and command mapping:

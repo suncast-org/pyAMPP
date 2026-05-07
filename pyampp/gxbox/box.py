@@ -11,6 +11,14 @@ from sunpy.coordinates import (
     Heliocentric,
 )
 from sunpy.map import make_fitswcs_header
+from pyampp.geometry.core import (
+    compute_inscribing_fov_box_from_world,
+    compute_inscribing_fov_from_world,
+    local_cartesian_to_world,
+    observer_fov_box_to_world_corners,
+    project_world_to_observer_hcc,
+    project_world_to_observer_hpc,
+)
 from pyampp.gxbox.observer_restore import resolve_observer_from_metadata, resolve_named_observer, resolve_observer_with_info
 from pyampp.util.config import IDL_HMI_RSUN_M
 try:
@@ -68,13 +76,7 @@ class BoxGeometryMixin:
         if box_frame is None:
             return None
         local = self.model_box_corners_local_mm()
-        zbase = self.grid_zbase_mm()
-        return SkyCoord(
-            x=local[:, 0] * u.Mm,
-            y=local[:, 1] * u.Mm,
-            z=(local[:, 2] + zbase) * u.Mm,
-            frame=box_frame,
-        )
+        return local_cartesian_to_world(local, frame=box_frame, z_base_mm=self.grid_zbase_mm())
 
     def model_box_corners_projected(self, observer=None, obstime=None) -> SkyCoord | None:
         """
@@ -111,11 +113,7 @@ class BoxGeometryMixin:
             obstime = getattr(box_frame, "obstime", None)
         if observer is None:
             return None
-        try:
-            target_frame = Helioprojective(observer=observer, obstime=obstime)
-            return world.transform_to(target_frame)
-        except Exception:
-            return None
+        return project_world_to_observer_hpc(world, observer=observer, obstime=obstime, frame_obs=frame_obs)
 
     def model_box_corners_observer_heliocentric(self, observer=None, obstime=None) -> SkyCoord | None:
         """
@@ -137,10 +135,7 @@ class BoxGeometryMixin:
             obstime = getattr(box_frame, "obstime", None)
         if observer is None:
             return None
-        try:
-            return world.transform_to(Heliocentric(observer=observer, obstime=obstime))
-        except Exception:
-            return None
+        return project_world_to_observer_hcc(world, observer=observer, obstime=obstime, frame_obs=frame_obs)
 
     def model_box_inscribing_fov(self, observer=None, obstime=None, pad_arcsec: float = 0.0) -> dict | None:
         """
@@ -149,32 +144,14 @@ class BoxGeometryMixin:
         The returned rectangle is the smallest axis-aligned HPC rectangle that
         contains the projected 8 red-box corners for the given observer.
         """
-        corners = self.model_box_corners_projected(observer=observer, obstime=obstime)
-        if corners is None:
-            return None
-        try:
-            tx = np.asarray(corners.Tx.to_value(u.arcsec), dtype=float)
-            ty = np.asarray(corners.Ty.to_value(u.arcsec), dtype=float)
-        except Exception:
-            return None
-        if tx.size != 8 or ty.size != 8 or not np.all(np.isfinite(tx)) or not np.all(np.isfinite(ty)):
-            return None
-        pad = max(float(pad_arcsec), 0.0)
-        xmin = float(np.min(tx)) - pad
-        xmax = float(np.max(tx)) + pad
-        ymin = float(np.min(ty)) - pad
-        ymax = float(np.max(ty)) + pad
-        return {
-            "xc_arcsec": 0.5 * (xmin + xmax),
-            "yc_arcsec": 0.5 * (ymin + ymax),
-            "xsize_arcsec": xmax - xmin,
-            "ysize_arcsec": ymax - ymin,
-            "xmin_arcsec": xmin,
-            "xmax_arcsec": xmax,
-            "ymin_arcsec": ymin,
-            "ymax_arcsec": ymax,
-            "corners_hpc": corners,
-        }
+        world = self.model_box_corners_world()
+        return compute_inscribing_fov_from_world(
+            world,
+            observer=observer,
+            obstime=obstime,
+            frame_obs=getattr(self, "_frame_obs", None),
+            pad_arcsec=pad_arcsec,
+        )
 
     def model_box_inscribing_fov_box(
         self,
@@ -191,32 +168,15 @@ class BoxGeometryMixin:
         extent is derived from the red-box corners in the observer-centric
         heliocentric frame, with an optional fractional padding.
         """
-        footprint = self.model_box_inscribing_fov(observer=observer, obstime=obstime, pad_arcsec=pad_xy_arcsec)
-        if footprint is None:
-            return None
-        corners_hcc = self.model_box_corners_observer_heliocentric(observer=observer, obstime=obstime)
-        if corners_hcc is None:
-            return None
-        try:
-            z_vals = np.asarray(corners_hcc.z.to_value(u.Mm), dtype=float)
-        except Exception:
-            return None
-        finite = np.isfinite(z_vals)
-        if not np.any(finite):
-            return None
-        z_vals = z_vals[finite]
-        z_min = float(np.nanmin(z_vals))
-        z_max = float(np.nanmax(z_vals))
-        z_span = max(1e-6, z_max - z_min)
-        z_pad = max(0.0, float(pad_z_frac)) * z_span
-        result = dict(footprint)
-        result.update(
-            {
-                "zmin_mm": z_min - z_pad,
-                "zmax_mm": z_max + z_pad,
-            }
+        world = self.model_box_corners_world()
+        return compute_inscribing_fov_box_from_world(
+            world,
+            observer=observer,
+            obstime=obstime,
+            frame_obs=getattr(self, "_frame_obs", None),
+            pad_xy_arcsec=pad_xy_arcsec,
+            pad_z_frac=pad_z_frac,
         )
-        return result
 
     def fov_box_corners_world(self, fov_box_meta: dict | None = None) -> SkyCoord | None:
         observer_meta = self.b3d.get("observer", {}) if isinstance(getattr(self, "b3d", None), dict) else {}
@@ -263,32 +223,17 @@ class BoxGeometryMixin:
         if observer is None or box_frame is None:
             return None
 
-        try:
-            dsun = float(observer.radius.to_value(u.Mm))
-        except Exception:
-            return None
-
-        frame_hpc = Helioprojective(observer=observer, obstime=obstime)
-        half_w = 0.5 * max(float(xsize), 1e-6)
-        half_h = 0.5 * max(float(ysize), 1e-6)
-        corners = []
-        for z_mm in (float(zmin), float(zmax)):
-            distance_mm = dsun - z_mm
-            if not np.isfinite(distance_mm) or distance_mm <= 0:
-                return None
-            for ty in (float(yc) - half_h, float(yc) + half_h):
-                for tx in (float(xc) - half_w, float(xc) + half_w):
-                    corners.append(
-                        SkyCoord(
-                            Tx=tx * u.arcsec,
-                            Ty=ty * u.arcsec,
-                            distance=distance_mm * u.Mm,
-                            frame=frame_hpc,
-                        ).transform_to(box_frame)
-                    )
-        if len(corners) != 8:
-            return None
-        return SkyCoord(corners)
+        return observer_fov_box_to_world_corners(
+            xc_arcsec=xc,
+            yc_arcsec=yc,
+            xsize_arcsec=xsize,
+            ysize_arcsec=ysize,
+            zmin_mm=zmin,
+            zmax_mm=zmax,
+            observer=observer,
+            obstime=obstime,
+            target_frame=box_frame,
+        )
 
     def fov_box_corners_local_mm(self, fov_box_meta: dict | None = None) -> np.ndarray | None:
         world = self.fov_box_corners_world(fov_box_meta=fov_box_meta)

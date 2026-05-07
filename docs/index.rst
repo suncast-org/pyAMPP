@@ -8,6 +8,7 @@ This is the documentation for pyAMPP.
    :caption: Contents:
 
    model_hdf5_format
+   geometry_api
    gx_fov2box_usage
    gui_workflow
    viewers

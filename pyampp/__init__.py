@@ -1,3 +1,3 @@
-from . import sfq
+from . import geometry, sfq
 
-__all__ = ["sfq"]
+__all__ = ["geometry", "sfq"]
