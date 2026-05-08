@@ -88,6 +88,40 @@ The instructions below use Conda as an example:
 
       pip install -U sunpy[all]
 
+Development And Test Setup
+--------------------------
+
+If you are developing ``pyAMPP`` from a local checkout, install it in editable mode from the repository root:
+
+.. code-block:: bash
+
+  pip install -e .
+
+This installs the package and its core runtime dependencies, but it does **not** install optional dependency groups such as the test tools.
+
+The optional dependency groups are declared in ``pyproject.toml`` under ``[project.optional-dependencies]``.
+Use the extras that match your task:
+
+.. code-block:: bash
+
+  pip install -e ".[tests]"
+  pip install -e ".[docs]"
+  pip install -e ".[tests,docs]"
+
+For local test runs, the recommended setup is:
+
+.. code-block:: bash
+
+  pip install -U pip setuptools wheel
+  pip install -e ".[tests]"
+  python -m pytest -q
+
+Using ``python -m pytest`` is recommended because it guarantees that ``pytest`` runs from the same environment as the interpreter where ``pyAMPP`` and its test extras were installed.
+If ``pytest`` reports an unknown option such as ``--doctest-rst``, the active shell is usually picking up a different environment that does not have ``pytest-doctestplus`` installed.
+
+We currently keep test and documentation dependencies in ``pyproject.toml`` extras rather than separate requirements files.
+That keeps the install metadata in one authoritative place and lets users opt into ``tests`` and ``docs`` explicitly.
+
 Main Applications
 -----------------
 

@@ -1,5 +1,6 @@
 import copy
 import logging
+from pathlib import Path
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QLabel, \
     QPushButton, QDoubleSpinBox, QLineEdit, QCheckBox, QMessageBox, QMenu, QHeaderView, QFileDialog, QAction, QToolButton, \
     QToolBar, QGridLayout
@@ -123,6 +124,7 @@ class MagFieldViewer(BackgroundPlotter):
 
     def __init__(self, box, parent=None, box_norm_direction=None, box_view_up=None, time=None, b3dtype='nlfff', model_path=None, session_mode=None, *args, **kwargs):
         # Build the scene fully before first paint; callers explicitly call .show().
+        self.source_model_path = kwargs.pop("source_model_path", None)
         kwargs.setdefault("show", False)
         super().__init__(*args, **kwargs)
         self.box = box
@@ -692,7 +694,7 @@ class MagFieldViewer(BackgroundPlotter):
 
         save_action = QAction("Save State", self.app_window)
         save_action.triggered.connect(
-            lambda: self.save_state(f'magfield_viewer_state{self.timestr}.pkl'))
+            lambda: self.save_state(f'box_view3d_state{self.timestr}.pkl'))
 
         # Find the position of the separator and insert the new actions above it
         separator_action = None
@@ -708,7 +710,7 @@ class MagFieldViewer(BackgroundPlotter):
             file_menu.addAction(load_action)
             file_menu.addAction(save_action)
 
-    def save_state(self,default_filename='magfield_viewer_state.pkl'):
+    def save_state(self,default_filename='box_view3d_state.pkl'):
         """
         Saves the current state of spheres to a file. Prompts the user to select a directory and input a filename.
 
@@ -742,7 +744,7 @@ class MagFieldViewer(BackgroundPlotter):
         if not isinstance(filename, str):
             options = QFileDialog.Options()
             options |= QFileDialog.DontUseNativeDialog
-            filename, _ = QFileDialog.getOpenFileName(self.app_window, "Load State", f'magfield_viewer_state{self.timestr}.pkl', "Pickle Files (*.pkl)",
+            filename, _ = QFileDialog.getOpenFileName(self.app_window, "Load State", f'box_view3d_state{self.timestr}.pkl', "Pickle Files (*.pkl)",
                                                       options=options)
 
         if filename:
@@ -1276,8 +1278,14 @@ class MagFieldViewer(BackgroundPlotter):
         self.save_model_button = QPushButton("Apply && Close")
         if self.session_mode == "standalone":
             self.save_model_button.setText("Save")
-            self.save_model_button.setToolTip("Save the current seed state back into the opened model file.")
-            self.save_model_button.clicked.connect(self.save_current_model)
+            if self.model_path is None:
+                self.save_model_button.setEnabled(False)
+                self.save_model_button.setToolTip(
+                    "SAV models are read-only — use Save As to save to a new .h5 file."
+                )
+            else:
+                self.save_model_button.setToolTip("Save the current seed state back into the opened model file.")
+                self.save_model_button.clicked.connect(self.save_current_model)
         else:
             self.save_model_button.setToolTip("Accept the current seed edits and return to the 2D viewer.")
             self.save_model_button.setStyleSheet("font-weight: 600;")
@@ -1311,12 +1319,11 @@ class MagFieldViewer(BackgroundPlotter):
 
         action_layout.addWidget(self.save_model_button)
         action_layout.addWidget(self.save_close_button)
-        if self.session_mode != "standalone":
-            action_layout.addWidget(self.cancel_button)
-        else:
-            action_layout.addWidget(self.cancel_button)
+        action_layout.addWidget(self.cancel_button)
+        # Keep Save As visible in all modes so users can export snapshots to a new HDF5.
+        action_layout.addWidget(self.save_box_button)
+        if self.session_mode in ("standalone", "pipeline_child"):
             action_layout.addWidget(self.load_box_button)
-            action_layout.addWidget(self.save_box_button)
 
         # self.update_button = QPushButton("Update")
         # self.update_button.clicked.connect(self.update_plot)
@@ -2661,6 +2668,20 @@ class MagFieldViewer(BackgroundPlotter):
         if not self.model_path:
             QMessageBox.warning(self.app_window, "Save Failed", "No writable .h5 model path is attached to this 3D viewer.")
             return False
+        
+        # Warn user before overwriting existing file
+        model_file = Path(self.model_path)
+        if model_file.exists():
+            btn = QMessageBox.question(
+                self.app_window,
+                "Overwrite Model",
+                f"Overwrite existing model file?\n{self.model_path}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if btn != QMessageBox.Yes:
+                return False
+        
         try:
             update_line_seeds_h5(str(self.model_path), self._collect_line_seeds_snapshot())
             self._original_line_seeds = self._collect_line_seeds_snapshot()
@@ -2704,11 +2725,52 @@ class MagFieldViewer(BackgroundPlotter):
 
     def save_box(self):
         box_dims_str = 'x'.join(map(str, self.box.dims_pix))
-        default_filename = f'b3d_data_{self.box._frame_obs.obstime.to_datetime().strftime("%Y%m%dT%H%M%S")}_dim{box_dims_str}.h5'
-        filename = QFileDialog.getSaveFileName(self, "Save Box", default_filename, "HDF5 Files (*.h5)")[0]
+        # Prefer canonical source model name over generic timestamp name
+        suggested_stem = "b3d_data"
+        candidate = self.model_path if self.model_path is not None else self.source_model_path
+        if candidate is not None:
+            try:
+                p = Path(candidate).expanduser()
+                suggested_stem = p.stem
+            except Exception:
+                pass
+        default_filename = f'{suggested_stem}.h5'
+        default_path = Path.cwd() / default_filename
+        parent_widget = self.app_window if hasattr(self, "app_window") else None
+        filename = QFileDialog.getSaveFileName(
+            parent_widget,
+            "Save Box As",
+            str(default_path),
+            "HDF5 Files (*.h5)",
+        )[0]
         if not filename:
             return
+        
+        # Warn user if file already exists
+        filepath = Path(filename)
+        if filepath.exists():
+            from PyQt5.QtWidgets import QMessageBox
+            btn = QMessageBox.question(
+                parent_widget,
+                "File Exists",
+                f"File already exists:\n{filename}\n\nOverwrite?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if btn != QMessageBox.Yes:
+                return
+        
         write_b3d_h5(filename, self.box.b3d)
+        try:
+            from pyampp.util.build_h5_from_sav import _apply_geometry_contract_to_h5
+            _apply_geometry_contract_to_h5(Path(filename))
+        except Exception:
+            pass  # geometry contract application is best-effort
+        self.model_path = Path(filename)
+        if self.save_model_button is not None and not self.save_model_button.isEnabled():
+            self.save_model_button.setEnabled(True)
+            self.save_model_button.setToolTip("Save the current seed state back into the opened model file.")
+            self.save_model_button.clicked.connect(self.save_current_model)
 
     def load_box(self):
         default_filename = "b3d_data.h5"

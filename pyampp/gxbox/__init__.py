@@ -34,7 +34,7 @@ __all__ = [
 
 def __getattr__(name):
     if name in {'MapBoxViewState', 'MapBoxDisplayWidget'}:
-        from .map_box_view import MapBoxDisplayWidget, MapBoxViewState
+        from .box_view2d import MapBoxDisplayWidget, MapBoxViewState
         exports = {
             'MapBoxViewState': MapBoxViewState,
             'MapBoxDisplayWidget': MapBoxDisplayWidget,

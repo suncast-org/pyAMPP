@@ -33,6 +33,7 @@ from pyampp.gxbox.selector_api import (
     SelectorSessionInput,
 )
 from pyampp.gxbox.observer_restore import build_pb0r_metadata_from_ephemeris, resolve_observer_with_info
+from pyampp.util.build_h5_from_sav import build_h5_from_sav
 
 _DEFAULT_MAP_IDS = (
     "Bz",
@@ -441,17 +442,45 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
     )
 
 
+def _pick_save_as_h5_path(parent_widget, default_stem: str = "model") -> Path | None:
+    """Show a Save-As file dialog and return the chosen .h5 path, or None if cancelled."""
+    dialog = QFileDialog(parent_widget, "Save Model As")
+    dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+    dialog.setAcceptMode(QFileDialog.AcceptSave)
+    dialog.setFileMode(QFileDialog.AnyFile)
+    dialog.setNameFilter("HDF5 Files (*.h5);;All Files (*)")
+    dialog.selectFile(f"{default_stem}.h5")
+    if not dialog.exec_():
+        return None
+    selected = dialog.selectedFiles()
+    if not selected:
+        return None
+    path = Path(selected[0])
+    if path.suffix.lower() != ".h5":
+        path = path.with_suffix(".h5")
+    return path
+
+
 def _persist_selector_result_to_entry(
     entry_path: Path,
     result: SelectorDialogResult,
     line_seeds=None,
     fov_box: DisplayFovBoxSelection | None = None,
     observer_state: dict[str, Any] | None = None,
+    output_path: Path | None = None,
 ) -> bool:
-    if entry_path.suffix.lower() != ".h5":
+    dest = output_path or entry_path
+    if dest.suffix.lower() != ".h5":
         return False
 
-    box_data = read_b3d_h5(str(entry_path))
+    if entry_path.suffix.lower() == ".h5":
+        box_data = read_b3d_h5(str(entry_path))
+    else:
+        # SAV origin — first convert to canonical HDF5 to avoid object-dtype payloads.
+        if output_path is None:
+            return False
+        build_h5_from_sav(sav_path=entry_path, out_h5=dest, template_h5=None)
+        box_data = read_b3d_h5(str(dest))
     observer = box_data.get("observer")
     if not isinstance(observer, dict):
         observer = {}
@@ -596,7 +625,12 @@ def _persist_selector_result_to_entry(
         box_data["line_seeds"] = line_seeds
     else:
         box_data.pop("line_seeds", None)
-    write_b3d_h5(str(entry_path), box_data)
+    write_b3d_h5(str(dest), box_data)
+    try:
+        from pyampp.util.build_h5_from_sav import _apply_geometry_contract_to_h5
+        _apply_geometry_contract_to_h5(dest)
+    except Exception:
+        pass  # contract application is best-effort
     return True
 
 
@@ -624,6 +658,40 @@ def main() -> int:
     session_input = _build_session_input(entry_path)
     dialog = FovBoxSelectorDialog(session_input=session_input, entry_box_path=entry_path)
     dialog.setWindowTitle(f"FOV / Box Selector - {entry_path.name}")
+    def _on_save_as_clicked() -> None:
+        out_path = _pick_save_as_h5_path(
+            dialog,
+            default_stem=entry_path.stem,
+        )
+        if out_path is None:
+            return
+        try:
+            result = dialog.current_selection_snapshot()
+            line_seeds = dialog.committed_line_seeds()
+            fov_box = dialog.current_fov_box_selection()
+            observer_state = dialog.current_observer_persistence_state()
+            _persist_selector_result_to_entry(
+                entry_path,
+                result,
+                line_seeds=line_seeds,
+                fov_box=fov_box,
+                observer_state=observer_state,
+                output_path=out_path,
+            )
+            QMessageBox.information(
+                dialog,
+                "Model Saved",
+                f"Saved updated model to:\n{out_path}",
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                dialog,
+                "Save Failed",
+                f"Failed to save model to {out_path}:\n{exc}",
+            )
+
+    dialog.set_save_as_callback(_on_save_as_clicked, text="Save As")
+    dialog.set_accept_button_text("Apply && Close")
 
     def _persist_result_if_needed() -> None:
         if dialog.result() != QDialog.Accepted:
@@ -634,21 +702,47 @@ def main() -> int:
         line_seeds = dialog.committed_line_seeds()
         fov_box = dialog.current_fov_box_selection()
         observer_state = dialog.current_observer_persistence_state()
+        if entry_path.suffix.lower() == ".sav":
+            btn = QMessageBox.question(
+                dialog,
+                "SAV Model — Save As",
+                "SAV models are read-only and cannot be updated in place.\n\n"
+                "Save the updated model (with your FOV changes) to a new .h5 file?",
+                QMessageBox.Save | QMessageBox.Discard,
+                QMessageBox.Save,
+            )
+            if btn != QMessageBox.Save:
+                return
+            out_path = _pick_save_as_h5_path(
+                dialog,
+                default_stem=entry_path.stem,
+            )
+            if out_path is None:
+                return
+            try:
+                _persist_selector_result_to_entry(
+                    entry_path,
+                    result,
+                    line_seeds=line_seeds,
+                    fov_box=fov_box,
+                    observer_state=observer_state,
+                    output_path=out_path,
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    dialog,
+                    "Save Failed",
+                    f"Failed to save model to {out_path}:\n{exc}",
+                )
+            return
         try:
-            persisted = _persist_selector_result_to_entry(
+            _persist_selector_result_to_entry(
                 entry_path,
                 result,
                 line_seeds=line_seeds,
                 fov_box=fov_box,
                 observer_state=observer_state,
             )
-            if not persisted and entry_path.suffix.lower() == ".sav":
-                QMessageBox.information(
-                    dialog,
-                    "FOV Not Saved",
-                    "This viewer can persist updated FOV metadata only to .h5 boxes. "
-                    "The current .sav file was left unchanged.",
-                )
         except Exception as exc:
             QMessageBox.warning(
                 dialog,

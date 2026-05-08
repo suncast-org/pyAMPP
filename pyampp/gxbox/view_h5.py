@@ -356,7 +356,7 @@ def prepare_model_for_viewer(model_path: str | Path) -> tuple[SimpleBox, Time, s
 
 
 def main() -> int:
-    from pyampp.gxbox.magfield_viewer import MagFieldViewer
+    from pyampp.gxbox.box_view3d import MagFieldViewer
 
     parser = argparse.ArgumentParser(description="Open a saved HDF5 model in the 3D viewer without recomputing.")
     parser.add_argument("h5_path", nargs="?", help="Path to the HDF5 model file (positional).")
@@ -407,6 +407,7 @@ def main() -> int:
         b3dtype=b3dtype,
         parent=None,
         model_path=save_target,
+        source_model_path=model_path,
         box_norm_direction=box_norm_direction,
         box_view_up=box_view_up,
         session_mode="pipeline_child" if args.pipeline_child else "standalone",

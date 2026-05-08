@@ -1335,6 +1335,53 @@ def write_b3d_h5(filename, box_b3d):
         A dictionary containing the B3D data to be written.
     """
 
+    def _encode_dataset_value(value):
+        if isinstance(value, (str, bytes, np.bytes_)):
+            return np.bytes_(value)
+        if value is None:
+            return np.bytes_("")
+
+        arr = np.asarray(value)
+        if arr.dtype.kind != "O":
+            return value
+
+        if arr.shape == ():
+            scalar = arr.item()
+            if isinstance(scalar, (str, bytes, np.bytes_)):
+                return np.bytes_(scalar)
+            if scalar is None:
+                return np.bytes_("")
+            try:
+                return np.asarray(scalar)
+            except Exception:
+                return np.bytes_(str(scalar))
+
+        # Object arrays are serialized as fixed-width bytes arrays for HDF5 safety.
+        as_text = np.vectorize(lambda x: "" if x is None else str(x), otypes=[str])(arr)
+        return as_text.astype("S")
+
+    def _set_group_attrs(group, attrs):
+        if not isinstance(attrs, dict):
+            return
+        for key, value in attrs.items():
+            group.attrs[key] = _encode_dataset_value(value)
+
+    def _write_node(group, key, value, *, target_type=None):
+        if isinstance(value, dict):
+            sub = group.create_group(key)
+            attrs = value.get("attrs", {}) if isinstance(value.get("attrs"), dict) else {}
+            for sub_key, sub_val in value.items():
+                if sub_key == "attrs":
+                    continue
+                _write_node(sub, sub_key, sub_val, target_type=target_type)
+            _set_group_attrs(sub, attrs)
+            return
+
+        if target_type in ("chromo", "lines") and key == "voxel_status":
+            group.create_dataset(key, data=np.asarray(value, dtype=np.uint8))
+            return
+        group.create_dataset(key, data=_encode_dataset_value(value))
+
     with h5py.File(filename, 'w') as hdf_file:
         for model_type, components in box_b3d.items():
             if components is None:
@@ -1343,10 +1390,7 @@ def write_b3d_h5(filename, box_b3d):
             if model_type == "metadata":
                 group = hdf_file.create_group("metadata")
                 for key, value in components.items():
-                    if isinstance(value, str):
-                        group.create_dataset(key, data=np.bytes_(value))
-                    else:
-                        group.create_dataset(key, data=value)
+                    _write_node(group, key, value, target_type="metadata")
                 continue
             target_type = model_type
             attrs = components.get("attrs", {}) if isinstance(components, dict) else {}
@@ -1371,25 +1415,20 @@ def write_b3d_h5(filename, box_b3d):
             for component, data in components.items():
                 if component == "attrs":
                     continue
-                if isinstance(data, dict):
-                    if target_type == "refmaps":
-                        sub = group.create_group(component, track_order=True)
-                        sub.attrs["order_index"] = np.int64(refmap_idx)
-                        refmap_idx += 1
-                    else:
-                        sub = group.create_group(component)
+                if target_type == "refmaps" and isinstance(data, dict):
+                    sub = group.create_group(component, track_order=True)
+                    sub.attrs["order_index"] = np.int64(refmap_idx)
+                    refmap_idx += 1
+                    sub_attrs = data.get("attrs", {}) if isinstance(data.get("attrs"), dict) else {}
                     for sub_key, sub_val in data.items():
-                        if target_type in ("chromo", "lines") and sub_key == "voxel_status":
-                            sub.create_dataset(sub_key, data=np.asarray(sub_val, dtype=np.uint8))
-                        else:
-                            sub.create_dataset(sub_key, data=sub_val)
+                        if sub_key == "attrs":
+                            continue
+                        _write_node(sub, sub_key, sub_val, target_type=target_type)
+                    _set_group_attrs(sub, sub_attrs)
                 else:
-                    if target_type in ("chromo", "lines") and component == "voxel_status":
-                        group.create_dataset(component, data=np.asarray(data, dtype=np.uint8))
-                    else:
-                        group.create_dataset(component, data=data)
+                    _write_node(group, component, data, target_type=target_type)
             if attrs:
-                group.attrs.update(attrs)
+                _set_group_attrs(group, attrs)
 
 
 def update_line_seeds_h5(filename, line_seeds):

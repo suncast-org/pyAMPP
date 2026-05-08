@@ -132,13 +132,13 @@ def _viewer_camera_basis(*args, **kwargs):
 
 
 def _generate_streamlines_from_seeds(*args, **kwargs):
-    from .magfield_viewer import generate_streamlines_from_line_seeds
+    from .box_view3d import generate_streamlines_from_line_seeds
 
     return generate_streamlines_from_line_seeds(*args, **kwargs)
 
 
 def _magfield_viewer_cls():
-    from .magfield_viewer import MagFieldViewer
+    from .box_view3d import MagFieldViewer
 
     return MagFieldViewer
 
@@ -1011,6 +1011,7 @@ class MapBoxDisplayWidget(QWidget):
 
     def refresh_session_view(self) -> None:
         self._refresh_plot()
+        self._ensure_session_model_loaded()
         self._refresh_fieldlines_from_committed_seeds()
         self._update_fov_control_enabled_state()
 
@@ -1326,6 +1327,9 @@ class MapBoxDisplayWidget(QWidget):
     def _refresh_fieldlines_from_committed_seeds(self) -> None:
         if self._current_map is None or self._current_axes is None:
             return
+        # Session models are loaded lazily in dialog startup; ensure seeds are
+        # available before attempting to rebuild and project field lines.
+        self._ensure_session_model_loaded()
         if self._session_box_template is None:
             self.clear_fieldlines()
             return
@@ -2842,6 +2846,7 @@ class MapBoxDisplayWidget(QWidget):
                 box_norm_direction=box_norm_direction,
                 box_view_up=box_view_up,
                 session_mode="embedded",
+                source_model_path=self._entry_box_path,
             )
             self._viewer3d_temp_h5_path = self._session_temp_h5_path
             if hasattr(self._viewer3d, "app_window"):
