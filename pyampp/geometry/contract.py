@@ -67,6 +67,11 @@ class GeometryContract:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GeometryContract:
+        def _as_text(value: Any) -> str:
+            if isinstance(value, (bytes, np.bytes_)):
+                return value.decode("utf-8", "ignore")
+            return str(value)
+
         return cls(
             nx=int(data["nx"]),
             ny=int(data["ny"]),
@@ -78,9 +83,9 @@ class GeometryContract:
             anchor_lon_deg=float(data["anchor_lon_deg"]),
             anchor_lat_deg=float(data["anchor_lat_deg"]),
             anchor_radius_rsun=float(data["anchor_radius_rsun"]),
-            frame=str(data["frame"]),
-            obstime=str(data["obstime"]),
-            inferred_from=data.get("inferred_from") or None,
+            frame=_as_text(data["frame"]),
+            obstime=_as_text(data["obstime"]),
+            inferred_from=_as_text(data.get("inferred_from") or "") or None,
         )
 
 
@@ -90,11 +95,21 @@ def infer_box_dims(model_dict: dict[str, Any]) -> tuple[int, int, int] | None:
     if not isinstance(corona, dict):
         return None
 
+    axis_order = "xyz"
+    metadata = model_dict.get("metadata")
+    if isinstance(metadata, dict):
+        raw_order = metadata.get("axis_order_3d", "")
+        if isinstance(raw_order, (bytes, np.bytes_)):
+            raw_order = raw_order.decode("utf-8", "ignore")
+        axis_order = str(raw_order).strip().lower() or "xyz"
+
     for key in ("bx", "by", "bz"):
         if key in corona:
             arr = np.asarray(corona[key])
             if arr.ndim >= 3:
                 shape = arr.shape[:3]
+                if axis_order == "zyx":
+                    return (int(shape[2]), int(shape[1]), int(shape[0]))
                 return (int(shape[0]), int(shape[1]), int(shape[2]))
     return None
 
@@ -240,20 +255,28 @@ def infer_world_anchor_from_index(model_dict: dict[str, Any]) -> tuple[float, fl
     lon_lat: tuple[float, float] | None = None
 
     header = _fits_header_from_text(header_text)
+    frame = "heliographic_stonyhurst"
     if header is not None:
         try:
             lon_lat = (float(header["CRVAL1"]), float(header["CRVAL2"]))
         except Exception:
             lon_lat = None
+        ctype1 = str(header.get("CTYPE1", "")).upper()
+        ctype2 = str(header.get("CTYPE2", "")).upper()
+        wcsname = str(header.get("WCSNAME", "")).upper()
+        if "CRLN" in ctype1 or "CRLN" in ctype2 or "CARRINGTON" in wcsname:
+            frame = "heliographic_carrington"
 
     if lon_lat is None:
         lon_lat = _extract_anchor_from_text(header_text)
+        if "CARRINGTON-HELIOGRAPHIC" in header_text.upper():
+            frame = "heliographic_carrington"
     if lon_lat is None:
         return None
 
     lon_deg, lat_deg = lon_lat
     anchor_radius_rsun = _extract_anchor_radius_from_text(header_text)
-    return (lon_deg, lat_deg, anchor_radius_rsun, "heliographic_stonyhurst")
+    return (lon_deg, lat_deg, anchor_radius_rsun, frame)
 
 
 def complete_geometry_contract(

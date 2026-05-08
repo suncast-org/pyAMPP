@@ -57,9 +57,47 @@ def test_geometry_contract_dataclass():
     assert restored.inferred_from == "index"
 
 
+def test_geometry_contract_from_dict_decodes_h5_bytes():
+    payload = {
+        "nx": 10,
+        "ny": 8,
+        "nz": 6,
+        "dr_x": 1.0,
+        "dr_y": 1.0,
+        "dr_z": 1.0,
+        "rsun_m": RSUN_HMI_METERS,
+        "anchor_lon_deg": 12.0,
+        "anchor_lat_deg": -4.0,
+        "anchor_radius_rsun": 1.0,
+        "frame": np.bytes_("heliographic_stonyhurst"),
+        "obstime": np.bytes_("2024-05-12T16:00:00"),
+        "inferred_from": np.bytes_("index"),
+    }
+    contract = GeometryContract.from_dict(payload)
+    assert contract.frame == "heliographic_stonyhurst"
+    assert contract.obstime == "2024-05-12T16:00:00"
+    assert contract.inferred_from == "index"
+
+
 def test_infer_box_dims():
     model_dict = {"corona": {"bx": np.zeros((100, 80, 120), dtype=np.float32)}}
     assert infer_box_dims(model_dict) == (100, 80, 120)
+
+
+def test_infer_box_dims_respects_zyx_axis_order():
+    model_dict = {
+        "corona": {"bx": np.zeros((12, 8, 4), dtype=np.float32)},
+        "metadata": {"axis_order_3d": "zyx"},
+    }
+    assert infer_box_dims(model_dict) == (4, 8, 12)
+
+
+def test_infer_box_dims_respects_zyx_axis_order_bytes():
+    model_dict = {
+        "corona": {"bx": np.zeros((9, 7, 5), dtype=np.float32)},
+        "metadata": {"axis_order_3d": np.bytes_("zyx")},
+    }
+    assert infer_box_dims(model_dict) == (5, 7, 9)
 
 
 def test_infer_voxel_resolution_corona_only():
@@ -84,6 +122,24 @@ def test_infer_world_anchor_from_base_index():
     assert lat == -7.0
     assert frame == "heliographic_stonyhurst"
     assert abs(radius - 1.0) < 1e-12
+
+
+def test_infer_world_anchor_detects_carrington_frame_from_ctype():
+    header = (
+        "SIMPLE  = T\n"
+        "CTYPE1  = 'CRLN-CEA'\n"
+        "CTYPE2  = 'CRLT-CEA'\n"
+        "CRVAL1  = 13.0\n"
+        "CRVAL2  = -7.0\n"
+        "RSUN_REF= 695700000.0\n"
+        "DATE-OBS= '2020-11-26T19:58:31'\n"
+        "END\n"
+    )
+    model_dict = {"base": {"index": header}}
+    anchor = infer_world_anchor_from_index(model_dict)
+    assert anchor is not None
+    _, _, _, frame = anchor
+    assert frame == "heliographic_carrington"
 
 
 def test_complete_geometry_contract_success_from_base_index():
