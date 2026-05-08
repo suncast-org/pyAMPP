@@ -34,10 +34,24 @@ def _decode_scalar(value: Any) -> Any:
     return value
 
 
+def _print_metadata_node(prefix: str, node: h5py.Group | h5py.Dataset) -> None:
+    if isinstance(node, h5py.Group):
+        print(f"{prefix}/")
+        for key in node.keys():
+            _print_metadata_node(f"{prefix}/{key}", node[key])
+        return
+
+    if node.shape == ():
+        val = _decode_scalar(node[()])
+        print(f"{prefix}: {val}")
+        return
+
+    print(f"{prefix}: <dataset shape={node.shape} dtype={node.dtype}>")
+
+
 def _print_metadata_values(meta: h5py.Group) -> None:
     for key in meta.keys():
-        val = _decode_scalar(meta[key][()])
-        print(f"metadata/{key}: {val}")
+        _print_metadata_node(f"metadata/{key}", meta[key])
 
 
 def _print_observer_summary(h5f: h5py.File) -> None:
