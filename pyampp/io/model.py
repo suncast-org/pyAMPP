@@ -41,6 +41,21 @@ from pyampp.gxbox.boxutils import (
 from pyampp.util.build_h5_from_sav import build_h5_from_sav
 
 
+def _prepare_model_for_h5_write(model_dict: dict[str, Any]) -> dict[str, Any]:
+    """Return a shallow-copied payload safe for generic HDF5 writers."""
+    payload = dict(model_dict)
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return payload
+
+    metadata_copy = dict(metadata)
+    contract = metadata_copy.get("geometry_contract")
+    if isinstance(contract, GeometryContract):
+        metadata_copy["geometry_contract"] = contract.to_dict()
+    payload["metadata"] = metadata_copy
+    return payload
+
+
 def _ensure_group(f: h5py.File | h5py.Group, name: str):
     """Get or create an HDF5 group."""
     if name in f:
@@ -220,15 +235,16 @@ def save_model_to_h5(
     """
     h5_path = Path(h5_path)
 
+    metadata = model_dict.get("metadata")
+    contract = metadata.get("geometry_contract") if isinstance(metadata, dict) else None
+
     # Write model using standard writer
-    write_b3d_h5(str(h5_path), model_dict)
+    write_payload = _prepare_model_for_h5_write(model_dict)
+    write_b3d_h5(str(h5_path), write_payload)
 
     # Persist contract if present
-    metadata = model_dict.get("metadata")
-    if isinstance(metadata, dict):
-        contract = metadata.get("geometry_contract")
-        if isinstance(contract, GeometryContract):
-            _write_contract_to_h5(h5_path, contract)
+    if isinstance(contract, GeometryContract):
+        _write_contract_to_h5(h5_path, contract)
 
 
 def complete_and_persist_contract_in_h5(
