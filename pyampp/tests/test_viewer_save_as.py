@@ -4,7 +4,7 @@ Covers:
 - _persist_selector_result_to_entry with output_path parameter (view2d)
 - SAV input without output_path returns False
 - H5 input with output_path writes to the new destination (not in-place)
-- SAV input with output_path writes to the new destination
+- SAV input with output_path writes to the new destination via conversion
 """
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ class TestPersistSelectorResultOutputPath:
         assert src.stat().st_mtime == pytest.approx(src_mtime)
 
     def test_sav_with_output_path_writes_to_dest(self, tmp_path):
-        """SAV origin + output_path: loads via _load_entry_box_any, writes to dest."""
+        """SAV origin + output_path: converts SAV first, then writes observer edits."""
         from pyampp.gxbox.gxbox_selector_view import _persist_selector_result_to_entry
 
         fake_sav = tmp_path / "model.sav"
@@ -120,17 +120,12 @@ class TestPersistSelectorResultOutputPath:
         dest = tmp_path / "output.h5"
         result = _make_minimal_result()
 
-        fake_box_data = {
-            "corona": {
-                "bx": np.zeros((5, 5, 5), dtype=np.float32),
-                "by": np.zeros((5, 5, 5), dtype=np.float32),
-                "bz": np.zeros((5, 5, 5), dtype=np.float32),
-                "attrs": {"model_type": "nlfff"},
-            }
-        }
+        def _fake_build_h5_from_sav(*, sav_path, out_h5, template_h5=None):
+            _make_minimal_h5(Path(out_h5))
+
         with patch(
-            "pyampp.gxbox.gxbox_selector_view._load_entry_box_any",
-            return_value=fake_box_data,
+            "pyampp.gxbox.gxbox_selector_view.build_h5_from_sav",
+            side_effect=_fake_build_h5_from_sav,
         ):
             ret = _persist_selector_result_to_entry(fake_sav, result, output_path=dest)
         assert ret is True

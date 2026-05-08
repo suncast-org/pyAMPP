@@ -33,6 +33,7 @@ from pyampp.gxbox.selector_api import (
     SelectorSessionInput,
 )
 from pyampp.gxbox.observer_restore import build_pb0r_metadata_from_ephemeris, resolve_observer_with_info
+from pyampp.util.build_h5_from_sav import build_h5_from_sav
 
 _DEFAULT_MAP_IDS = (
     "Bz",
@@ -475,8 +476,11 @@ def _persist_selector_result_to_entry(
     if entry_path.suffix.lower() == ".h5":
         box_data = read_b3d_h5(str(entry_path))
     else:
-        # SAV origin — load via the universal entry loader
-        box_data = _load_entry_box_any(entry_path)
+        # SAV origin — first convert to canonical HDF5 to avoid object-dtype payloads.
+        if output_path is None:
+            return False
+        build_h5_from_sav(sav_path=entry_path, out_h5=dest, template_h5=None)
+        box_data = read_b3d_h5(str(dest))
     observer = box_data.get("observer")
     if not isinstance(observer, dict):
         observer = {}
@@ -654,18 +658,37 @@ def main() -> int:
     session_input = _build_session_input(entry_path)
     dialog = FovBoxSelectorDialog(session_input=session_input, entry_box_path=entry_path)
     dialog.setWindowTitle(f"FOV / Box Selector - {entry_path.name}")
-    save_as_target: Path | None = None
-
     def _on_save_as_clicked() -> None:
-        nonlocal save_as_target
         out_path = _pick_save_as_h5_path(
             dialog,
             default_stem=entry_path.stem,
         )
         if out_path is None:
             return
-        save_as_target = out_path
-        dialog.accept()
+        try:
+            result = dialog.current_selection_snapshot()
+            line_seeds = dialog.committed_line_seeds()
+            fov_box = dialog.current_fov_box_selection()
+            observer_state = dialog.current_observer_persistence_state()
+            _persist_selector_result_to_entry(
+                entry_path,
+                result,
+                line_seeds=line_seeds,
+                fov_box=fov_box,
+                observer_state=observer_state,
+                output_path=out_path,
+            )
+            QMessageBox.information(
+                dialog,
+                "Model Saved",
+                f"Saved updated model to:\n{out_path}",
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                dialog,
+                "Save Failed",
+                f"Failed to save model to {out_path}:\n{exc}",
+            )
 
     dialog.set_save_as_callback(_on_save_as_clicked, text="Save As && Close")
     if entry_path.suffix.lower() == ".sav":
@@ -674,7 +697,6 @@ def main() -> int:
         dialog.set_accept_button_text("Apply && Close")
 
     def _persist_result_if_needed() -> None:
-        nonlocal save_as_target
         if dialog.result() != QDialog.Accepted:
             return
         result = dialog.accepted_selection()
@@ -683,26 +705,6 @@ def main() -> int:
         line_seeds = dialog.committed_line_seeds()
         fov_box = dialog.current_fov_box_selection()
         observer_state = dialog.current_observer_persistence_state()
-        if save_as_target is not None:
-            try:
-                _persist_selector_result_to_entry(
-                    entry_path,
-                    result,
-                    line_seeds=line_seeds,
-                    fov_box=fov_box,
-                    observer_state=observer_state,
-                    output_path=save_as_target,
-                )
-            except Exception as exc:
-                QMessageBox.warning(
-                    dialog,
-                    "Save Failed",
-                    f"Failed to save model to {save_as_target}:\n{exc}",
-                )
-            finally:
-                save_as_target = None
-            return
-
         if entry_path.suffix.lower() == ".sav":
             btn = QMessageBox.question(
                 dialog,

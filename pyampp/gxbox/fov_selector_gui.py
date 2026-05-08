@@ -1101,6 +1101,16 @@ class FovBoxSelectorDialog(QDialog):
     def accepted_selection(self) -> Optional[SelectorDialogResult]:
         return self._accepted_selection
 
+    def current_selection_snapshot(self) -> SelectorDialogResult:
+        """Return current form state without closing the dialog."""
+        self._push_form_to_view_state()
+        self._commit_pending_observer_state()
+        return SelectorDialogResult(
+            geometry=self._selection_from_form(),
+            fov=self._fov_from_form(),
+            square_fov=bool(self.square_fov_box.isChecked()),
+        )
+
     def committed_line_seeds(self):
         return self.map_box_widget.committed_line_seeds()
 
