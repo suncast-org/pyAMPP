@@ -35,8 +35,6 @@ from pyampp.geometry.contract import (
 )
 from pyampp.gxbox.boxutils import (
     normalize_observer_metadata,
-    read_b3d_h5,
-    write_b3d_h5,
 )
 from pyampp.util.build_h5_from_sav import build_h5_from_sav
 
@@ -54,6 +52,155 @@ def _prepare_model_for_h5_write(model_dict: dict[str, Any]) -> dict[str, Any]:
         metadata_copy["geometry_contract"] = contract.to_dict()
     payload["metadata"] = metadata_copy
     return payload
+
+
+def _read_b3d_h5_raw(filename: Path | str) -> dict[str, Any]:
+    """Low-level HDF5 reader used internally by io.model."""
+
+    def _read_h5_node(node):
+        if isinstance(node, h5py.Group):
+            out = {}
+            for key in node.keys():
+                out[key] = _read_h5_node(node[key])
+            return out
+        if node.shape == ():
+            return node[()]
+        return node[:]
+
+    box_b3d: dict[str, Any] = {}
+    with h5py.File(filename, "r") as hdf_file:
+        for model_type in hdf_file.keys():
+            group = hdf_file[model_type]
+            target_type = model_type
+            model_attr = None
+            if model_type in ("nlfff", "pot", "potential", "bounds"):
+                target_type = "corona"
+                if model_type == "potential":
+                    model_attr = "pot"
+                elif model_type in ("bounds",):
+                    model_attr = "bnd"
+                else:
+                    model_attr = model_type
+            if target_type not in box_b3d:
+                box_b3d[target_type] = {}
+            component_names = list(group.keys())
+            if target_type == "refmaps":
+
+                def _refmap_sort_key(name: str):
+                    obj = group[name]
+                    if isinstance(obj, h5py.Group) and "order_index" in obj.attrs:
+                        return (0, int(obj.attrs["order_index"]))
+                    return (1, name)
+
+                component_names = sorted(component_names, key=_refmap_sort_key)
+            for component in component_names:
+                ds = group[component]
+                box_b3d[target_type][component] = _read_h5_node(ds)
+            if len(group.attrs.keys()) > 0 or model_attr is not None:
+                attrs = dict(group.attrs)
+                if model_attr is not None and "model_type" not in attrs:
+                    attrs["model_type"] = model_attr
+                if "attrs" in box_b3d[target_type]:
+                    box_b3d[target_type]["attrs"].update(attrs)
+                else:
+                    box_b3d[target_type]["attrs"] = attrs
+    return box_b3d
+
+
+def _write_b3d_h5_raw(filename: Path | str, box_b3d: dict[str, Any]) -> None:
+    """Low-level HDF5 writer used internally by io.model."""
+
+    def _encode_dataset_value(value):
+        if isinstance(value, (str, bytes, np.bytes_)):
+            return np.bytes_(value)
+        if value is None:
+            return np.bytes_("")
+
+        arr = np.asarray(value)
+        if arr.dtype.kind != "O":
+            return value
+
+        if arr.shape == ():
+            scalar = arr.item()
+            if isinstance(scalar, (str, bytes, np.bytes_)):
+                return np.bytes_(scalar)
+            if scalar is None:
+                return np.bytes_("")
+            try:
+                return np.asarray(scalar)
+            except Exception:
+                return np.bytes_(str(scalar))
+
+        as_text = np.vectorize(lambda x: "" if x is None else str(x), otypes=[str])(arr)
+        return as_text.astype("S")
+
+    def _set_group_attrs(group, attrs):
+        if not isinstance(attrs, dict):
+            return
+        for key, value in attrs.items():
+            group.attrs[key] = _encode_dataset_value(value)
+
+    def _write_node(group, key, value, *, target_type=None):
+        if isinstance(value, dict):
+            sub = group.create_group(key)
+            attrs = value.get("attrs", {}) if isinstance(value.get("attrs"), dict) else {}
+            for sub_key, sub_val in value.items():
+                if sub_key == "attrs":
+                    continue
+                _write_node(sub, sub_key, sub_val, target_type=target_type)
+            _set_group_attrs(sub, attrs)
+            return
+
+        if target_type in ("chromo", "lines") and key == "voxel_status":
+            group.create_dataset(key, data=np.asarray(value, dtype=np.uint8))
+            return
+        group.create_dataset(key, data=_encode_dataset_value(value))
+
+    with h5py.File(filename, "w") as hdf_file:
+        for model_type, components in box_b3d.items():
+            if components is None:
+                continue
+            if model_type == "metadata":
+                group = hdf_file.create_group("metadata")
+                for key, value in components.items():
+                    _write_node(group, key, value, target_type="metadata")
+                continue
+            target_type = model_type
+            attrs = components.get("attrs", {}) if isinstance(components, dict) else {}
+            if model_type in ("nlfff", "pot", "potential", "bounds"):
+                target_type = "corona"
+                if "model_type" not in attrs:
+                    attrs = dict(attrs)
+                    if model_type == "potential":
+                        attrs["model_type"] = "pot"
+                    elif model_type == "bounds":
+                        attrs["model_type"] = "bnd"
+                    else:
+                        attrs["model_type"] = model_type
+            if target_type in hdf_file:
+                continue
+            if target_type == "refmaps":
+                group = hdf_file.create_group(target_type, track_order=True)
+            else:
+                group = hdf_file.create_group(target_type)
+            refmap_idx = 0
+            for component, data in components.items():
+                if component == "attrs":
+                    continue
+                if target_type == "refmaps" and isinstance(data, dict):
+                    sub = group.create_group(component, track_order=True)
+                    sub.attrs["order_index"] = np.int64(refmap_idx)
+                    refmap_idx += 1
+                    sub_attrs = data.get("attrs", {}) if isinstance(data.get("attrs"), dict) else {}
+                    for sub_key, sub_val in data.items():
+                        if sub_key == "attrs":
+                            continue
+                        _write_node(sub, sub_key, sub_val, target_type=target_type)
+                    _set_group_attrs(sub, sub_attrs)
+                else:
+                    _write_node(group, component, data, target_type=target_type)
+            if attrs:
+                _set_group_attrs(group, attrs)
 
 
 def _ensure_group(f: h5py.File | h5py.Group, name: str):
@@ -196,7 +343,7 @@ def save_thin_model_to_h5(
         payload["observer"] = observer
 
     write_payload = _prepare_model_for_h5_write(payload)
-    write_b3d_h5(str(h5_path), write_payload)
+    _write_b3d_h5_raw(str(h5_path), write_payload)
 
 
 def export_thin_model_from_h5(
@@ -298,7 +445,7 @@ def load_model_from_h5(
         raise FileNotFoundError(f"H5 file not found: {h5_path}")
 
     # Read model structure from H5
-    model_dict = read_b3d_h5(str(h5_path))
+    model_dict = _read_b3d_h5_raw(str(h5_path))
 
     # Try to use pre-stored contract first
     stored_contract = _read_contract_from_h5(h5_path)
@@ -391,7 +538,7 @@ def save_model_to_h5(
 
     # Write model using standard writer
     write_payload = _prepare_model_for_h5_write(model_dict)
-    write_b3d_h5(str(h5_path), write_payload)
+    _write_b3d_h5_raw(str(h5_path), write_payload)
 
     # Persist contract if present
     if isinstance(contract, GeometryContract):
@@ -425,7 +572,7 @@ def complete_and_persist_contract_in_h5(
     h5_path = Path(h5_path)
 
     # Read model from H5
-    model_dict = read_b3d_h5(str(h5_path))
+    model_dict = _read_b3d_h5_raw(str(h5_path))
 
     # Check if contract is already stored
     if _read_contract_from_h5(h5_path) is not None:
