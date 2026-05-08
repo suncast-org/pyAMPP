@@ -17,6 +17,7 @@ Unreleased
 - Added a DRMS downloader backend and made it the default backend.
 - Added ``--use-fido`` to explicitly select the legacy SunPy/Fido downloader.
 - Added ``--force-download`` to bypass cache hits for clean downloader benchmarking.
+- Improved DRMS downloader throughput by scheduling independent HMI/AIA requests concurrently.
 - Added GUI downloader controls:
   - ``Downloader`` selector (`DRMS` / `Fido`)
   - ``Use cache`` checkbox
