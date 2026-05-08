@@ -16,17 +16,19 @@ from pyampp.gxbox.gx_box2id import gx_box2id
 from pyampp.geometry.contract import complete_geometry_contract
 
 
-def _apply_geometry_contract_to_h5(h5_path: Path) -> None:
+def _apply_geometry_contract_to_h5(h5_path: Path, *, strict: bool = False) -> bool:
     """
     Complete and store geometry contract in an existing HDF5 file.
 
-    This step is required for canonical outputs. It raises if completion or
-    persistence fails.
+    Returns True when a complete contract is written, otherwise False.
+    When ``strict`` is True, incomplete contracts raise.
     """
     model_dict = read_b3d_h5(str(h5_path))
-    contract = complete_geometry_contract(model_dict, strict=True)
+    contract = complete_geometry_contract(model_dict, strict=strict)
     if contract is None:
-        raise RuntimeError(f"Geometry contract is incomplete for model: {h5_path}")
+        if strict:
+            raise RuntimeError(f"Geometry contract is incomplete for model: {h5_path}")
+        return False
 
     with h5py.File(h5_path, "r+") as f:
         g_meta = _ensure_group(f, "metadata")
@@ -38,6 +40,8 @@ def _apply_geometry_contract_to_h5(h5_path: Path) -> None:
             elif isinstance(value, (int, float)):
                 value = np.array(value)
             _replace_dataset(g_contract, key, value)
+
+    return True
 
 
 def _decode_if_bytes(v: Any) -> Any:
