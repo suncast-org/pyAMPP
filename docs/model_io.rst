@@ -113,6 +113,18 @@ To fail CI/preflight when contract metadata is missing:
 
   h5thin /path/to/model.h5 --require-contract
 
+To export a portable metadata-only artifact from a full model HDF5:
+
+.. code-block:: bash
+
+  h5thin-export /path/to/full_model.h5
+
+Optional explicit destination:
+
+.. code-block:: bash
+
+  h5thin-export /path/to/full_model.h5 --output /path/to/model_metadata.h5
+
 Exit code behavior:
 
 - ``0``: command succeeded (contract present, or not required)

@@ -260,6 +260,7 @@ After installation, the following commands become available:
 - ``gx-idl2fov2box``: Translate IDL ``gx_fov2box`` execute strings (or SAV ``EXECUTE``) into Python ``gx-fov2box`` commands.
 - ``gx-fov2box2idl``: Translate Python ``gx-fov2box`` commands (or HDF5 ``metadata/execute``) into simple IDL ``gx_fov2box`` calls.
 - ``h5thin``: Inspect only ``metadata/geometry_contract`` and optional ``observer`` metadata from an HDF5 model.
+- ``h5thin-export``: Generate a metadata-only thin HDF5 (full ``metadata`` + optional ``observer``) from a full model HDF5.
 
 License
 -------
