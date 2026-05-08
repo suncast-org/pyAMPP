@@ -89,6 +89,71 @@ def _read_contract_from_h5(h5_path: Path | str) -> GeometryContract | None:
     return None
 
 
+def _decode_h5_scalar(value: Any) -> Any:
+    if isinstance(value, (bytes, np.bytes_)):
+        return value.decode("utf-8", "ignore")
+    return value
+
+
+def _read_h5_node(node) -> Any:
+    if isinstance(node, h5py.Group):
+        out: dict[str, Any] = {}
+        for key in node.keys():
+            out[key] = _read_h5_node(node[key])
+        if len(node.attrs.keys()) > 0:
+            attrs = {}
+            for key, val in node.attrs.items():
+                attrs[key] = _decode_h5_scalar(val)
+            out["attrs"] = attrs
+        return out
+
+    if node.shape == ():
+        return _decode_h5_scalar(node[()])
+
+    arr = node[:]
+    if isinstance(arr, np.ndarray) and arr.dtype.kind in ("S", "a"):
+        return arr.astype(str)
+    return arr
+
+
+def load_geometry_contract_and_observer_from_h5(
+    h5_path: Path | str,
+) -> dict[str, Any] | None:
+    """
+    Read only geometry_contract and observer sections from an HDF5 model file.
+
+    Returns None when metadata/geometry_contract is missing.
+    When geometry_contract exists, returns a thin model dictionary:
+      {
+        "metadata": {"geometry_contract": GeometryContract},
+        "observer": {...}  # only if present in the file
+      }
+    """
+    h5_path = Path(h5_path)
+    if not h5_path.exists():
+        raise FileNotFoundError(f"H5 file not found: {h5_path}")
+
+    with h5py.File(h5_path, "r") as f:
+        if "metadata" not in f or "geometry_contract" not in f["metadata"]:
+            return None
+
+        g_contract = f["metadata"]["geometry_contract"]
+        contract_raw = {}
+        for key in g_contract.keys():
+            contract_raw[key] = _decode_h5_scalar(g_contract[key][()])
+
+        thin_model: dict[str, Any] = {
+            "metadata": {
+                "geometry_contract": GeometryContract.from_dict(contract_raw),
+            }
+        }
+
+        if "observer" in f:
+            thin_model["observer"] = _read_h5_node(f["observer"])
+
+    return thin_model
+
+
 def _write_contract_to_h5(h5_path: Path | str, contract: GeometryContract) -> bool:
     """
     Persist a geometry contract to HDF5.
@@ -296,4 +361,5 @@ __all__ = [
     "load_model_from_sav",
     "save_model_to_h5",
     "complete_and_persist_contract_in_h5",
+    "load_geometry_contract_and_observer_from_h5",
 ]

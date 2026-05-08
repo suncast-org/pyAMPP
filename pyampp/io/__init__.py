@@ -1,6 +1,7 @@
 """I/O module for model loading and saving with contract enforcement."""
 
 from .model import (
+    load_geometry_contract_and_observer_from_h5,
     load_model_from_h5,
     load_model_from_sav,
     save_model_to_h5,
@@ -8,6 +9,7 @@ from .model import (
 )
 
 __all__ = [
+    "load_geometry_contract_and_observer_from_h5",
     "load_model_from_h5",
     "load_model_from_sav",
     "save_model_to_h5",

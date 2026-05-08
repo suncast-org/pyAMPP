@@ -255,6 +255,7 @@ After installation, the following commands become available:
 - ``h5tree``: Print an HDF5 tree (metadata shown by default, plus ``observer/name``, optional ``observer/label`` / ``observer/source``, and ``observer/pb0r/*`` when present; ``--no-metadata`` hides these value lines, ``--meta`` prints them only).
 - ``gx-idl2fov2box``: Translate IDL ``gx_fov2box`` execute strings (or SAV ``EXECUTE``) into Python ``gx-fov2box`` commands.
 - ``gx-fov2box2idl``: Translate Python ``gx-fov2box`` commands (or HDF5 ``metadata/execute``) into simple IDL ``gx_fov2box`` calls.
+- ``h5thin``: Inspect only ``metadata/geometry_contract`` and optional ``observer`` metadata from an HDF5 model.
 
 License
 -------

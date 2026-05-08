@@ -79,3 +79,29 @@ Recommended for application and downstream code:
 
 This separation removes duplicated fallback logic in downstream consumers and
 keeps one authoritative contract-completion path in pyAMPP.
+
+Thin Metadata CLI
+-----------------
+
+For quick validation/testing without loading full model payloads, use:
+
+.. code-block:: bash
+
+  h5thin /path/to/model.h5
+
+JSON output for scripts:
+
+.. code-block:: bash
+
+  h5thin /path/to/model.h5 --json
+
+To fail CI/preflight when contract metadata is missing:
+
+.. code-block:: bash
+
+  h5thin /path/to/model.h5 --require-contract
+
+Exit code behavior:
+
+- ``0``: command succeeded (contract present, or not required)
+- ``2``: contract missing and ``--require-contract`` was set
