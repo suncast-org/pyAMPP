@@ -120,9 +120,9 @@ metadata/
    - Exposes `io` and `geometry` as public package imports
 
 7. **pyampp/util/build_h5_from_sav.py**
-   - `_apply_geometry_contract_to_h5()`: completion step after SAV→H5 conversion
+   - `_apply_geometry_contract_to_h5()`: delegation shim to canonical io-model completion API
    - Called at end of `build_h5_from_sav()` before returning
-   - Non-fatal: skips silently if any step fails
+   - Non-fatal: returns False when contract remains incomplete in non-strict mode
 
 8. **pyampp/gxbox/box_view2d.py**
    - Uses geometry-module constructors for blue FOV box generation

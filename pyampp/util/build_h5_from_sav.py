@@ -11,9 +11,8 @@ import numpy as np
 from astropy.io import fits
 from scipy.io import readsav
 
-from pyampp.gxbox.boxutils import extract_sav_refmaps, read_b3d_h5, serialize_sav_index_header
+from pyampp.gxbox.boxutils import extract_sav_refmaps, serialize_sav_index_header
 from pyampp.gxbox.gx_box2id import gx_box2id
-from pyampp.geometry.contract import complete_geometry_contract
 
 
 def _apply_geometry_contract_to_h5(h5_path: Path, *, strict: bool = False) -> bool:
@@ -23,25 +22,10 @@ def _apply_geometry_contract_to_h5(h5_path: Path, *, strict: bool = False) -> bo
     Returns True when a complete contract is written, otherwise False.
     When ``strict`` is True, incomplete contracts raise.
     """
-    model_dict = read_b3d_h5(str(h5_path))
-    contract = complete_geometry_contract(model_dict, strict=strict)
-    if contract is None:
-        if strict:
-            raise RuntimeError(f"Geometry contract is incomplete for model: {h5_path}")
-        return False
+    # Canonical path: delegate completion/persistence to io.model.
+    from pyampp.io.model import complete_and_persist_contract_in_h5
 
-    with h5py.File(h5_path, "r+") as f:
-        g_meta = _ensure_group(f, "metadata")
-        g_contract = _ensure_group(g_meta, "geometry_contract")
-
-        for key, value in contract.to_dict().items():
-            if isinstance(value, str):
-                value = np.bytes_(value)
-            elif isinstance(value, (int, float)):
-                value = np.array(value)
-            _replace_dataset(g_contract, key, value)
-
-    return True
+    return complete_and_persist_contract_in_h5(h5_path, strict=strict)
 
 
 def _decode_if_bytes(v: Any) -> Any:
