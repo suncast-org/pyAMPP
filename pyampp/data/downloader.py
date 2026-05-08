@@ -56,6 +56,7 @@ class SDOImageDownloader:
 
         self.path = os.path.join(data_dir, self.time.datetime.strftime("%Y-%m-%d"))
         self._cache_index_path = Path(self.path) / "index.json"
+        self._cache_index_lock = threading.RLock()
         self._drms_client_local = threading.local()
         self._prepare_directory()
         self.existence_report = self._check_files_exist(self.path)
@@ -359,29 +360,52 @@ class SDOImageDownloader:
 
     def _save_cache_index(self, entries):
         payload = {"version": 1, "entries": entries}
-        self._cache_index_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        cache_dir = self._cache_index_path.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        serialized = json.dumps(payload, indent=2, sort_keys=True)
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(cache_dir),
+                prefix=".index.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp_file:
+                tmp_file.write(serialized)
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+                tmp_path = Path(tmp_file.name)
+            os.replace(tmp_path, self._cache_index_path)
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
 
     def _cache_lookup(self, query):
-        entries = self._load_cache_index()
-        rel_path = entries.get(query)
-        if not rel_path:
+        with self._cache_index_lock:
+            entries = self._load_cache_index()
+            rel_path = entries.get(query)
+            if not rel_path:
+                return ""
+            fpath = Path(self.path) / rel_path
+            if fpath.exists() and self._fits_has_map_metadata(fpath):
+                return str(fpath)
+            if fpath.exists():
+                try:
+                    fpath.unlink()
+                except Exception:
+                    pass
+            entries.pop(query, None)
+            self._save_cache_index(entries)
             return ""
-        fpath = Path(self.path) / rel_path
-        if fpath.exists() and self._fits_has_map_metadata(fpath):
-            return str(fpath)
-        if fpath.exists():
-            try:
-                fpath.unlink()
-            except Exception:
-                pass
-        entries.pop(query, None)
-        self._save_cache_index(entries)
-        return ""
 
     def _cache_store(self, query, file_path):
-        entries = self._load_cache_index()
-        entries[query] = os.path.basename(file_path)
-        self._save_cache_index(entries)
+        with self._cache_index_lock:
+            entries = self._load_cache_index()
+            entries[query] = os.path.basename(file_path)
+            self._save_cache_index(entries)
 
     def _get_drms_client(self):
         client = getattr(self._drms_client_local, "client", None)

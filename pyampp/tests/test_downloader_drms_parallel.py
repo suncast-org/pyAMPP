@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 from pathlib import Path
+import time
 
 from astropy.time import Time
 
@@ -65,3 +66,28 @@ def test_download_images_drms_schedules_all_missing_products_with_worker_cap(mon
     assert any(series == "hmi.B_720s" and segment == "field" and wave is None for series, segment, wave, _ in drms_calls)
     assert result["field"] == "/fake/field.fits"
     assert result["94"] == "/fake/94.fits"
+
+
+def test_cache_store_concurrent_updates_preserve_all_entries(monkeypatch, tmp_path: Path) -> None:
+    downloader = SDOImageDownloader(Time("2025-11-26T15:47:52"), data_dir=str(tmp_path), backend="drms")
+    original_load_cache_index = downloader._load_cache_index
+
+    def delayed_load_cache_index():
+        entries = original_load_cache_index()
+        time.sleep(0.01)
+        return entries
+
+    monkeypatch.setattr(downloader, "_load_cache_index", delayed_load_cache_index)
+
+    queries = [f"query-{idx}" for idx in range(20)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(downloader._cache_store, query, str(Path(downloader.path) / f"{query}.fits")) for query in queries
+        ]
+        for future in futures:
+            future.result()
+
+    entries = downloader._load_cache_index()
+    assert set(entries) == set(queries)
+    for query in queries:
+        assert entries[query] == f"{query}.fits"
