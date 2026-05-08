@@ -2668,6 +2668,20 @@ class MagFieldViewer(BackgroundPlotter):
         if not self.model_path:
             QMessageBox.warning(self.app_window, "Save Failed", "No writable .h5 model path is attached to this 3D viewer.")
             return False
+        
+        # Warn user before overwriting existing file
+        model_file = Path(self.model_path)
+        if model_file.exists():
+            btn = QMessageBox.question(
+                self.app_window,
+                "Overwrite Model",
+                f"Overwrite existing model file?\n{self.model_path}",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if btn != QMessageBox.Yes:
+                return False
+        
         try:
             update_line_seeds_h5(str(self.model_path), self._collect_line_seeds_snapshot())
             self._original_line_seeds = self._collect_line_seeds_snapshot()
@@ -2711,18 +2725,17 @@ class MagFieldViewer(BackgroundPlotter):
 
     def save_box(self):
         box_dims_str = 'x'.join(map(str, self.box.dims_pix))
-        default_filename = f'b3d_data_{self.box._frame_obs.obstime.to_datetime().strftime("%Y%m%dT%H%M%S")}_dim{box_dims_str}.h5'
-        default_path = None
+        # Prefer canonical source model name over generic timestamp name
+        suggested_stem = "b3d_data"
         candidate = self.model_path if self.model_path is not None else self.source_model_path
         if candidate is not None:
             try:
-                default_path = Path(candidate).expanduser()
-                if default_path.suffix.lower() != ".h5":
-                    default_path = default_path.with_suffix(".h5")
+                p = Path(candidate).expanduser()
+                suggested_stem = p.stem
             except Exception:
-                default_path = None
-        if default_path is None:
-            default_path = Path.cwd() / default_filename
+                pass
+        default_filename = f'{suggested_stem}.h5'
+        default_path = Path.cwd() / default_filename
         parent_widget = self.app_window if hasattr(self, "app_window") else None
         filename = QFileDialog.getSaveFileName(
             parent_widget,
@@ -2732,6 +2745,21 @@ class MagFieldViewer(BackgroundPlotter):
         )[0]
         if not filename:
             return
+        
+        # Warn user if file already exists
+        filepath = Path(filename)
+        if filepath.exists():
+            from PyQt5.QtWidgets import QMessageBox
+            btn = QMessageBox.question(
+                parent_widget,
+                "File Exists",
+                f"File already exists:\n{filename}\n\nOverwrite?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if btn != QMessageBox.Yes:
+                return
+        
         write_b3d_h5(filename, self.box.b3d)
         try:
             from pyampp.util.build_h5_from_sav import _apply_geometry_contract_to_h5

@@ -2842,6 +2842,7 @@ class MapBoxDisplayWidget(QWidget):
                 box_norm_direction=box_norm_direction,
                 box_view_up=box_view_up,
                 session_mode="embedded",
+                source_model_path=self._entry_box_path,
             )
             self._viewer3d_temp_h5_path = self._session_temp_h5_path
             if hasattr(self._viewer3d, "app_window"):
