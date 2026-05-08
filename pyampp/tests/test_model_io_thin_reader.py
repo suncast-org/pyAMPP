@@ -34,6 +34,8 @@ def test_thin_reader_returns_contract_and_optional_observer(tmp_path):
             "attrs": {"model_type": "nlfff"},
         },
         "metadata": {
+            "id": "demo_model",
+            "axis_order_3d": "xyz",
             "geometry_contract": GeometryContract(
                 nx=8,
                 ny=6,
@@ -74,7 +76,65 @@ def test_thin_reader_returns_contract_and_optional_observer(tmp_path):
     assert int(contract.nx) == 8
     assert float(contract.dr_y) == pytest.approx(0.003)
     assert float(contract.anchor_lon_deg) == pytest.approx(120.5)
+    assert thin["metadata"]["id"] == "demo_model"
+    assert thin["metadata"]["axis_order_3d"] == "xyz"
 
     assert "observer" in thin
     assert thin["observer"]["name"] == "earth"
     assert thin["observer"]["ephemeris"]["obs_date"] == "2020-11-26T19:58:33"
+
+
+def test_save_thin_model_to_h5_writes_only_metadata_and_observer(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    from pyampp.geometry.contract import GeometryContract, RSUN_HMI_METERS
+    from pyampp.io import (
+        load_geometry_contract_and_observer_from_h5,
+        save_thin_model_to_h5,
+    )
+
+    path = tmp_path / "thin_only.h5"
+    thin_model = {
+        "metadata": {
+            "id": "portable_meta",
+            "axis_order_3d": "xyz",
+            "geometry_contract": GeometryContract(
+                nx=10,
+                ny=12,
+                nz=14,
+                dr_x=0.001,
+                dr_y=0.0015,
+                dr_z=0.002,
+                rsun_m=RSUN_HMI_METERS,
+                anchor_lon_deg=75.0,
+                anchor_lat_deg=5.0,
+                anchor_radius_rsun=1.0,
+                frame="heliographic_stonyhurst",
+                obstime="2021-01-02T03:04:05",
+                inferred_from="index",
+            ),
+        },
+        "observer": {
+            "name": "earth",
+            "label": "Earth",
+            "ephemeris": {
+                "obs_date": "2021-01-02T03:04:05",
+                "hgln_obs_deg": 0.0,
+                "hglt_obs_deg": 3.0,
+            },
+        },
+    }
+
+    save_thin_model_to_h5(thin_model, path)
+
+    with h5py.File(path, "r") as f:
+        assert "metadata" in f
+        assert "observer" in f
+        assert "corona" not in f
+        assert "chromo" not in f
+        assert "base" not in f
+
+    roundtrip = load_geometry_contract_and_observer_from_h5(path)
+    assert roundtrip is not None
+    assert roundtrip["metadata"]["id"] == "portable_meta"
+    assert int(roundtrip["metadata"]["geometry_contract"].nz) == 14
+    assert roundtrip["observer"]["name"] == "earth"

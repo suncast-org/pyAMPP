@@ -8,7 +8,7 @@ import typer
 
 from pyampp.io import load_geometry_contract_and_observer_from_h5
 
-app = typer.Typer(help="Inspect only geometry_contract and observer metadata from an HDF5 model.")
+app = typer.Typer(help="Inspect thin metadata payload (full metadata + optional observer) from an HDF5 model.")
 
 
 def _observer_summary(observer: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -34,7 +34,7 @@ def main(
         help="Exit non-zero if geometry_contract is missing.",
     ),
 ) -> None:
-    """Inspect thin model metadata (geometry_contract + observer)."""
+    """Inspect thin model metadata (full metadata plus optional observer)."""
     thin = load_geometry_contract_and_observer_from_h5(path)
     if thin is None:
         payload = {
@@ -57,6 +57,7 @@ def main(
     payload = {
         "path": str(path),
         "has_geometry_contract": True,
+        "metadata_keys": sorted(thin.get("metadata", {}).keys()) if isinstance(thin.get("metadata"), dict) else [],
         "geometry_contract": {
             "nx": int(contract.nx),
             "ny": int(contract.ny),
@@ -91,6 +92,7 @@ def main(
     print(f"frame: {payload['geometry_contract']['frame']}")
     print(f"obstime: {payload['geometry_contract']['obstime']}")
     print(f"inferred_from: {payload['geometry_contract']['inferred_from']}")
+    print(f"metadata_keys: {', '.join(payload['metadata_keys'])}")
 
     if observer_info is None:
         print("observer: absent")

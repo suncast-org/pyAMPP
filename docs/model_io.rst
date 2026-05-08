@@ -83,6 +83,15 @@ keeps one authoritative contract-completion path in pyAMPP.
 Thin Metadata CLI
 -----------------
 
+Thin IO APIs:
+
+- ``load_geometry_contract_and_observer_from_h5(path)``
+  returns a thin model with full ``metadata`` and optional ``observer``
+  only when ``metadata/geometry_contract`` exists (otherwise ``None``).
+- ``save_thin_model_to_h5(thin_model, path)``
+  writes a lightweight HDF5 containing only ``metadata`` and optional
+  ``observer`` sections.
+
 For quick validation/testing without loading full model payloads, use:
 
 .. code-block:: bash

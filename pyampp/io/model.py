@@ -120,12 +120,15 @@ def load_geometry_contract_and_observer_from_h5(
     h5_path: Path | str,
 ) -> dict[str, Any] | None:
     """
-    Read only geometry_contract and observer sections from an HDF5 model file.
+        Read full metadata plus optional observer sections from an HDF5 model file.
 
     Returns None when metadata/geometry_contract is missing.
-    When geometry_contract exists, returns a thin model dictionary:
+        When geometry_contract exists, returns a thin model dictionary:
       {
-        "metadata": {"geometry_contract": GeometryContract},
+                "metadata": {
+                        ... full metadata ...,
+                        "geometry_contract": GeometryContract,
+                },
         "observer": {...}  # only if present in the file
       }
     """
@@ -137,21 +140,63 @@ def load_geometry_contract_and_observer_from_h5(
         if "metadata" not in f or "geometry_contract" not in f["metadata"]:
             return None
 
-        g_contract = f["metadata"]["geometry_contract"]
-        contract_raw = {}
-        for key in g_contract.keys():
-            contract_raw[key] = _decode_h5_scalar(g_contract[key][()])
+        metadata = _read_h5_node(f["metadata"])
+        if not isinstance(metadata, dict):
+            return None
+        contract_raw = metadata.get("geometry_contract")
+        if not isinstance(contract_raw, dict):
+            return None
+        metadata["geometry_contract"] = GeometryContract.from_dict(contract_raw)
 
-        thin_model: dict[str, Any] = {
-            "metadata": {
-                "geometry_contract": GeometryContract.from_dict(contract_raw),
-            }
-        }
+        thin_model: dict[str, Any] = {"metadata": metadata}
 
         if "observer" in f:
             thin_model["observer"] = _read_h5_node(f["observer"])
 
     return thin_model
+
+
+def save_thin_model_to_h5(
+    thin_model: dict[str, Any],
+    h5_path: Path | str,
+) -> None:
+    """
+    Write a thin model HDF5 containing only metadata and optional observer.
+
+    Required input:
+      - thin_model["metadata"]["geometry_contract"] present as either
+        GeometryContract or a dict-like contract payload.
+    Optional input:
+      - thin_model["observer"]
+    """
+    if not isinstance(thin_model, dict):
+        raise TypeError("thin_model must be a dict")
+
+    metadata = thin_model.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("thin_model must contain a metadata dict")
+    if "geometry_contract" not in metadata:
+        raise ValueError("thin_model.metadata must contain geometry_contract")
+
+    metadata_copy = dict(metadata)
+    contract = metadata_copy.get("geometry_contract")
+    if isinstance(contract, GeometryContract):
+        metadata_copy["geometry_contract"] = contract.to_dict()
+    elif isinstance(contract, dict):
+        # Validate schema early so malformed contract payloads fail explicitly.
+        GeometryContract.from_dict(contract)
+    else:
+        raise TypeError("geometry_contract must be GeometryContract or dict")
+
+    payload: dict[str, Any] = {"metadata": metadata_copy}
+    observer = thin_model.get("observer")
+    if observer is not None:
+        if not isinstance(observer, dict):
+            raise TypeError("observer must be a dict when provided")
+        payload["observer"] = observer
+
+    write_payload = _prepare_model_for_h5_write(payload)
+    write_b3d_h5(str(h5_path), write_payload)
 
 
 def _write_contract_to_h5(h5_path: Path | str, contract: GeometryContract) -> bool:
@@ -362,4 +407,5 @@ __all__ = [
     "save_model_to_h5",
     "complete_and_persist_contract_in_h5",
     "load_geometry_contract_and_observer_from_h5",
+    "save_thin_model_to_h5",
 ]
