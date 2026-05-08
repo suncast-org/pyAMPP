@@ -4,6 +4,8 @@ import os
 import re
 import shutil
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from glob import glob
 from pathlib import Path
@@ -26,6 +28,7 @@ class SDOImageDownloader:
     """
 
     SUPPORTED_BACKENDS = ("fido", "drms")
+    DRMS_MAX_WORKERS = 5
 
     def __init__(
         self,
@@ -53,7 +56,8 @@ class SDOImageDownloader:
 
         self.path = os.path.join(data_dir, self.time.datetime.strftime("%Y-%m-%d"))
         self._cache_index_path = Path(self.path) / "index.json"
-        self._drms_client = None
+        self._cache_index_lock = threading.RLock()
+        self._drms_client_local = threading.local()
         self._prepare_directory()
         self.existence_report = self._check_files_exist(self.path)
 
@@ -195,33 +199,76 @@ class SDOImageDownloader:
             ("hmi.M_720s", "magnetogram", "magnetogram"),
             ("hmi.Ic_noLimbDark_720s", "continuum", "continuum"),
         ]
+        jobs = []
         if self.hmi:
             for idx, (series, segment, key) in enumerate(hmi_tasks, start=1):
                 if not files.get(key):
-                    print(f"DRMS HMI: {idx}/{len(hmi_tasks)} ({segment})")
-                    files[key] = self._drms_get_fits(series, segment, time_window=720)
+                    jobs.append(
+                        {
+                            "key": key,
+                            "series": series,
+                            "segment": segment,
+                            "wave": None,
+                            "time_window": 720,
+                            "label": f"DRMS HMI: {idx}/{len(hmi_tasks)} ({segment})",
+                        }
+                    )
 
         if self.euv:
             for idx, wave in enumerate(AIA_EUV_PASSBANDS, start=1):
                 if not files.get(wave):
-                    print(f"DRMS AIA EUV: {idx}/{len(AIA_EUV_PASSBANDS)} ({wave})")
-                    files[wave] = self._drms_get_fits(
-                        "aia.lev1_euv_12s",
-                        "image",
-                        wave=wave,
-                        time_window=12,
+                    jobs.append(
+                        {
+                            "key": wave,
+                            "series": "aia.lev1_euv_12s",
+                            "segment": "image",
+                            "wave": wave,
+                            "time_window": 12,
+                            "label": f"DRMS AIA EUV: {idx}/{len(AIA_EUV_PASSBANDS)} ({wave})",
+                        }
                     )
 
         if self.uv:
             for idx, wave in enumerate(AIA_UV_PASSBANDS, start=1):
                 if not files.get(wave):
-                    print(f"DRMS AIA UV: {idx}/{len(AIA_UV_PASSBANDS)} ({wave})")
-                    files[wave] = self._drms_get_fits(
-                        "aia.lev1_uv_24s",
-                        "image",
-                        wave=wave,
-                        time_window=24,
+                    jobs.append(
+                        {
+                            "key": wave,
+                            "series": "aia.lev1_uv_24s",
+                            "segment": "image",
+                            "wave": wave,
+                            "time_window": 24,
+                            "label": f"DRMS AIA UV: {idx}/{len(AIA_UV_PASSBANDS)} ({wave})",
+                        }
                     )
+
+        if jobs:
+            workers = max(1, min(self.DRMS_MAX_WORKERS, len(jobs)))
+            if len(jobs) > 1:
+                print(f"DRMS: downloading {len(jobs)} products with up to {workers} workers")
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                future_to_job = {}
+                for job in jobs:
+                    print(job["label"])
+                    future_to_job[
+                        pool.submit(
+                            self._drms_get_fits,
+                            job["series"],
+                            job["segment"],
+                            wave=job["wave"],
+                            time_window=job["time_window"],
+                        )
+                    ] = job
+                for future in as_completed(future_to_job):
+                    job = future_to_job[future]
+                    try:
+                        files[job["key"]] = future.result() or ""
+                    except Exception as exc:
+                        print(
+                            "DRMS task failed for "
+                            f"{job['series']}{{{job['segment']}}}: {exc}"
+                        )
+                        files[job["key"]] = ""
 
         return self._check_files_exist(self.path, returnfilelist=True)
 
@@ -313,38 +360,63 @@ class SDOImageDownloader:
 
     def _save_cache_index(self, entries):
         payload = {"version": 1, "entries": entries}
-        self._cache_index_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        cache_dir = self._cache_index_path.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        serialized = json.dumps(payload, indent=2, sort_keys=True)
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(cache_dir),
+                prefix=".index.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp_file:
+                tmp_file.write(serialized)
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+                tmp_path = Path(tmp_file.name)
+            os.replace(tmp_path, self._cache_index_path)
+        finally:
+            if tmp_path is not None and tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
 
     def _cache_lookup(self, query):
-        entries = self._load_cache_index()
-        rel_path = entries.get(query)
-        if not rel_path:
+        with self._cache_index_lock:
+            entries = self._load_cache_index()
+            rel_path = entries.get(query)
+            if not rel_path:
+                return ""
+            fpath = Path(self.path) / rel_path
+            if fpath.exists() and self._fits_has_map_metadata(fpath):
+                return str(fpath)
+            if fpath.exists():
+                try:
+                    fpath.unlink()
+                except Exception:
+                    pass
+            entries.pop(query, None)
+            self._save_cache_index(entries)
             return ""
-        fpath = Path(self.path) / rel_path
-        if fpath.exists() and self._fits_has_map_metadata(fpath):
-            return str(fpath)
-        if fpath.exists():
-            try:
-                fpath.unlink()
-            except Exception:
-                pass
-        entries.pop(query, None)
-        self._save_cache_index(entries)
-        return ""
 
     def _cache_store(self, query, file_path):
-        entries = self._load_cache_index()
-        entries[query] = os.path.basename(file_path)
-        self._save_cache_index(entries)
+        with self._cache_index_lock:
+            entries = self._load_cache_index()
+            entries[query] = os.path.basename(file_path)
+            self._save_cache_index(entries)
 
     def _get_drms_client(self):
-        if self._drms_client is None:
+        client = getattr(self._drms_client_local, "client", None)
+        if client is None:
             try:
                 import drms
             except Exception as exc:
                 raise RuntimeError("drms is required for --download-backend drms") from exc
-            self._drms_client = drms.Client()
-        return self._drms_client
+            client = drms.Client()
+            self._drms_client_local.client = client
+        return client
 
     @staticmethod
     def _series_time_mode(series):
