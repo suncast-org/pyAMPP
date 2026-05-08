@@ -694,7 +694,7 @@ class MagFieldViewer(BackgroundPlotter):
 
         save_action = QAction("Save State", self.app_window)
         save_action.triggered.connect(
-            lambda: self.save_state(f'magfield_viewer_state{self.timestr}.pkl'))
+            lambda: self.save_state(f'box_view3d_state{self.timestr}.pkl'))
 
         # Find the position of the separator and insert the new actions above it
         separator_action = None
@@ -710,7 +710,7 @@ class MagFieldViewer(BackgroundPlotter):
             file_menu.addAction(load_action)
             file_menu.addAction(save_action)
 
-    def save_state(self,default_filename='magfield_viewer_state.pkl'):
+    def save_state(self,default_filename='box_view3d_state.pkl'):
         """
         Saves the current state of spheres to a file. Prompts the user to select a directory and input a filename.
 
@@ -744,7 +744,7 @@ class MagFieldViewer(BackgroundPlotter):
         if not isinstance(filename, str):
             options = QFileDialog.Options()
             options |= QFileDialog.DontUseNativeDialog
-            filename, _ = QFileDialog.getOpenFileName(self.app_window, "Load State", f'magfield_viewer_state{self.timestr}.pkl', "Pickle Files (*.pkl)",
+            filename, _ = QFileDialog.getOpenFileName(self.app_window, "Load State", f'box_view3d_state{self.timestr}.pkl', "Pickle Files (*.pkl)",
                                                       options=options)
 
         if filename:

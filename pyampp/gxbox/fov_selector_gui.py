@@ -33,7 +33,7 @@ from .observer_restore import (
     resolve_observer_parameters_from_ephemeris,
 )
 from .boxutils import observer_ephemeris_from_reference_file, observer_reference_details_from_file
-from .map_box_view import MapBoxDisplayWidget
+from .box_view2d import MapBoxDisplayWidget
 from .selector_api import (
     BoxGeometrySelection,
     CoordMode,

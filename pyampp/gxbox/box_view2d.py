@@ -132,13 +132,13 @@ def _viewer_camera_basis(*args, **kwargs):
 
 
 def _generate_streamlines_from_seeds(*args, **kwargs):
-    from .magfield_viewer import generate_streamlines_from_line_seeds
+    from .box_view3d import generate_streamlines_from_line_seeds
 
     return generate_streamlines_from_line_seeds(*args, **kwargs)
 
 
 def _magfield_viewer_cls():
-    from .magfield_viewer import MagFieldViewer
+    from .box_view3d import MagFieldViewer
 
     return MagFieldViewer
 
