@@ -484,6 +484,11 @@ class FovBoxSelectorDialog(QDialog):
         self._prepare_session_input_ui(session_input)
         self._start_observer_availability_scan(session_input)
 
+    def set_accept_button_text(self, text: str) -> None:
+        """Allow wrapper entrypoints to make accept action intent explicit."""
+        if self._ok_button is not None and isinstance(text, str) and text.strip():
+            self._ok_button.setText(text.strip())
+
     def _start_observer_availability_scan(self, session_input: SelectorSessionInput) -> None:
         observer_keys = tuple(key for key, _label in self.map_box_widget.observer_options())
         thread = QThread(self)

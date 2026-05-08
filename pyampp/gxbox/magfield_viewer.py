@@ -1318,12 +1318,11 @@ class MagFieldViewer(BackgroundPlotter):
 
         action_layout.addWidget(self.save_model_button)
         action_layout.addWidget(self.save_close_button)
-        if self.session_mode != "standalone":
-            action_layout.addWidget(self.cancel_button)
-        else:
-            action_layout.addWidget(self.cancel_button)
+        action_layout.addWidget(self.cancel_button)
+        # Keep Save As visible in all modes so users can export snapshots to a new HDF5.
+        action_layout.addWidget(self.save_box_button)
+        if self.session_mode in ("standalone", "pipeline_child"):
             action_layout.addWidget(self.load_box_button)
-            action_layout.addWidget(self.save_box_button)
 
         # self.update_button = QPushButton("Update")
         # self.update_button.clicked.connect(self.update_plot)

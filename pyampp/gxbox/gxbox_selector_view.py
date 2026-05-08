@@ -654,6 +654,10 @@ def main() -> int:
     session_input = _build_session_input(entry_path)
     dialog = FovBoxSelectorDialog(session_input=session_input, entry_box_path=entry_path)
     dialog.setWindowTitle(f"FOV / Box Selector - {entry_path.name}")
+    if entry_path.suffix.lower() == ".sav":
+        dialog.set_accept_button_text("Save As && Close")
+    else:
+        dialog.set_accept_button_text("Apply && Close")
 
     def _persist_result_if_needed() -> None:
         if dialog.result() != QDialog.Accepted:
