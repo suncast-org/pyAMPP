@@ -468,8 +468,11 @@ class FovBoxSelectorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         self._open_3d_button = QPushButton("Open 3D Viewer")
         self._open_3d_button.clicked.connect(self.map_box_widget.open_live_3d_viewer)
+        self._save_as_button = QPushButton("Save As && Close")
+        self._save_as_button.hide()
         button_row = QHBoxLayout()
         button_row.addWidget(self._open_3d_button)
+        button_row.addWidget(self._save_as_button)
         button_row.addStretch()
         button_row.addWidget(buttons)
         root.addLayout(button_row)
@@ -488,6 +491,20 @@ class FovBoxSelectorDialog(QDialog):
         """Allow wrapper entrypoints to make accept action intent explicit."""
         if self._ok_button is not None and isinstance(text, str) and text.strip():
             self._ok_button.setText(text.strip())
+
+    def set_save_as_callback(self, callback, text: str = "Save As && Close") -> None:
+        """Optionally expose a dedicated Save As action in the dialog footer."""
+        if self._save_as_button is None:
+            return
+        self._save_as_button.show()
+        if isinstance(text, str) and text.strip():
+            self._save_as_button.setText(text.strip())
+        try:
+            self._save_as_button.clicked.disconnect()
+        except Exception:
+            pass
+        if callback is not None:
+            self._save_as_button.clicked.connect(callback)
 
     def _start_observer_availability_scan(self, session_input: SelectorSessionInput) -> None:
         observer_keys = tuple(key for key, _label in self.map_box_widget.observer_options())

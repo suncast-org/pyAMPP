@@ -407,6 +407,7 @@ def main() -> int:
         b3dtype=b3dtype,
         parent=None,
         model_path=save_target,
+        source_model_path=model_path,
         box_norm_direction=box_norm_direction,
         box_view_up=box_view_up,
         session_mode="pipeline_child" if args.pipeline_child else "standalone",

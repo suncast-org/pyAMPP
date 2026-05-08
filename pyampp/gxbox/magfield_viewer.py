@@ -124,6 +124,7 @@ class MagFieldViewer(BackgroundPlotter):
 
     def __init__(self, box, parent=None, box_norm_direction=None, box_view_up=None, time=None, b3dtype='nlfff', model_path=None, session_mode=None, *args, **kwargs):
         # Build the scene fully before first paint; callers explicitly call .show().
+        self.source_model_path = kwargs.pop("source_model_path", None)
         kwargs.setdefault("show", False)
         super().__init__(*args, **kwargs)
         self.box = box
@@ -2711,8 +2712,24 @@ class MagFieldViewer(BackgroundPlotter):
     def save_box(self):
         box_dims_str = 'x'.join(map(str, self.box.dims_pix))
         default_filename = f'b3d_data_{self.box._frame_obs.obstime.to_datetime().strftime("%Y%m%dT%H%M%S")}_dim{box_dims_str}.h5'
+        default_path = None
+        candidate = self.model_path if self.model_path is not None else self.source_model_path
+        if candidate is not None:
+            try:
+                default_path = Path(candidate).expanduser()
+                if default_path.suffix.lower() != ".h5":
+                    default_path = default_path.with_suffix(".h5")
+            except Exception:
+                default_path = None
+        if default_path is None:
+            default_path = Path.cwd() / default_filename
         parent_widget = self.app_window if hasattr(self, "app_window") else None
-        filename = QFileDialog.getSaveFileName(parent_widget, "Save Box As", default_filename, "HDF5 Files (*.h5)")[0]
+        filename = QFileDialog.getSaveFileName(
+            parent_widget,
+            "Save Box As",
+            str(default_path),
+            "HDF5 Files (*.h5)",
+        )[0]
         if not filename:
             return
         write_b3d_h5(filename, self.box.b3d)

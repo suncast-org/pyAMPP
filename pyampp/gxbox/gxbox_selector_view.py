@@ -654,12 +654,27 @@ def main() -> int:
     session_input = _build_session_input(entry_path)
     dialog = FovBoxSelectorDialog(session_input=session_input, entry_box_path=entry_path)
     dialog.setWindowTitle(f"FOV / Box Selector - {entry_path.name}")
+    save_as_target: Path | None = None
+
+    def _on_save_as_clicked() -> None:
+        nonlocal save_as_target
+        out_path = _pick_save_as_h5_path(
+            dialog,
+            default_stem=entry_path.stem,
+        )
+        if out_path is None:
+            return
+        save_as_target = out_path
+        dialog.accept()
+
+    dialog.set_save_as_callback(_on_save_as_clicked, text="Save As && Close")
     if entry_path.suffix.lower() == ".sav":
         dialog.set_accept_button_text("Save As && Close")
     else:
         dialog.set_accept_button_text("Apply && Close")
 
     def _persist_result_if_needed() -> None:
+        nonlocal save_as_target
         if dialog.result() != QDialog.Accepted:
             return
         result = dialog.accepted_selection()
@@ -668,6 +683,26 @@ def main() -> int:
         line_seeds = dialog.committed_line_seeds()
         fov_box = dialog.current_fov_box_selection()
         observer_state = dialog.current_observer_persistence_state()
+        if save_as_target is not None:
+            try:
+                _persist_selector_result_to_entry(
+                    entry_path,
+                    result,
+                    line_seeds=line_seeds,
+                    fov_box=fov_box,
+                    observer_state=observer_state,
+                    output_path=save_as_target,
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    dialog,
+                    "Save Failed",
+                    f"Failed to save model to {save_as_target}:\n{exc}",
+                )
+            finally:
+                save_as_target = None
+            return
+
         if entry_path.suffix.lower() == ".sav":
             btn = QMessageBox.question(
                 dialog,
