@@ -1,5 +1,6 @@
 import copy
 import logging
+from pathlib import Path
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QComboBox, QLabel, \
     QPushButton, QDoubleSpinBox, QLineEdit, QCheckBox, QMessageBox, QMenu, QHeaderView, QFileDialog, QAction, QToolButton, \
     QToolBar, QGridLayout
@@ -1276,8 +1277,14 @@ class MagFieldViewer(BackgroundPlotter):
         self.save_model_button = QPushButton("Apply && Close")
         if self.session_mode == "standalone":
             self.save_model_button.setText("Save")
-            self.save_model_button.setToolTip("Save the current seed state back into the opened model file.")
-            self.save_model_button.clicked.connect(self.save_current_model)
+            if self.model_path is None:
+                self.save_model_button.setEnabled(False)
+                self.save_model_button.setToolTip(
+                    "SAV models are read-only — use Save As to save to a new .h5 file."
+                )
+            else:
+                self.save_model_button.setToolTip("Save the current seed state back into the opened model file.")
+                self.save_model_button.clicked.connect(self.save_current_model)
         else:
             self.save_model_button.setToolTip("Accept the current seed edits and return to the 2D viewer.")
             self.save_model_button.setStyleSheet("font-weight: 600;")
@@ -2705,10 +2712,21 @@ class MagFieldViewer(BackgroundPlotter):
     def save_box(self):
         box_dims_str = 'x'.join(map(str, self.box.dims_pix))
         default_filename = f'b3d_data_{self.box._frame_obs.obstime.to_datetime().strftime("%Y%m%dT%H%M%S")}_dim{box_dims_str}.h5'
-        filename = QFileDialog.getSaveFileName(self, "Save Box", default_filename, "HDF5 Files (*.h5)")[0]
+        parent_widget = self.app_window if hasattr(self, "app_window") else None
+        filename = QFileDialog.getSaveFileName(parent_widget, "Save Box As", default_filename, "HDF5 Files (*.h5)")[0]
         if not filename:
             return
         write_b3d_h5(filename, self.box.b3d)
+        try:
+            from pyampp.util.build_h5_from_sav import _apply_geometry_contract_to_h5
+            _apply_geometry_contract_to_h5(Path(filename))
+        except Exception:
+            pass  # geometry contract application is best-effort
+        self.model_path = Path(filename)
+        if self.save_model_button is not None and not self.save_model_button.isEnabled():
+            self.save_model_button.setEnabled(True)
+            self.save_model_button.setToolTip("Save the current seed state back into the opened model file.")
+            self.save_model_button.clicked.connect(self.save_current_model)
 
     def load_box(self):
         default_filename = "b3d_data.h5"
