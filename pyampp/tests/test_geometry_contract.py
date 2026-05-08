@@ -13,6 +13,7 @@ from pyampp.geometry.contract import (
     infer_voxel_resolution,
     infer_world_anchor_from_index,
     infer_obstime,
+    world_corners_from_geometry_contract,
 )
 
 
@@ -77,6 +78,55 @@ def test_geometry_contract_from_dict_decodes_h5_bytes():
     assert contract.frame == "heliographic_stonyhurst"
     assert contract.obstime == "2024-05-12T16:00:00"
     assert contract.inferred_from == "index"
+
+
+def test_world_corners_from_geometry_contract_builds_red_box() -> None:
+    contract = GeometryContract(
+        nx=20,
+        ny=10,
+        nz=4,
+        dr_x=2.0,
+        dr_y=3.0,
+        dr_z=5.0,
+        rsun_m=RSUN_HMI_METERS,
+        anchor_lon_deg=12.5,
+        anchor_lat_deg=-5.5,
+        anchor_radius_rsun=1.0,
+        frame="heliographic_stonyhurst",
+        obstime="2024-05-12T16:00:00",
+        inferred_from="index",
+    )
+
+    world = world_corners_from_geometry_contract(contract)
+
+    assert world is not None
+    assert len(world) == 8
+    xs = np.asarray(world.x.to_value(), dtype=float)
+    ys = np.asarray(world.y.to_value(), dtype=float)
+    zs = np.asarray(world.z.to_value(), dtype=float)
+    assert np.isclose(np.max(xs) - np.min(xs), 40.0)
+    assert np.isclose(np.max(ys) - np.min(ys), 30.0)
+    assert np.isclose(np.max(zs) - np.min(zs), 20.0)
+
+
+def test_world_corners_from_geometry_contract_rejects_invalid_values() -> None:
+    bad = GeometryContract(
+        nx=0,
+        ny=10,
+        nz=4,
+        dr_x=2.0,
+        dr_y=3.0,
+        dr_z=5.0,
+        rsun_m=RSUN_HMI_METERS,
+        anchor_lon_deg=12.5,
+        anchor_lat_deg=-5.5,
+        anchor_radius_rsun=1.0,
+        frame="heliographic_stonyhurst",
+        obstime="2024-05-12T16:00:00",
+        inferred_from="index",
+    )
+
+    assert world_corners_from_geometry_contract(bad) is None
 
 
 def test_infer_box_dims():

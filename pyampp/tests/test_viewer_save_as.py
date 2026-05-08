@@ -124,7 +124,7 @@ class TestPersistSelectorResultOutputPath:
             _make_minimal_h5(Path(out_h5))
 
         with patch(
-            "pyampp.gxbox.gxbox_selector_view.build_h5_from_sav",
+            "pyampp.io.model.build_h5_from_sav",
             side_effect=_fake_build_h5_from_sav,
         ):
             ret = _persist_selector_result_to_entry(fake_sav, result, output_path=dest)

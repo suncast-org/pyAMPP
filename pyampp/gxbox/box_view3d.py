@@ -12,8 +12,10 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 from sunpy.coordinates import Heliocentric, Helioprojective
+from pyampp.geometry import observer_fov_box_to_world_corners, world_to_local_cartesian_mm
 from pyampp.gxbox.boxutils import validate_number, read_b3d_h5, write_b3d_h5, update_line_seeds_h5
 from pyampp.gxbox.observer_restore import resolve_observer_with_info
+from pyampp.io import load_model_from_h5
 import pickle
 import vtk
 
@@ -2257,14 +2259,49 @@ class MagFieldViewer(BackgroundPlotter):
         return self._wireframe_box_from_points(corners)
 
     def _fov_box_corners_local(self):
-        corners = self.box.fov_box_corners_local_mm()
+        observer_meta = self.box.b3d.get("observer", {}) if isinstance(self.box.b3d, dict) else {}
+        fov_box = observer_meta.get("fov_box") if isinstance(observer_meta, dict) else None
+        if not isinstance(fov_box, dict):
+            print("FOV box overlay: missing observer['fov_box'] metadata.")
+            return None
+
+        box_frame = getattr(getattr(self.box, "_center", None), "frame", None)
+        frame_obs = getattr(self.box, "_frame_obs", None)
+        obstime = getattr(frame_obs, "obstime", None)
+        observer = getattr(frame_obs, "observer", None)
+        observer_key = fov_box.get("observer_key")
+        if observer_key:
+            try:
+                resolved, _warning, _used = resolve_observer_with_info(
+                    getattr(self.box, "b3d", None) if isinstance(getattr(self.box, "b3d", None), dict) else {},
+                    observer_key,
+                    obstime,
+                )
+                if resolved is not None:
+                    observer = resolved
+            except Exception:
+                pass
+        if observer is None or box_frame is None:
+            print("FOV box overlay: incomplete or invalid observer['fov_box'] metadata.")
+            return None
+
+        try:
+            corners_world = observer_fov_box_to_world_corners(
+                xc_arcsec=float(fov_box["xc_arcsec"]),
+                yc_arcsec=float(fov_box["yc_arcsec"]),
+                xsize_arcsec=float(fov_box["xsize_arcsec"]),
+                ysize_arcsec=float(fov_box["ysize_arcsec"]),
+                zmin_mm=float(fov_box["zmin_mm"]),
+                zmax_mm=float(fov_box["zmax_mm"]),
+                observer=observer,
+                obstime=obstime,
+                target_frame=box_frame,
+            )
+            corners = world_to_local_cartesian_mm(corners_world, z_base_mm=float(self.grid_zbase))
+        except Exception:
+            corners = None
         if corners is None:
-            observer_meta = self.box.b3d.get("observer", {}) if isinstance(self.box.b3d, dict) else {}
-            fov_box = observer_meta.get("fov_box") if isinstance(observer_meta, dict) else None
-            if not isinstance(fov_box, dict):
-                print("FOV box overlay: missing observer['fov_box'] metadata.")
-            else:
-                print("FOV box overlay: incomplete or invalid observer['fov_box'] metadata.")
+            print("FOV box overlay: incomplete or invalid observer['fov_box'] metadata.")
             return None
         return np.asarray(corners, dtype=float)
 
@@ -2777,7 +2814,7 @@ class MagFieldViewer(BackgroundPlotter):
         filename = QFileDialog.getOpenFileName(self, "Load Box", default_filename, "HDF5 Files (*.h5)")[0]
         if not filename:
             return
-        self.box.b3d = read_b3d_h5(filename)
+        self.box.b3d = load_model_from_h5(filename)
 
         if "corona" in self.box.b3d:
             self.b3dtype = "corona"

@@ -13,6 +13,8 @@ https://pyampp.readthedocs.io/en/latest/
 
 Format and viewer references:
 
+- Canonical model I/O and contract enforcement:
+  ``docs/model_io.rst``
 - Upgraded HDF5 stage format (NONE/BND/POT/NAS/NAS.GEN/NAS.CHR):
   ``docs/model_hdf5_format.rst``
 - Public geometry API and migration status:
@@ -136,6 +138,34 @@ pyAMPP exposes one main GUI and three focused command-line tools:
 3. **gxbox-view2d** – 2D FOV / box selector for existing ``.h5`` or ``.sav`` models.
 4. **gxbox-view3d** – 3D viewer for existing model HDF5 files.
 5. **gxrefmap-view** – 2D browser for base maps and reference maps stored in model HDF5 files.
+
+Canonical Model I/O And Geometry Contract
+-----------------------------------------
+
+pyAMPP now provides a centralized model I/O surface via ``pyampp.io``.
+This is the recommended path for application-level model loading and saving.
+
+Key behavior:
+
+- all model restores (H5 and SAV) are normalized through one loader path,
+- missing Tier 1 + Tier 2 geometry contract fields in legacy models are
+  inferred at load time,
+- completed contract metadata is persisted on save,
+- geometry consumers can assume one normalized metadata state.
+
+Use these APIs:
+
+.. code-block:: python
+
+    from pyampp import io, geometry
+
+    model = io.load_model_from_h5("/path/to/model.h5")
+    contract = model["metadata"]["geometry_contract"]
+    corners = geometry.world_corners_from_geometry_contract(contract)
+
+Low-level readers under ``pyampp.gxbox.boxutils`` remain available for internal
+and compatibility use, but they are not the canonical application-level load
+entrypoint for contract-enforced workflows.
 
 Usage Examples
 --------------

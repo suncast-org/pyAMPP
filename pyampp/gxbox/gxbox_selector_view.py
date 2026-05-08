@@ -24,6 +24,7 @@ from pyampp.gxbox.gx_fov2box import (
     _infer_time_from_entry_loaded,
     _load_entry_box_any,
 )
+from pyampp.io import load_model_from_h5, load_model_from_sav, save_model_to_h5
 from pyampp.gxbox.selector_api import (
     BoxGeometrySelection,
     CoordMode,
@@ -473,14 +474,15 @@ def _persist_selector_result_to_entry(
     if dest.suffix.lower() != ".h5":
         return False
 
+    # Load with contract enforcement via centralized model.io loader
     if entry_path.suffix.lower() == ".h5":
-        box_data = read_b3d_h5(str(entry_path))
+        box_data = load_model_from_h5(str(entry_path))
     else:
-        # SAV origin — first convert to canonical HDF5 to avoid object-dtype payloads.
+        # SAV origin — load via model.io which ensures contract completeness
+        # If no output path specified, we cannot save SAV result (SAV is source, H5 is dest)
         if output_path is None:
             return False
-        build_h5_from_sav(sav_path=entry_path, out_h5=dest, template_h5=None)
-        box_data = read_b3d_h5(str(dest))
+        box_data = load_model_from_sav(str(entry_path))
     observer = box_data.get("observer")
     if not isinstance(observer, dict):
         observer = {}
@@ -625,12 +627,9 @@ def _persist_selector_result_to_entry(
         box_data["line_seeds"] = line_seeds
     else:
         box_data.pop("line_seeds", None)
-    write_b3d_h5(str(dest), box_data)
-    try:
-        from pyampp.util.build_h5_from_sav import _apply_geometry_contract_to_h5
-        _apply_geometry_contract_to_h5(dest)
-    except Exception:
-        pass  # contract application is best-effort
+    
+    # Save with contract persistence via centralized model.io loader
+    save_model_to_h5(box_data, dest)
     return True
 
 

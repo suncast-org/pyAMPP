@@ -47,6 +47,7 @@ from pyampp.gxbox.boxutils import (
     remap_vertical_current_inputs,
     serialize_sav_index_header,
 )
+from pyampp.io import load_model_from_h5
 from pyampp.gxbox.gx_box2id import gx_box2id
 from pyampp.gxbox.observer_restore import (
     build_pb0r_metadata_from_ephemeris,
@@ -1568,7 +1569,7 @@ def _sav_line_to_flat(arr: np.ndarray) -> np.ndarray:
 
 def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
     if entry_path.suffix.lower() == ".h5":
-        return read_b3d_h5(str(entry_path))
+        return load_model_from_h5(str(entry_path))
     if entry_path.suffix.lower() != ".sav":
         raise ValueError(f"--entry-box must be .h5 or .sav, got: {entry_path}")
 

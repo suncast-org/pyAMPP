@@ -25,8 +25,9 @@ from sunpy.coordinates import (
 from sunpy.sun import constants as sun_consts
 
 from pyampp.gxbox.box import Box, BoxGeometryMixin
-from pyampp.gxbox.boxutils import read_b3d_h5
+from pyampp.gxbox.boxutils import read_b3d_h5, normalize_observer_metadata
 from pyampp.gxbox.gx_fov2box import _decode_id_text, _extract_execute_geometry, _infer_time_from_entry_loaded
+from pyampp.io import load_model_from_h5, load_model_from_sav
 from pyampp.gxbox.observer_restore import resolve_observer_with_info
 from PyQt5.QtWidgets import QApplication, QFileDialog
 from PyQt5.QtCore import QTimer
@@ -291,23 +292,20 @@ def prepare_model_for_viewer(model_path: str | Path) -> tuple[SimpleBox, Time, s
     """
     model_path = Path(model_path).expanduser().resolve()
     temp_h5_path = None
+    
+    # Load model with contract enforcement via centralized model.io loader
     if model_path.suffix.lower() == ".sav":
         try:
-            from pyampp.util.build_h5_from_sav import build_h5_from_sav
+            b3d, temp_h5_path = load_model_from_sav(model_path, keep_temp_h5=True)
         except Exception as exc:
             raise RuntimeError(
                 "SAV input requires converter module 'pyampp.util.build_h5_from_sav'. "
                 "Run conversion manually to H5, then reopen."
             ) from exc
-        tmp_dir = Path(tempfile.mkdtemp(prefix="pyampp_view_h5_"))
-        temp_h5_path = tmp_dir / f"{model_path.stem}.viewer.h5"
-        build_h5_from_sav(sav_path=model_path, out_h5=temp_h5_path, template_h5=None)
-        h5_path = temp_h5_path
-        print(f"Converted SAV to temporary HDF5: {h5_path}")
+        print(f"Converted SAV to temporary HDF5: {temp_h5_path}")
     else:
-        h5_path = model_path
-
-    b3d = read_b3d_h5(str(h5_path))
+        b3d = load_model_from_h5(model_path)
+    
     b3d = normalize_viewer_axis_order(b3d)
 
     box, obs_time = _box_from_saved_model(b3d, model_path)

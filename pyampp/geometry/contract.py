@@ -17,8 +17,14 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import astropy.units as u
 from astropy.io import fits
+from astropy.time import Time
 from astropy.utils.exceptions import AstropyUserWarning
+from astropy.coordinates import SkyCoord
+from sunpy.coordinates import Heliocentric, HeliographicCarrington, HeliographicStonyhurst
+
+from .core import local_cartesian_to_world
 
 # HMI solar radius in meters (fixed convention)
 RSUN_HMI_METERS = 6.957e8
@@ -87,6 +93,78 @@ class GeometryContract:
             obstime=_as_text(data["obstime"]),
             inferred_from=_as_text(data.get("inferred_from") or "") or None,
         )
+
+
+def world_corners_from_geometry_contract(
+    contract: GeometryContract,
+    *,
+    obstime: str | Time | None = None,
+) -> SkyCoord | None:
+    """Build red-box world corners from a completed geometry contract."""
+    if contract is None:
+        return None
+    try:
+        nx = int(contract.nx)
+        ny = int(contract.ny)
+        nz = int(contract.nz)
+        dr_x = float(contract.dr_x)
+        dr_y = float(contract.dr_y)
+        dr_z = float(contract.dr_z)
+        rsun_m = float(contract.rsun_m)
+        anchor_lon = float(contract.anchor_lon_deg)
+        anchor_lat = float(contract.anchor_lat_deg)
+        anchor_radius = float(contract.anchor_radius_rsun)
+    except Exception:
+        return None
+    if min(nx, ny, nz) <= 0:
+        return None
+    if min(dr_x, dr_y, dr_z) <= 0:
+        return None
+
+    try:
+        obs_time = Time(obstime) if obstime is not None else Time(contract.obstime)
+    except Exception:
+        return None
+
+    frame_name = str(contract.frame or "heliographic_stonyhurst").strip().lower()
+    frame_cls = HeliographicCarrington if "carrington" in frame_name else HeliographicStonyhurst
+
+    try:
+        anchor = SkyCoord(
+            lon=anchor_lon * u.deg,
+            lat=anchor_lat * u.deg,
+            radius=(anchor_radius * rsun_m) * u.m,
+            frame=frame_cls(obstime=obs_time),
+        )
+        # Use an observer-centered Cartesian frame at the anchor so the red-box
+        # z-axis points along the local LOS from the anchor, matching gxbox semantics.
+        frame_local = Heliocentric(observer=anchor, obstime=obs_time)
+        anchor_local = anchor.transform_to(frame_local)
+    except Exception:
+        return None
+
+    sx_mm = nx * dr_x
+    sy_mm = ny * dr_y
+    sz_mm = nz * dr_z
+    local_corners_mm = np.asarray(
+        [
+            [-0.5 * sx_mm, -0.5 * sy_mm, 0.0],
+            [+0.5 * sx_mm, -0.5 * sy_mm, 0.0],
+            [-0.5 * sx_mm, +0.5 * sy_mm, 0.0],
+            [+0.5 * sx_mm, +0.5 * sy_mm, 0.0],
+            [-0.5 * sx_mm, -0.5 * sy_mm, sz_mm],
+            [+0.5 * sx_mm, -0.5 * sy_mm, sz_mm],
+            [-0.5 * sx_mm, +0.5 * sy_mm, sz_mm],
+            [+0.5 * sx_mm, +0.5 * sy_mm, sz_mm],
+        ],
+        dtype=float,
+    )
+
+    try:
+        z_base_mm = float(anchor_local.z.to_value(u.Mm))
+    except Exception:
+        return None
+    return local_cartesian_to_world(local_corners_mm, frame=frame_local, z_base_mm=z_base_mm)
 
 
 def infer_box_dims(model_dict: dict[str, Any]) -> tuple[int, int, int] | None:
@@ -338,6 +416,7 @@ def complete_geometry_contract(
 __all__ = [
     "RSUN_HMI_METERS",
     "GeometryContract",
+    "world_corners_from_geometry_contract",
     "complete_geometry_contract",
     "infer_box_dims",
     "infer_voxel_resolution",

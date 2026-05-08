@@ -2,7 +2,18 @@
 
 ## Summary
 
-This feature introduces **Geometry Contract Enforcement** to pyAMPP, a metadata completion system that eliminates fallback-based coordinate inference in model geometry. By completing and storing Tier 1 (intrinsic box) and Tier 2 (world embedding) metadata at model load time, downstream geometry functions (in `gximagecomputing` and elsewhere) can trust a single, authoritative source of truth.
+This feature introduces **Geometry Contract Enforcement** to pyAMPP, a metadata
+completion system that eliminates fallback-based coordinate inference in model
+geometry. By completing and storing Tier 1 (intrinsic box) and Tier 2 (world
+embedding) metadata at model load time, downstream geometry functions (in
+`gximagecomputing` and elsewhere) can trust a single, authoritative source of
+truth.
+
+The architecture is now centered on a single canonical model I/O module:
+
+- `pyampp.io.model` is the required application-level restore/save path
+- model restore from H5 and SAV goes through centralized completion/normalization
+- geometry consumers consume completed metadata and should not re-infer it
 
 ## Problem Statement
 
@@ -46,8 +57,11 @@ Placement and orientation of the box in solar coordinates:
 
 **Fallback Priority:**
 1. Index-based metadata (WCS headers)
-2. Execute-based metadata (parsed command line)
-3. Defaults (disk center at 1 $R_\odot$, obstime="2020-01-01T00:00:00")
+
+Current implementation policy:
+- Tier 2 is inferred from base/index metadata only.
+- If Tier 2 fields cannot be inferred, `complete_geometry_contract()` returns `None`
+   (or raises in strict mode).
 
 ### Storage in H5
 
@@ -81,21 +95,49 @@ metadata/
 1. **pyampp/geometry/contract.py** (new)
    - `GeometryContract`: dataclass for the complete contract
    - `complete_geometry_contract()`: main completion function
+   - `world_corners_from_geometry_contract()`: red-box SkyCoord constructor from contract metadata
    - Helper functions for inferring each field
    - Serialization/deserialization methods
 
-2. **pyampp/geometry/__init__.py**
-   - Export contract API for public use
+2. **pyampp/geometry/core.py**
+   - `build_fov_box_from_red_box_world()`: canonical inscribing blue FOV-box constructor
+   - `build_fov_box_from_user_hpc_and_red_box_world()`: user HPC rectangle + LOS-safe z constructor
+   - `world_to_local_cartesian_mm()`: shared world-to-local conversion helper for viewers
 
-3. **pyampp/util/build_h5_from_sav.py**
+3. **pyampp/geometry/__init__.py**
+   - Export contract/core APIs for public use
+
+4. **pyampp/io/model.py** (new)
+   - `load_model_from_h5()`: canonical H5 loader with contract enforcement
+   - `load_model_from_sav()`: canonical SAV loader (SAV->H5->canonical load)
+   - `save_model_to_h5()`: canonical save path with contract persistence
+   - `complete_and_persist_contract_in_h5()`: in-place upgrade helper
+
+5. **pyampp/io/__init__.py** (new)
+   - Exposes public model I/O APIs
+
+6. **pyampp/__init__.py**
+   - Exposes `io` and `geometry` as public package imports
+
+7. **pyampp/util/build_h5_from_sav.py**
    - `_apply_geometry_contract_to_h5()`: completion step after SAV→H5 conversion
    - Called at end of `build_h5_from_sav()` before returning
    - Non-fatal: skips silently if any step fails
 
-4. **pyampp/tests/test_geometry_contract.py** (new)
+8. **pyampp/gxbox/box_view2d.py**
+   - Uses geometry-module constructors for blue FOV box generation
+   - Recomputes blue-box z extent from red-box geometry when user edits HPC FOV
+
+9. **pyampp/gxbox/box_view3d.py**
+   - Uses geometry-module corner reconstruction and local conversion helpers
+
+10. **pyampp/tests/test_geometry_contract.py** (new)
    - Comprehensive tests for contract inference
    - Tests for serialization/deserialization
    - Tests for fallback behavior and strict mode
+
+11. **pyampp/tests/test_geometry_core.py**
+   - Tests for new blue-box constructors (auto-inscribing and user-defined HPC)
 
 ### Key Functions
 
@@ -103,8 +145,19 @@ metadata/
 Main entry point for contract completion.
 - **Input:** Loaded model dictionary (from H5 or SAV)
 - **Output:** `GeometryContract` or None (if Tier 1 incomplete)
-- **strict=False:** Use defaults for Tier 2, return None if Tier 1 incomplete
-- **strict=True:** Raise ValueError if any field cannot be inferred
+- **strict=False:** Return None when required fields are missing
+- **strict=True:** Raise ValueError if required fields cannot be inferred
+
+#### world_corners_from_geometry_contract(contract, *, obstime=None)
+Build the canonical 8-corner red-box world `SkyCoord` from a completed contract.
+- Uses contract dimensions/resolution for extents
+- Uses anchor/frame/obstime to place box in solar coordinates
+
+#### build_fov_box_from_red_box_world(world, ...)
+Compute the canonical inscribing observer-aligned 3D blue FOV box from red-box world corners.
+
+#### build_fov_box_from_user_hpc_and_red_box_world(world, ...)
+Build a user-defined HPC x/y blue FOV box while preserving LOS-safe z extents derived from the red box.
 
 #### infer_box_dims(model_dict)
 Extract (Nx, Ny, Nz) from corona cube shape.
@@ -125,37 +178,52 @@ Fallback to disk center (lon=0, lat=0, radius=1 R☉).
 
 ## Integration Points
 
-### 1. SAV → H5 Conversion
-After `build_h5_from_sav()` writes the H5 file, it calls `_apply_geometry_contract_to_h5()`:
+### 1. Canonical Model Restore/Save Path
+
+All application-level model restore/save should use `pyampp.io`:
+
 ```python
-def build_h5_from_sav(...):
-    # ... existing conversion logic ...
-    _apply_geometry_contract_to_h5(out_h5)  # NEW
-    return out_h5
+from pyampp import io
+
+model = io.load_model_from_h5("model.h5")
+# or
+model = io.load_model_from_sav("model.sav")
+
+io.save_model_to_h5(model, "updated_model.h5")
 ```
 
-### 2. Model Loading in gximagecomputing
-(Future work, not part of this PR)
-- Add optional function to read completed contract from H5
-- Pass contract to geometry functions instead of inferring
+Behavior:
 
-### 3. gxbox-view2d
-(Future work, not part of this PR)
-- Use completed contract for box restoration
-- Eliminate fallback branches in observer_geometry.py
+- load: complete or reuse `metadata/geometry_contract`, normalize observer metadata
+- save: persist completed contract so next load can reuse stored fields
+
+### 2. SAV → H5 Conversion
+After `build_h5_from_sav()` writes the H5 file, it calls `_apply_geometry_contract_to_h5()`.
+
+### 3. Geometry and Viewer Consumption
+- 2D/3D gxbox viewers consume geometry-module constructors for red/blue box paths.
+- Blue box from user HPC selection is now generated by geometry helpers that preserve z safety.
+
+### 4. Model Loading in gximagecomputing
+
+Downstream usage should import directly from public pyAMPP surfaces:
+
+- `from pyampp import io, geometry`
+- load via `io.load_model_from_h5` / `io.load_model_from_sav`
+- consume geometry contract and geometry constructors from `pyampp.geometry`
 
 ## Backward Compatibility
 
-- **No breaking changes:** Contract completion is optional and non-fatal
-- Old models without contracts still work (completion happens on load)
-- New models automatically cache contracts in H5 (benefit on re-load)
-- Models not saved to H5 re-complete on each load (no performance benefit, but correct)
+- Existing low-level readers remain available for compatibility/internal usage.
+- Old models without persisted contracts still load (completion happens on load).
+- New models and upgraded saves persist contracts in H5 for faster/cleaner reload.
+- Models not saved to H5 re-complete on each load (acceptable for throwaway work).
 
 ## Migration Path
 
 1. **Phase 1 (this PR):** Contract module and SAV→H5 integration ✅
-2. **Phase 2 (follow-up):** Update gximagecomputing geometry to read contracts
-3. **Phase 3 (follow-up):** Enforce strict mode in new pipeline code
+2. **Phase 2 (in progress):** Geometry-module constructors for red/blue boxes and viewer adoption
+3. **Phase 3 (follow-up):** Update gximagecomputing to consume contract-built red box directly
 
 ## Testing
 
@@ -164,6 +232,7 @@ def build_h5_from_sav(...):
 - Tests for dimension inference, resolution inference, anchor inference
 - Tests for serialization/deserialization
 - Tests for strict vs. permissive mode
+- `test_geometry_core.py`: Blue FOV-box constructors and projection helpers
 
 ### Integration Tests (manual, for now)
 ```bash
@@ -179,8 +248,9 @@ h5dump new.h5 | grep geometry_contract
 ### Why Only Corona for Resolution?
 Chromosphere is non-uniform by construction (varies with height). Only corona.dr is reliable.
 
-### Why Fallback to Defaults for Tier 2?
-Some models lack explicit world metadata. Defaulting to disk center is a reasonable conservative choice that allows geometry to continue functioning.
+### Why No Tier-2 Defaults in Current Contract?
+Tier-2 defaults can silently hide provenance and placement errors. Current behavior
+requires inferable world metadata for a complete contract.
 
 ### Why Store in metadata.geometry_contract?
 Separates model data (corona, chromo, base) from metadata/provenance. Clear namespace avoids conflicts with existing fields.
@@ -190,10 +260,9 @@ HMI convention (695700 km) is standard across SDO/pyAMPP/sunpy. Models built wit
 
 ## Future Work
 
-1. **EXECUTE Parsing:** Full integration of execute-based anchor inference (currently stubbed)
+1. **gximagecomputing Integration:** Consume contract-to-red-box constructor in runtime geometry paths
 2. **Contract Validation:** Add post-load validation in geometry functions
-3. **Strict Pipeline Mode:** Opt-in mode that rejects models without valid contracts
-4. **Performance:** Cache loaded contracts in memory to avoid re-reading H5
+3. **Performance:** Cache loaded contracts in memory to avoid re-reading H5
 
 ## References
 
