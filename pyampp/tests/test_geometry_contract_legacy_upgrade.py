@@ -11,10 +11,14 @@ from pyampp.geometry.contract import complete_geometry_contract
 from pyampp.gxbox.boxutils import read_b3d_h5, write_b3d_h5
 
 
-LEGACY_MODEL_PATH = Path(
-    "/Users/gelu/code/SUNCAST-ORG/pyGXrender-test-data/raw/models/"
-    "model_loader_parity_20201126T195831/"
-    "hmi.M_720s.20201126_195831.E18S19CR.CEA.NAS.CHR.clone.h5"
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+LEGACY_MODEL_PATH = (
+    WORKSPACE_ROOT
+    / "pyGXrender-test-data"
+    / "raw"
+    / "models"
+    / "model_loader_parity_20201126T195831"
+    / "hmi.M_720s.20201126_195831.E18S19CR.CEA.NAS.CHR.clone.h5"
 )
 
 
@@ -52,8 +56,10 @@ def test_legacy_upgrade_roundtrip_synthetic(tmp_path: Path) -> None:
             "dr": np.array([0.002, 0.002, 0.002], dtype=np.float64),
             "attrs": {"model_type": "nlfff"},
         },
+        "base": {
+            "index": "CRVAL1=10\nCRVAL2=-5\nRSUN_REF=695700000.0\nDATE-OBS='2020-11-26T19:58:31'\nEND\n",
+        },
         "metadata": {
-            "obstime": "2020-11-26T19:58:31",
             "id": "synthetic.test.model",
         },
     }

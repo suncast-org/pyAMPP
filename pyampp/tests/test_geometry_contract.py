@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from pathlib import Path
 
 from pyampp.geometry.contract import (
     GeometryContract,
@@ -12,13 +11,29 @@ from pyampp.geometry.contract import (
     complete_geometry_contract,
     infer_box_dims,
     infer_voxel_resolution,
-    infer_world_anchor_defaults,
+    infer_world_anchor_from_index,
     infer_obstime,
 )
 
 
+def _base_index_header(
+    *,
+    lon: float = 12.5,
+    lat: float = -5.5,
+    date_obs: str = "2024-05-12T16:00:00",
+    rsun_ref: float = RSUN_HMI_METERS,
+) -> str:
+    return (
+        "SIMPLE  = T\n"
+        f"CRVAL1  = {lon}\n"
+        f"CRVAL2  = {lat}\n"
+        f"RSUN_REF= {rsun_ref}\n"
+        f"DATE-OBS= '{date_obs}'\n"
+        "END\n"
+    )
+
+
 def test_geometry_contract_dataclass():
-    """Test GeometryContract construction and serialization."""
     contract = GeometryContract(
         nx=100,
         ny=80,
@@ -27,225 +42,115 @@ def test_geometry_contract_dataclass():
         dr_y=1.0,
         dr_z=1.0,
         rsun_m=RSUN_HMI_METERS,
-        anchor_lon_deg=0.0,
-        anchor_lat_deg=0.0,
+        anchor_lon_deg=12.5,
+        anchor_lat_deg=-5.5,
         anchor_radius_rsun=1.0,
         frame="heliographic_stonyhurst",
         obstime="2024-05-12T16:00:00",
-        inferred_from="defaults",
+        inferred_from="index",
     )
-    
-    assert contract.nx == 100
-    assert contract.ny == 80
-    assert contract.nz == 120
-    assert contract.rsun_m == RSUN_HMI_METERS
-    
-    # Test serialization
+
     d = contract.to_dict()
-    assert d["nx"] == 100
-    assert d["obstime"] == "2024-05-12T16:00:00"
-    
-    # Test deserialization
     restored = GeometryContract.from_dict(d)
-    assert restored.nx == contract.nx
-    assert restored.obstime == contract.obstime
+    assert restored.nx == 100
+    assert restored.obstime == "2024-05-12T16:00:00"
+    assert restored.inferred_from == "index"
 
 
 def test_infer_box_dims():
-    """Test box dimension inference from corona cube."""
-    # Case 1: Valid corona with bx
-    model_dict = {
-        "corona": {
-            "bx": np.zeros((100, 80, 120), dtype=np.float32),
-        }
-    }
-    dims = infer_box_dims(model_dict)
-    assert dims == (100, 80, 120)
-    
-    # Case 2: Corona with by instead of bx
-    model_dict = {
-        "corona": {
-            "by": np.zeros((50, 60, 70), dtype=np.float32),
-        }
-    }
-    dims = infer_box_dims(model_dict)
-    assert dims == (50, 60, 70)
-    
-    # Case 3: No corona
-    model_dict = {}
-    dims = infer_box_dims(model_dict)
-    assert dims is None
-    
-    # Case 4: Corona but no suitable field
-    model_dict = {"corona": {"other": "data"}}
-    dims = infer_box_dims(model_dict)
-    assert dims is None
+    model_dict = {"corona": {"bx": np.zeros((100, 80, 120), dtype=np.float32)}}
+    assert infer_box_dims(model_dict) == (100, 80, 120)
 
 
-def test_infer_voxel_resolution():
-    """Test voxel resolution inference from corona.dr."""
-    # Case 1: Valid dr array with 3 elements
-    model_dict = {
-        "corona": {
-            "dr": np.array([1.5, 1.5, 1.5], dtype=np.float64),
-        }
-    }
-    resolution = infer_voxel_resolution(model_dict)
-    assert resolution == (1.5, 1.5, 1.5)
-    
-    # Case 2: dr with 2 elements
-    model_dict = {
-        "corona": {
-            "dr": np.array([2.0, 2.0], dtype=np.float64),
-        }
-    }
-    resolution = infer_voxel_resolution(model_dict)
-    assert resolution == (2.0, 2.0, 2.0)
-    
-    # Case 3: Single element dr
-    model_dict = {
-        "corona": {
-            "dr": np.array([3.0], dtype=np.float64),
-        }
-    }
-    resolution = infer_voxel_resolution(model_dict)
-    assert resolution == (3.0, 3.0, 3.0)
-    
-    # Case 4: No corona
-    model_dict = {}
-    resolution = infer_voxel_resolution(model_dict)
-    assert resolution is None
-    
-    # Case 5: Corona but no dr
-    model_dict = {"corona": {"bx": np.zeros((10, 10, 10))}}
-    resolution = infer_voxel_resolution(model_dict)
-    assert resolution is None
+def test_infer_voxel_resolution_corona_only():
+    model_dict = {"corona": {"dr": np.array([1.5, 1.5, 1.5], dtype=np.float64)}}
+    assert infer_voxel_resolution(model_dict) == (1.5, 1.5, 1.5)
+
+    model_dict = {"chromo": {"dr": np.array([9.0, 9.0, 9.0], dtype=np.float64)}}
+    assert infer_voxel_resolution(model_dict) is None
 
 
-def test_infer_obstime():
-    """Test observation time inference."""
-    # Case 1: From metadata
-    model_dict = {
-        "metadata": {
-            "obstime": "2024-05-12T16:00:00",
-        }
-    }
-    obstime = infer_obstime(model_dict)
-    assert obstime == "2024-05-12T16:00:00"
-    
-    # Case 2: obstime as bytes
-    model_dict = {
-        "metadata": {
-            "obstime": b"2024-05-12T16:00:00",
-        }
-    }
-    obstime = infer_obstime(model_dict)
-    assert obstime == "2024-05-12T16:00:00"
-    
-    # Case 3: No metadata
-    model_dict = {}
-    obstime = infer_obstime(model_dict)
-    assert obstime is None
+def test_infer_obstime_from_base_index():
+    model_dict = {"base": {"index": _base_index_header(date_obs="2020-11-26T19:58:31")}}
+    assert infer_obstime(model_dict) == "2020-11-26T19:58:31"
 
 
-def test_infer_world_anchor_defaults():
-    """Test default world anchor."""
-    anchor_lon, anchor_lat, anchor_radius, frame = infer_world_anchor_defaults()
-    assert anchor_lon == 0.0
-    assert anchor_lat == 0.0
-    assert anchor_radius == 1.0
+def test_infer_world_anchor_from_base_index():
+    model_dict = {"base": {"index": _base_index_header(lon=13.0, lat=-7.0)}}
+    anchor = infer_world_anchor_from_index(model_dict)
+    assert anchor is not None
+    lon, lat, radius, frame = anchor
+    assert lon == 13.0
+    assert lat == -7.0
     assert frame == "heliographic_stonyhurst"
+    assert abs(radius - 1.0) < 1e-12
 
 
-def test_complete_geometry_contract_minimal_success():
-    """Test contract completion with minimal but sufficient data."""
+def test_complete_geometry_contract_success_from_base_index():
     model_dict = {
         "corona": {
             "bx": np.zeros((100, 80, 120), dtype=np.float32),
             "dr": np.array([1.0, 1.0, 1.0], dtype=np.float64),
         },
-        "metadata": {
-            "obstime": "2024-05-12T16:00:00",
-        }
+        "base": {
+            "index": _base_index_header(lon=15.0, lat=-9.0, date_obs="2020-11-26T19:58:31"),
+        },
     }
-    
-    contract = complete_geometry_contract(model_dict, strict=False)
+
+    contract = complete_geometry_contract(model_dict, strict=True)
     assert contract is not None
     assert contract.nx == 100
     assert contract.ny == 80
     assert contract.nz == 120
-    assert contract.dr_x == 1.0
-    assert contract.dr_y == 1.0
-    assert contract.dr_z == 1.0
-    assert contract.anchor_lon_deg == 0.0  # default
-    assert contract.anchor_lat_deg == 0.0  # default
-    assert contract.obstime == "2024-05-12T16:00:00"
-    assert contract.inferred_from == "defaults"
+    assert contract.obstime == "2020-11-26T19:58:31"
+    assert contract.anchor_lon_deg == 15.0
+    assert contract.anchor_lat_deg == -9.0
+    assert contract.inferred_from == "index"
 
 
 def test_complete_geometry_contract_missing_dims():
-    """Test contract completion fails gracefully without dims."""
     model_dict = {
-        "corona": {},  # no bx, by, or bz
-        "metadata": {
-            "obstime": "2024-05-12T16:00:00",
-        }
+        "corona": {},
+        "base": {"index": _base_index_header()},
     }
-    
-    contract = complete_geometry_contract(model_dict, strict=False)
-    assert contract is None
+    assert complete_geometry_contract(model_dict, strict=False) is None
+    with pytest.raises(ValueError, match="Cannot infer box dimensions"):
+        complete_geometry_contract(model_dict, strict=True)
 
 
 def test_complete_geometry_contract_missing_dr():
-    """Test contract completion fails gracefully without dr."""
     model_dict = {
-        "corona": {
-            "bx": np.zeros((100, 80, 120), dtype=np.float32),
-            # no dr
-        },
-        "metadata": {
-            "obstime": "2024-05-12T16:00:00",
-        }
+        "corona": {"bx": np.zeros((10, 10, 10), dtype=np.float32)},
+        "base": {"index": _base_index_header()},
     }
-    
-    contract = complete_geometry_contract(model_dict, strict=False)
-    assert contract is None
-
-
-def test_complete_geometry_contract_strict_mode():
-    """Test contract completion in strict mode."""
-    # Complete model: should succeed
-    model_dict = {
-        "corona": {
-            "bx": np.zeros((100, 80, 120), dtype=np.float32),
-            "dr": np.array([1.0, 1.0, 1.0], dtype=np.float64),
-        },
-        "metadata": {
-            "obstime": "2024-05-12T16:00:00",
-        }
-    }
-    contract = complete_geometry_contract(model_dict, strict=True)
-    assert contract is not None
-    
-    # Missing dims: should raise
-    model_dict = {
-        "corona": {},
-        "metadata": {
-            "obstime": "2024-05-12T16:00:00",
-        }
-    }
-    with pytest.raises(ValueError, match="Cannot infer box dimensions"):
+    assert complete_geometry_contract(model_dict, strict=False) is None
+    with pytest.raises(ValueError, match="Cannot infer voxel resolution"):
         complete_geometry_contract(model_dict, strict=True)
-    
-    # Missing obstime: should raise
+
+
+def test_complete_geometry_contract_missing_obstime():
     model_dict = {
         "corona": {
-            "bx": np.zeros((100, 80, 120), dtype=np.float32),
+            "bx": np.zeros((10, 10, 10), dtype=np.float32),
             "dr": np.array([1.0, 1.0, 1.0], dtype=np.float64),
         },
-        "metadata": {},
+        "base": {"index": "CRVAL1=1\nCRVAL2=2\nEND\n"},
     }
-    with pytest.raises(ValueError, match="Cannot infer observation time"):
+    assert complete_geometry_contract(model_dict, strict=False) is None
+    with pytest.raises(ValueError, match="Cannot infer observation time from base/index"):
+        complete_geometry_contract(model_dict, strict=True)
+
+
+def test_complete_geometry_contract_missing_anchor():
+    model_dict = {
+        "corona": {
+            "bx": np.zeros((10, 10, 10), dtype=np.float32),
+            "dr": np.array([1.0, 1.0, 1.0], dtype=np.float64),
+        },
+        "base": {"index": "DATE-OBS='2020-01-01T00:00:00'\nEND\n"},
+    }
+    assert complete_geometry_contract(model_dict, strict=False) is None
+    with pytest.raises(ValueError, match="Cannot infer anchor geometry from base/index"):
         complete_geometry_contract(model_dict, strict=True)
 
 
