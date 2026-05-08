@@ -91,6 +91,9 @@ Thin IO APIs:
 - ``save_thin_model_to_h5(thin_model, path)``
   writes a lightweight HDF5 containing only ``metadata`` and optional
   ``observer`` sections.
+- ``export_thin_model_from_h5(source_h5, output_h5=None, strict=False)``
+  is the public convenience helper to generate a metadata-only artifact
+  directly from a full model HDF5.
 
 For quick validation/testing without loading full model payloads, use:
 

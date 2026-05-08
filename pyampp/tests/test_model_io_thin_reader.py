@@ -138,3 +138,46 @@ def test_save_thin_model_to_h5_writes_only_metadata_and_observer(tmp_path):
     assert roundtrip["metadata"]["id"] == "portable_meta"
     assert int(roundtrip["metadata"]["geometry_contract"].nz) == 14
     assert roundtrip["observer"]["name"] == "earth"
+
+
+def test_export_thin_model_from_h5_creates_sibling_metadata_file(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    from pyampp.geometry.contract import GeometryContract, RSUN_HMI_METERS
+    from pyampp.io import export_thin_model_from_h5, save_model_to_h5
+
+    src = tmp_path / "full_model.h5"
+    model = {
+        "corona": {
+            "bx": np.zeros((3, 4, 5), dtype=np.float32),
+            "by": np.zeros((3, 4, 5), dtype=np.float32),
+            "bz": np.zeros((3, 4, 5), dtype=np.float32),
+            "attrs": {"model_type": "nlfff"},
+        },
+        "metadata": {
+            "id": "full_for_export",
+            "geometry_contract": GeometryContract(
+                nx=3,
+                ny=4,
+                nz=5,
+                dr_x=0.001,
+                dr_y=0.001,
+                dr_z=0.001,
+                rsun_m=RSUN_HMI_METERS,
+                anchor_lon_deg=90.0,
+                anchor_lat_deg=0.0,
+                anchor_radius_rsun=1.0,
+                frame="heliographic_stonyhurst",
+                obstime="2020-01-01T00:00:00",
+                inferred_from="index",
+            ),
+        },
+        "observer": {"name": "earth", "label": "Earth"},
+    }
+    save_model_to_h5(model, src)
+
+    out = export_thin_model_from_h5(src)
+    assert out == src.with_name("full_model_metadata.h5")
+    assert out.exists()
+
+    with h5py.File(out, "r") as f:
+        assert sorted(f.keys()) == ["metadata", "observer"]

@@ -199,6 +199,47 @@ def save_thin_model_to_h5(
     write_b3d_h5(str(h5_path), write_payload)
 
 
+def export_thin_model_from_h5(
+    source_h5: Path | str,
+    output_h5: Path | str | None = None,
+    *,
+    strict: bool = False,
+) -> Path:
+    """
+    Generate a metadata-only thin model HDF5 from a full model HDF5.
+
+    The output file contains only:
+      - metadata (full metadata section)
+      - observer (if present)
+
+    Args:
+        source_h5: Path to source full HDF5 model
+        output_h5: Destination path. If omitted, writes sibling
+                  ``<source_stem>_metadata.h5`` next to source.
+        strict: Passed to ``load_model_from_h5`` for contract completion.
+
+    Returns:
+        Path to written thin HDF5 file.
+    """
+    source_h5 = Path(source_h5)
+    if output_h5 is None:
+        output_h5 = source_h5.with_name(f"{source_h5.stem}_metadata.h5")
+    output_h5 = Path(output_h5)
+
+    model = load_model_from_h5(source_h5, strict=strict)
+    metadata = model.get("metadata") if isinstance(model, dict) else None
+    if not isinstance(metadata, dict) or "geometry_contract" not in metadata:
+        raise RuntimeError("Source model has no geometry_contract after restore.")
+
+    thin_model: dict[str, Any] = {"metadata": metadata}
+    observer = model.get("observer") if isinstance(model, dict) else None
+    if isinstance(observer, dict):
+        thin_model["observer"] = observer
+
+    save_thin_model_to_h5(thin_model, output_h5)
+    return output_h5
+
+
 def _write_contract_to_h5(h5_path: Path | str, contract: GeometryContract) -> bool:
     """
     Persist a geometry contract to HDF5.
@@ -408,4 +449,5 @@ __all__ = [
     "complete_and_persist_contract_in_h5",
     "load_geometry_contract_and_observer_from_h5",
     "save_thin_model_to_h5",
+    "export_thin_model_from_h5",
 ]

@@ -167,6 +167,10 @@ Low-level readers under ``pyampp.gxbox.boxutils`` remain available for internal
 and compatibility use, but they are not the canonical application-level load
 entrypoint for contract-enforced workflows.
 
+For portability and collaborator handoff, use ``pyampp.io.export_thin_model_from_h5``
+to produce a lightweight metadata-only HDF5 artifact containing full ``metadata``
+plus optional ``observer`` sections.
+
 Usage Examples
 --------------
 
