@@ -690,11 +690,8 @@ def main() -> int:
                 f"Failed to save model to {out_path}:\n{exc}",
             )
 
-    dialog.set_save_as_callback(_on_save_as_clicked, text="Save As && Close")
-    if entry_path.suffix.lower() == ".sav":
-        dialog.set_accept_button_text("Save As && Close")
-    else:
-        dialog.set_accept_button_text("Apply && Close")
+    dialog.set_save_as_callback(_on_save_as_clicked, text="Save As")
+    dialog.set_accept_button_text("Apply && Close")
 
     def _persist_result_if_needed() -> None:
         if dialog.result() != QDialog.Accepted:

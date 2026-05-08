@@ -154,3 +154,31 @@ class TestPickSaveAsH5PathSuffix:
         if path.suffix.lower() != ".h5":
             path = path.with_suffix(".h5")
         assert path.suffix == ".h5"
+
+
+def test_write_b3d_h5_handles_nested_metadata_object_dtype(tmp_path):
+    """3D Save As regression: metadata groups with object payloads must be writable."""
+    from pyampp.gxbox.boxutils import read_b3d_h5, write_b3d_h5
+
+    out = tmp_path / "nested_meta.h5"
+    model = {
+        "corona": {
+            "bx": np.zeros((3, 3, 3), dtype=np.float32),
+            "by": np.zeros((3, 3, 3), dtype=np.float32),
+            "bz": np.zeros((3, 3, 3), dtype=np.float32),
+            "attrs": {"model_type": "nlfff"},
+        },
+        "metadata": {
+            "axis_order_3d": "xyz",
+            "geometry_contract": {
+                "nx": np.array(3, dtype=object),
+                "anchor_lon_deg": np.array(120.5, dtype=object),
+                "obstime": "2020-11-26T19:58:33",
+            },
+        },
+    }
+
+    write_b3d_h5(str(out), model)
+    loaded = read_b3d_h5(str(out))
+    assert "metadata" in loaded
+    assert "geometry_contract" in loaded["metadata"]
