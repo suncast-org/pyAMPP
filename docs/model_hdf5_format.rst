@@ -79,6 +79,31 @@ Core provenance:
 - ``metadata/axis_order_2d`` and ``metadata/axis_order_3d`` when present
 - ``metadata/vector_layout`` when present
 
+Geometry contract metadata (when present):
+
+- ``metadata/geometry_contract/nx``
+- ``metadata/geometry_contract/ny``
+- ``metadata/geometry_contract/nz``
+- ``metadata/geometry_contract/dr_x``
+- ``metadata/geometry_contract/dr_y``
+- ``metadata/geometry_contract/dr_z``
+- ``metadata/geometry_contract/rsun_m``
+- ``metadata/geometry_contract/anchor_lon_deg``
+- ``metadata/geometry_contract/anchor_lat_deg``
+- ``metadata/geometry_contract/anchor_radius_rsun``
+- ``metadata/geometry_contract/frame``
+- ``metadata/geometry_contract/obstime``
+- ``metadata/geometry_contract/inferred_from``
+
+Contract semantics:
+
+- Tier 1 (intrinsic box) and Tier 2 (world embedding/time) fields are expected
+  to be complete for new pyAMPP outputs.
+- Legacy models may be missing this group on disk; canonical loaders complete
+  and attach these fields at load time.
+- Saving through ``pyampp.io.save_model_to_h5`` persists the completed contract
+  to this location.
+
 ``observer``
 ~~~~~~~~~~~~
 
@@ -206,3 +231,11 @@ For robust resume behavior, entry files should include:
 - required stage groups for the selected jump/rebuild mode.
 
 When ``--entry-box`` is supplied, ``gx-fov2box`` detects stage availability and enforces required groups for continuation/rebuild paths.
+
+Canonical Read Path
+-------------------
+
+For application and downstream usage, model files should be restored via
+``pyampp.io`` rather than low-level HDF5 readers. The centralized loader path
+ensures geometry contract completion and observer normalization before models
+are consumed by geometry or rendering code.

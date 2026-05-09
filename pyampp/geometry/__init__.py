@@ -6,6 +6,8 @@ can import without depending on the gxbox viewer entrypoints.
 """
 
 from .core import (
+    build_fov_box_from_red_box_world,
+    build_fov_box_from_user_hpc_and_red_box_world,
     compute_inscribing_fov_box_from_world,
     compute_inscribing_fov_from_hpc,
     compute_inscribing_fov_from_world,
@@ -17,6 +19,7 @@ from .core import (
     project_world_to_observer_hcc,
     project_world_to_observer_hpc,
     project_world_to_pixel,
+    world_to_local_cartesian_mm,
 )
 from .contract import (
     GeometryContract,
@@ -26,6 +29,7 @@ from .contract import (
     infer_voxel_resolution,
     infer_world_anchor_from_index,
     infer_obstime,
+    world_corners_from_geometry_contract,
 )
 from .observer import (
     build_ephemeris_from_pb0r,
@@ -41,6 +45,8 @@ __all__ = [
     "compute_inscribing_fov_box_from_world",
     "compute_inscribing_fov_from_hpc",
     "compute_inscribing_fov_from_world",
+    "build_fov_box_from_red_box_world",
+    "build_fov_box_from_user_hpc_and_red_box_world",
     "local_cartesian_to_world",
     "observer_fov_box_to_world_corners",
     "observer_rectangle_to_hpc_corners",
@@ -49,6 +55,7 @@ __all__ = [
     "project_world_to_observer_hcc",
     "project_world_to_observer_hpc",
     "project_world_to_pixel",
+    "world_to_local_cartesian_mm",
     "GeometryContract",
     "RSUN_HMI_METERS",
     "complete_geometry_contract",
@@ -56,6 +63,7 @@ __all__ = [
     "infer_voxel_resolution",
     "infer_world_anchor_from_index",
     "infer_obstime",
+    "world_corners_from_geometry_contract",
     "build_ephemeris_from_pb0r",
     "build_pb0r_metadata_from_ephemeris",
     "normalize_observer_key",

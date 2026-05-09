@@ -24,6 +24,7 @@ from pyampp.gxbox.gx_fov2box import (
     _infer_time_from_entry_loaded,
     _load_entry_box_any,
 )
+from pyampp.io import load_model_from_h5, load_model_from_sav, save_model_to_h5
 from pyampp.gxbox.selector_api import (
     BoxGeometrySelection,
     CoordMode,
@@ -54,6 +55,23 @@ _DEFAULT_MAP_IDS = (
     "304",
     "335",
 )
+
+
+def _contains_viewer_field_payload(entry_loaded: dict[str, Any]) -> bool:
+    if not isinstance(entry_loaded, dict):
+        return False
+
+    for key in ("corona", "nlfff", "pot"):
+        group = entry_loaded.get(key)
+        if isinstance(group, dict) and any(name in group for name in ("bx", "by", "bz", "bcube")):
+            return True
+
+    chromo = entry_loaded.get("chromo")
+    if isinstance(chromo, dict):
+        if any(name in chromo for name in ("bx", "by", "bz", "bcube", "chromo_bcube")):
+            return True
+
+    return False
 
 def _normalize_observer_key(observer_key: str | None) -> str:
     raw = observer_key
@@ -358,6 +376,13 @@ def _available_map_ids_from_sources(map_files: dict[str, str], refmaps: dict[str
 
 def _build_session_input(entry_path: Path) -> SelectorSessionInput:
     entry_loaded = _load_entry_box_any(entry_path)
+    if not _contains_viewer_field_payload(entry_loaded):
+        raise ValueError(
+            "Incompatible model file for gxbox-view2d: missing 3D field payload "
+            f"(corona/chromo). File: {entry_path}. "
+            "This looks like a metadata-only thin HDF5 (e.g. h5thin-export output), "
+            "which is supported for geometry metadata workflows but not for 2D/3D viewer rendering."
+        )
     time_iso, geometry = _geometry_from_entry(entry_loaded, entry_path)
     meta = entry_loaded.get("metadata", {}) if isinstance(entry_loaded, dict) else {}
     execute_text = _decode_id_text(meta.get("execute", "")) if isinstance(meta, dict) else ""
@@ -473,14 +498,15 @@ def _persist_selector_result_to_entry(
     if dest.suffix.lower() != ".h5":
         return False
 
+    # Load with contract enforcement via centralized model.io loader
     if entry_path.suffix.lower() == ".h5":
-        box_data = read_b3d_h5(str(entry_path))
+        box_data = load_model_from_h5(str(entry_path))
     else:
-        # SAV origin — first convert to canonical HDF5 to avoid object-dtype payloads.
+        # SAV origin — load via model.io which ensures contract completeness
+        # If no output path specified, we cannot save SAV result (SAV is source, H5 is dest)
         if output_path is None:
             return False
-        build_h5_from_sav(sav_path=entry_path, out_h5=dest, template_h5=None)
-        box_data = read_b3d_h5(str(dest))
+        box_data = load_model_from_sav(str(entry_path))
     observer = box_data.get("observer")
     if not isinstance(observer, dict):
         observer = {}
@@ -625,12 +651,9 @@ def _persist_selector_result_to_entry(
         box_data["line_seeds"] = line_seeds
     else:
         box_data.pop("line_seeds", None)
-    write_b3d_h5(str(dest), box_data)
-    try:
-        from pyampp.util.build_h5_from_sav import _apply_geometry_contract_to_h5
-        _apply_geometry_contract_to_h5(dest)
-    except Exception:
-        pass  # contract application is best-effort
+    
+    # Save with contract persistence via centralized model.io loader
+    save_model_to_h5(box_data, dest)
     return True
 
 
@@ -655,7 +678,15 @@ def main() -> int:
         entry_arg = picked
 
     entry_path = Path(entry_arg).expanduser().resolve()
-    session_input = _build_session_input(entry_path)
+    try:
+        session_input = _build_session_input(entry_path)
+    except Exception as exc:
+        QMessageBox.critical(
+            None,
+            "Incompatible Model",
+            str(exc),
+        )
+        return 2
     dialog = FovBoxSelectorDialog(session_input=session_input, entry_box_path=entry_path)
     dialog.setWindowTitle(f"FOV / Box Selector - {entry_path.name}")
     def _on_save_as_clicked() -> None:

@@ -43,7 +43,10 @@ from sunpy.coordinates import (
 from sunpy.visualization import colormaps as sunpy_colormaps
 
 from pyampp.geometry import (
+    build_fov_box_from_red_box_world,
+    build_fov_box_from_user_hpc_and_red_box_world,
     local_cartesian_to_world,
+    observer_fov_box_to_world_corners,
     observer_rectangle_to_hpc_corners,
     project_box_front_face_to_observer_hpc,
     project_coordinate_edges_to_observer_hpc,
@@ -1675,9 +1678,16 @@ class MapBoxDisplayWidget(QWidget):
         return info
 
     def _sync_fov_box_to_selection(self) -> None:
-        if self._state is None or self._state.fov is None or self._state.fov_box is None:
+        if self._state is None or self._state.fov is None:
             return
-        new_fov_box = DisplayFovBoxSelection(
+        recomputed = self._compute_fov_box_from_current_selection()
+        if recomputed is not None:
+            self._state.fov_box = recomputed
+            return
+        if self._state.fov_box is None:
+            return
+        # Fallback path: preserve existing z extent if geometry recomputation fails.
+        self._state.fov_box = DisplayFovBoxSelection(
             center_x_arcsec=float(self._state.fov.center_x_arcsec),
             center_y_arcsec=float(self._state.fov.center_y_arcsec),
             width_arcsec=float(self._state.fov.width_arcsec),
@@ -1686,7 +1696,46 @@ class MapBoxDisplayWidget(QWidget):
             z_max_mm=float(self._state.fov_box.z_max_mm),
             observer_key=str(self._state.fov_box.observer_key or self._state.fov_definition_observer_key),
         )
-        self._state.fov_box = new_fov_box
+
+    def _compute_fov_box_from_current_selection(self) -> Optional[DisplayFovBoxSelection]:
+        if self._state is None or self._state.fov is None or self._current_map is None:
+            return None
+        obstime = getattr(self._current_map, "date", None)
+        geometry_observer_key = self._state.geometry_definition_observer_key
+        source_map = self._observer_context(geometry_observer_key, obstime) or self._current_map
+        box = self._build_legacy_box(
+            source_map,
+            geometry_observer_key=geometry_observer_key,
+        )
+        if box is None:
+            return None
+        world = box.model_box_corners_world()
+        if world is None:
+            return None
+        observer = self._resolved_observer_for_map(self._current_map, self._state.display_observer_key) or "earth"
+        try:
+            fov_box = build_fov_box_from_user_hpc_and_red_box_world(
+                world,
+                xc_arcsec=float(self._state.fov.center_x_arcsec),
+                yc_arcsec=float(self._state.fov.center_y_arcsec),
+                xsize_arcsec=float(self._state.fov.width_arcsec),
+                ysize_arcsec=float(self._state.fov.height_arcsec),
+                observer=observer,
+                obstime=obstime,
+            )
+            if fov_box is None:
+                return None
+            return DisplayFovBoxSelection(
+                center_x_arcsec=float(fov_box["xc_arcsec"]),
+                center_y_arcsec=float(fov_box["yc_arcsec"]),
+                width_arcsec=float(fov_box["xsize_arcsec"]),
+                height_arcsec=float(fov_box["ysize_arcsec"]),
+                z_min_mm=float(fov_box["zmin_mm"]),
+                z_max_mm=float(fov_box["zmax_mm"]),
+                observer_key=self._normalize_observer_key(self._state.display_observer_key),
+            )
+        except Exception:
+            return None
 
     def _compute_fov_box_local_corners(
         self,
@@ -3681,7 +3730,10 @@ class MapBoxDisplayWidget(QWidget):
             return None
         observer = self._resolved_observer_for_map(self._current_map, self._state.display_observer_key) or "earth"
         try:
-            fov_box = box.model_box_inscribing_fov_box(observer=observer, obstime=obstime)
+            world = box.model_box_corners_world()
+            if world is None:
+                return None
+            fov_box = build_fov_box_from_red_box_world(world, observer=observer, obstime=obstime)
             if fov_box is None:
                 return None
             return DisplayFovBoxSelection(
@@ -3692,6 +3744,39 @@ class MapBoxDisplayWidget(QWidget):
                 z_min_mm=float(fov_box["zmin_mm"]),
                 z_max_mm=float(fov_box["zmax_mm"]),
                 observer_key=self._normalize_observer_key(self._state.display_observer_key),
+            )
+        except Exception:
+            return None
+
+    def _fov_box_world_corners(self, smap, fov_box: DisplayFovBoxSelection) -> SkyCoord | None:
+        if self._state is None:
+            return None
+        obstime = getattr(smap, "date", None)
+        source_observer_key = self._normalize_observer_key(getattr(fov_box, "observer_key", None))
+        source_context = self._observer_context(source_observer_key, obstime)
+        source_map = source_context or smap
+        box = self._build_legacy_box(
+            source_map,
+            geometry_observer_key=self._state.geometry_definition_observer_key,
+        )
+        if box is None:
+            return None
+        box_frame = getattr(getattr(box, "_center", None), "frame", None)
+        if box_frame is None:
+            return None
+        source_observer = self._resolved_observer_for_map(source_map, source_observer_key) or "earth"
+        meta = fov_box.as_observer_metadata(square=bool(self._state.square_fov))
+        try:
+            return observer_fov_box_to_world_corners(
+                xc_arcsec=float(meta["xc_arcsec"]),
+                yc_arcsec=float(meta["yc_arcsec"]),
+                xsize_arcsec=float(meta["xsize_arcsec"]),
+                ysize_arcsec=float(meta["ysize_arcsec"]),
+                zmin_mm=float(meta["zmin_mm"]),
+                zmax_mm=float(meta["zmax_mm"]),
+                observer=source_observer,
+                obstime=getattr(source_map, "date", None),
+                target_frame=box_frame,
             )
         except Exception:
             return None
@@ -3929,25 +4014,15 @@ class MapBoxDisplayWidget(QWidget):
         frame_obs = Helioprojective(observer=observer, obstime=obstime)
 
         if fov_box is not None:
-            source_observer_key = self._normalize_observer_key(getattr(fov_box, "observer_key", None))
-            source_context = self._observer_context(source_observer_key, obstime)
-            source_map = source_context or smap
-            box = self._build_legacy_box(
-                source_map,
-                geometry_observer_key=self._state.geometry_definition_observer_key,
-            )
-            if box is not None:
-                corners_world = box.fov_box_corners_world(
-                    fov_box.as_observer_metadata(square=bool(self._state.square_fov))
+            corners_world = self._fov_box_world_corners(smap, fov_box)
+            if corners_world is not None and len(corners_world) == 8:
+                projected_edges = project_coordinate_edges_to_observer_hpc(
+                    corners_world,
+                    edge_pairs=_BOX_EDGE_INDEX_PAIRS,
+                    frame_obs=frame_obs,
                 )
-                if corners_world is not None and len(corners_world) == 8:
-                    projected_edges = project_coordinate_edges_to_observer_hpc(
-                        corners_world,
-                        edge_pairs=_BOX_EDGE_INDEX_PAIRS,
-                        frame_obs=frame_obs,
-                    )
-                    if projected_edges is not None:
-                        return projected_edges
+                if projected_edges is not None:
+                    return projected_edges
 
         fov_like = fov_rect or fov_box
         if fov_like is None:
@@ -3985,18 +4060,7 @@ class MapBoxDisplayWidget(QWidget):
         obstime = getattr(smap, "date", None)
         frame_obs = Helioprojective(observer=observer, obstime=obstime)
 
-        source_observer_key = self._normalize_observer_key(getattr(fov_box, "observer_key", None))
-        source_context = self._observer_context(source_observer_key, obstime)
-        source_map = source_context or smap
-        box = self._build_legacy_box(
-            source_map,
-            geometry_observer_key=self._state.geometry_definition_observer_key,
-        )
-        if box is None:
-            return None
-        corners_world = box.fov_box_corners_world(
-            fov_box.as_observer_metadata(square=bool(self._state.square_fov))
-        )
+        corners_world = self._fov_box_world_corners(smap, fov_box)
         if corners_world is None or len(corners_world) != 8:
             return None
         return project_box_front_face_to_observer_hpc(corners_world, frame_obs=frame_obs)

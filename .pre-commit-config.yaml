@@ -20,6 +20,15 @@ repos:
         exclude: ".*(.fits|.fts|.fit|.header|.txt|tca.*|.json)$|^CITATION.rst$"
       - id: mixed-line-ending
         exclude: ".*(.fits|.fts|.fit|.header|.txt|tca.*)$"
+  - repo: local
+    hooks:
+      - id: demo-notebook-guard
+        name: Guard demo notebook assets from in-repo edits
+        entry: python -m pyampp.util.demo_notebooks check --staged
+        language: system
+        pass_filenames: false
+        always_run: true
+        files: ^docs/notebooks/.*\.(ipynb|h5)$
 ci:
   autofix_prs: false
   autoupdate_schedule: "quarterly"

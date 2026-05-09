@@ -13,6 +13,8 @@ https://pyampp.readthedocs.io/en/latest/
 
 Format and viewer references:
 
+- Canonical model I/O and contract enforcement:
+  ``docs/model_io.rst``
 - Upgraded HDF5 stage format (NONE/BND/POT/NAS/NAS.GEN/NAS.CHR):
   ``docs/model_hdf5_format.rst``
 - Public geometry API and migration status:
@@ -137,6 +139,38 @@ pyAMPP exposes one main GUI and three focused command-line tools:
 4. **gxbox-view3d** – 3D viewer for existing model HDF5 files.
 5. **gxrefmap-view** – 2D browser for base maps and reference maps stored in model HDF5 files.
 
+Canonical Model I/O And Geometry Contract
+-----------------------------------------
+
+pyAMPP now provides a centralized model I/O surface via ``pyampp.io``.
+This is the recommended path for application-level model loading and saving.
+
+Key behavior:
+
+- all model restores (H5 and SAV) are normalized through one loader path,
+- missing Tier 1 + Tier 2 geometry contract fields in legacy models are
+  inferred at load time,
+- completed contract metadata is persisted on save,
+- geometry consumers can assume one normalized metadata state.
+
+Use these APIs:
+
+.. code-block:: python
+
+    from pyampp import io, geometry
+
+    model = io.load_model_from_h5("/path/to/model.h5")
+    contract = model["metadata"]["geometry_contract"]
+    corners = geometry.world_corners_from_geometry_contract(contract)
+
+Low-level readers under ``pyampp.gxbox.boxutils`` remain available for internal
+and compatibility use, but they are not the canonical application-level load
+entrypoint for contract-enforced workflows.
+
+For portability and collaborator handoff, use ``pyampp.io.export_thin_model_from_h5``
+to produce a lightweight metadata-only HDF5 artifact containing full ``metadata``
+plus optional ``observer`` sections.
+
 Usage Examples
 --------------
 
@@ -225,6 +259,8 @@ After installation, the following commands become available:
 - ``h5tree``: Print an HDF5 tree (metadata shown by default, plus ``observer/name``, optional ``observer/label`` / ``observer/source``, and ``observer/pb0r/*`` when present; ``--no-metadata`` hides these value lines, ``--meta`` prints them only).
 - ``gx-idl2fov2box``: Translate IDL ``gx_fov2box`` execute strings (or SAV ``EXECUTE``) into Python ``gx-fov2box`` commands.
 - ``gx-fov2box2idl``: Translate Python ``gx-fov2box`` commands (or HDF5 ``metadata/execute``) into simple IDL ``gx_fov2box`` calls.
+- ``h5thin``: Inspect only ``metadata/geometry_contract`` and optional ``observer`` metadata from an HDF5 model.
+- ``h5thin-export``: Generate a metadata-only thin HDF5 (full ``metadata`` + optional ``observer``) from a full model HDF5.
 
 License
 -------

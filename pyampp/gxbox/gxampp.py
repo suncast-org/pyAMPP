@@ -55,6 +55,37 @@ def _split_process_output_text(partial_line: str, text: str) -> tuple[list[str],
     return parts[:-1], parts[-1]
 
 
+def _contains_entry_field_payload(boxdata: dict) -> bool:
+    if not isinstance(boxdata, dict):
+        return False
+
+    for key in ("corona", "nlfff", "pot"):
+        group = boxdata.get(key)
+        if isinstance(group, dict) and any(name in group for name in ("bx", "by", "bz", "bcube")):
+            return True
+
+    chromo = boxdata.get("chromo")
+    if isinstance(chromo, dict):
+        if any(name in chromo for name in ("bx", "by", "bz", "bcube", "chromo_bcube")):
+            return True
+
+    return False
+
+
+def _has_template_execute_metadata(boxdata: dict) -> bool:
+    if not isinstance(boxdata, dict):
+        return False
+    metadata = boxdata.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    execute = metadata.get("execute")
+    if execute is None:
+        return False
+    if isinstance(execute, (bytes, bytearray)):
+        execute = execute.decode("utf-8", "ignore")
+    return bool(str(execute).strip())
+
+
 class CustomQLineEdit(QLineEdit):
     def setTextL(self, text):
         """
@@ -155,6 +186,8 @@ class PyAmppGUI(QMainWindow):
         self._last_valid_entry_box = ""
         self._entry_stage_detected = None
         self._entry_type_detected = None
+        self._entry_is_template_only = False
+        self._suppress_entry_dialog_on_restore = False
         self._hydrating_entry = False
         self._proc_timer = QTimer(self)
         self._proc_timer.setInterval(500)
@@ -189,7 +222,7 @@ class PyAmppGUI(QMainWindow):
         }
 
     def _has_entry_box(self) -> bool:
-        return bool(self.external_box_edit.text().strip())
+        return bool(self.external_box_edit.text().strip()) and not bool(self._entry_is_template_only)
 
     def _stage_to_jump_action(self, stage: str) -> str:
         s = (stage or "").upper()
@@ -340,6 +373,17 @@ class PyAmppGUI(QMainWindow):
         entry_box = self._settings.value("session/entry_box_path", "", type=str).strip()
         if entry_box:
             self.external_box_edit.setText(entry_box)
+            # Re-trigger entry box processing to rebuild entry type and pipeline state
+            # Suppress the template dialog on restore since it's not a new user action
+            try:
+                self._suppress_entry_dialog_on_restore = True
+                self.read_external_box()
+            except Exception:
+                # If entry box path is stale or invalid, silently ignore
+                # User can fix it manually
+                self._entry_is_template_only = False
+            finally:
+                self._suppress_entry_dialog_on_restore = False
 
     def _save_session_state_to_settings(self):
         try:
@@ -358,6 +402,7 @@ class PyAmppGUI(QMainWindow):
             self._settings.setValue("session/use_cached_downloads", self._use_cached_downloads())
             self._settings.setValue("session/entry_mode", self._get_jump_action())
             self._settings.setValue("session/entry_box_path", self.external_box_edit.text().strip())
+            self._settings.setValue("session/entry_is_template_only", self._entry_is_template_only)
 
             bool_widgets = {
                 "download_aia_uv": self.download_aia_uv,
@@ -530,9 +575,19 @@ class PyAmppGUI(QMainWindow):
         self._hydrating_entry = True
         try:
             boxdata = _load_entry_box_any(Path(boxfile))
+            has_payload = _contains_entry_field_payload(boxdata)
+            template_only = (not has_payload)
+            if template_only and not _has_template_execute_metadata(boxdata):
+                raise ValueError(
+                    "Entry box is incompatible: missing 3D field payload (corona/chromo) "
+                    "and no metadata.execute template was found."
+                )
+            self._entry_is_template_only = template_only
             entry_stage = _entry_stage_from_loaded(boxdata, Path(boxfile))
             self._entry_stage_detected = entry_stage
             entry_type = self._derive_entry_type(boxdata, Path(boxfile), entry_stage)
+            if self._entry_is_template_only:
+                entry_type = f"{entry_type}.TEMPLATE"
             self._entry_type_detected = entry_type
             self.entry_stage_edit.setText(entry_type)
 
@@ -566,11 +621,19 @@ class PyAmppGUI(QMainWindow):
             self._reset_pipeline_checks_for_entry()
             self._set_jump_action("continue")
             self._last_valid_entry_box = boxfile
+            if self._entry_is_template_only and not self._suppress_entry_dialog_on_restore:
+                QMessageBox.information(
+                    self,
+                    "Template Entry Loaded",
+                    "Loaded metadata-only entry template.\n\n"
+                    "pyAMPP will use metadata.execute fields to prefill GUI parameters and build a fresh model from scratch.\n"
+                    "Resume/continue-from-box mode is disabled for this template.",
+                )
             if warnings:
                 QMessageBox.warning(self, "Entry Box Path Warnings", "\n".join(warnings))
         finally:
             self._hydrating_entry = False
-        self._set_model_params_enabled(False)
+        self._set_model_params_enabled(not self._has_entry_box())
         self._sync_pipeline_options()
         self.update_command_display()
 
@@ -834,6 +897,7 @@ class PyAmppGUI(QMainWindow):
         if not new_path.strip():
             self._entry_stage_detected = None
             self._entry_type_detected = None
+            self._entry_is_template_only = False
             self.entry_stage_edit.setText("N/A")
             self._set_jump_action("continue")
             self._set_model_params_enabled(True)

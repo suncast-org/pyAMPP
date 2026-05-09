@@ -12,8 +12,10 @@ import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 from sunpy.coordinates import Heliocentric, Helioprojective
+from pyampp.geometry import observer_fov_box_to_world_corners, world_to_local_cartesian_mm
 from pyampp.gxbox.boxutils import validate_number, read_b3d_h5, write_b3d_h5, update_line_seeds_h5
 from pyampp.gxbox.observer_restore import resolve_observer_with_info
+from pyampp.io import load_model_from_h5
 import pickle
 import vtk
 
@@ -25,6 +27,23 @@ from PyQt5.QtGui import QStandardItemModel, QStandardItem
 import numpy as np
 
 logging.getLogger("sunpy").setLevel(logging.WARNING)
+
+
+def _contains_viewer_field_payload(b3d: dict) -> bool:
+    if not isinstance(b3d, dict):
+        return False
+
+    for key in ("corona", "nlfff", "pot"):
+        group = b3d.get(key)
+        if isinstance(group, dict) and any(name in group for name in ("bx", "by", "bz", "bcube")):
+            return True
+
+    chromo = b3d.get("chromo")
+    if isinstance(chromo, dict):
+        if any(name in chromo for name in ("bx", "by", "bz", "bcube", "chromo_bcube")):
+            return True
+
+    return False
 
 ## todo is it possible to add 3d crosshair to the plotter?
 ## todo integrate NLFFF extrapolation module. https://github.com/Alexey-Stupishin/pyAMaFiL
@@ -2257,14 +2276,49 @@ class MagFieldViewer(BackgroundPlotter):
         return self._wireframe_box_from_points(corners)
 
     def _fov_box_corners_local(self):
-        corners = self.box.fov_box_corners_local_mm()
+        observer_meta = self.box.b3d.get("observer", {}) if isinstance(self.box.b3d, dict) else {}
+        fov_box = observer_meta.get("fov_box") if isinstance(observer_meta, dict) else None
+        if not isinstance(fov_box, dict):
+            print("FOV box overlay: missing observer['fov_box'] metadata.")
+            return None
+
+        box_frame = getattr(getattr(self.box, "_center", None), "frame", None)
+        frame_obs = getattr(self.box, "_frame_obs", None)
+        obstime = getattr(frame_obs, "obstime", None)
+        observer = getattr(frame_obs, "observer", None)
+        observer_key = fov_box.get("observer_key")
+        if observer_key:
+            try:
+                resolved, _warning, _used = resolve_observer_with_info(
+                    getattr(self.box, "b3d", None) if isinstance(getattr(self.box, "b3d", None), dict) else {},
+                    observer_key,
+                    obstime,
+                )
+                if resolved is not None:
+                    observer = resolved
+            except Exception:
+                pass
+        if observer is None or box_frame is None:
+            print("FOV box overlay: incomplete or invalid observer['fov_box'] metadata.")
+            return None
+
+        try:
+            corners_world = observer_fov_box_to_world_corners(
+                xc_arcsec=float(fov_box["xc_arcsec"]),
+                yc_arcsec=float(fov_box["yc_arcsec"]),
+                xsize_arcsec=float(fov_box["xsize_arcsec"]),
+                ysize_arcsec=float(fov_box["ysize_arcsec"]),
+                zmin_mm=float(fov_box["zmin_mm"]),
+                zmax_mm=float(fov_box["zmax_mm"]),
+                observer=observer,
+                obstime=obstime,
+                target_frame=box_frame,
+            )
+            corners = world_to_local_cartesian_mm(corners_world, z_base_mm=float(self.grid_zbase))
+        except Exception:
+            corners = None
         if corners is None:
-            observer_meta = self.box.b3d.get("observer", {}) if isinstance(self.box.b3d, dict) else {}
-            fov_box = observer_meta.get("fov_box") if isinstance(observer_meta, dict) else None
-            if not isinstance(fov_box, dict):
-                print("FOV box overlay: missing observer['fov_box'] metadata.")
-            else:
-                print("FOV box overlay: incomplete or invalid observer['fov_box'] metadata.")
+            print("FOV box overlay: incomplete or invalid observer['fov_box'] metadata.")
             return None
         return np.asarray(corners, dtype=float)
 
@@ -2777,7 +2831,23 @@ class MagFieldViewer(BackgroundPlotter):
         filename = QFileDialog.getOpenFileName(self, "Load Box", default_filename, "HDF5 Files (*.h5)")[0]
         if not filename:
             return
-        self.box.b3d = read_b3d_h5(filename)
+        try:
+            loaded = load_model_from_h5(filename)
+        except Exception as exc:
+            QMessageBox.critical(self.app_window, "Load Failed", f"Could not read model file:\n{exc}")
+            return
+
+        if not _contains_viewer_field_payload(loaded):
+            QMessageBox.critical(
+                self.app_window,
+                "Incompatible Model",
+                "This file does not contain a 3D field payload (corona/chromo).\n\n"
+                "It appears to be a metadata-only thin HDF5 (e.g. h5thin-export output), "
+                "which cannot be rendered by gxbox-view3d.",
+            )
+            return
+
+        self.box.b3d = loaded
 
         if "corona" in self.box.b3d:
             self.b3dtype = "corona"
@@ -2797,6 +2867,13 @@ class MagFieldViewer(BackgroundPlotter):
                     chromo["by"] = bcube[:, :, :, 1]
                     chromo["bz"] = bcube[:, :, :, 2]
                     self.box.b3d["chromo"] = chromo
+        else:
+            QMessageBox.critical(
+                self.app_window,
+                "Incompatible Model",
+                "No known model types found in file (expected corona/chromo).",
+            )
+            return
         self.init_grid()
         self._apply_streamline_control_state()
         self.previous_params = {}

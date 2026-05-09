@@ -7,6 +7,7 @@ This is the documentation for pyAMPP.
    :maxdepth: 2
    :caption: Contents:
 
+   model_io
    model_hdf5_format
    geometry_api
    gx_fov2box_usage

@@ -8,6 +8,8 @@ from sunpy.coordinates import Heliocentric, Helioprojective, get_earth
 from sunpy.map import Map, make_fitswcs_header
 
 from pyampp.geometry import (
+    build_fov_box_from_red_box_world,
+    build_fov_box_from_user_hpc_and_red_box_world,
     compute_inscribing_fov_box_from_world,
     compute_inscribing_fov_from_world,
     local_cartesian_to_world,
@@ -182,3 +184,29 @@ def test_public_geometry_core_projects_front_face_and_rectangle_corners() -> Non
     assert len(rect) == 4
     assert np.all(np.isfinite(rect.Tx.to_value(u.arcsec)))
     assert np.all(np.isfinite(rect.Ty.to_value(u.arcsec)))
+
+
+def test_public_geometry_user_fov_box_constructor_keeps_inscribing_z() -> None:
+    box, obs_time, observer, _frame_obs = _make_test_box()
+    world = box.model_box_corners_world()
+    assert world is not None
+
+    auto_box = build_fov_box_from_red_box_world(world, observer=observer, obstime=obs_time)
+    user_box = build_fov_box_from_user_hpc_and_red_box_world(
+        world,
+        xc_arcsec=120.0,
+        yc_arcsec=-80.0,
+        xsize_arcsec=300.0,
+        ysize_arcsec=220.0,
+        observer=observer,
+        obstime=obs_time,
+    )
+
+    assert auto_box is not None
+    assert user_box is not None
+    assert np.isclose(float(user_box["zmin_mm"]), float(auto_box["zmin_mm"]))
+    assert np.isclose(float(user_box["zmax_mm"]), float(auto_box["zmax_mm"]))
+    assert np.isclose(float(user_box["xc_arcsec"]), 120.0)
+    assert np.isclose(float(user_box["yc_arcsec"]), -80.0)
+    assert np.isclose(float(user_box["xsize_arcsec"]), 300.0)
+    assert np.isclose(float(user_box["ysize_arcsec"]), 220.0)

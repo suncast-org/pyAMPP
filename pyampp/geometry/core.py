@@ -202,6 +202,59 @@ def compute_inscribing_fov_box_from_world(
     })
     return result
 
+def build_fov_box_from_red_box_world(
+    world: SkyCoord,
+    *,
+    observer=None,
+    obstime=None,
+    frame_obs=None,
+    pad_xy_arcsec: float = 0.0,
+    pad_z_frac: float = 0.10,
+) -> dict | None:
+    """Build a full observer-aligned FOV box from red-box world corners."""
+    return compute_inscribing_fov_box_from_world(
+        world,
+        observer=observer,
+        obstime=obstime,
+        frame_obs=frame_obs,
+        pad_xy_arcsec=pad_xy_arcsec,
+        pad_z_frac=pad_z_frac,
+    )
+
+def build_fov_box_from_user_hpc_and_red_box_world(
+    world: SkyCoord,
+    *,
+    xc_arcsec: float,
+    yc_arcsec: float,
+    xsize_arcsec: float,
+    ysize_arcsec: float,
+    observer=None,
+    obstime=None,
+    frame_obs=None,
+    pad_z_frac: float = 0.10,
+) -> dict | None:
+    """Build user-defined x/y FOV with LOS-safe z from the red-box inscribing FOV box."""
+    base = build_fov_box_from_red_box_world(
+        world,
+        observer=observer,
+        obstime=obstime,
+        frame_obs=frame_obs,
+        pad_xy_arcsec=0.0,
+        pad_z_frac=pad_z_frac,
+    )
+    if base is None:
+        return None
+    result = dict(base)
+    result.update(
+        {
+            "xc_arcsec": float(xc_arcsec),
+            "yc_arcsec": float(yc_arcsec),
+            "xsize_arcsec": max(float(xsize_arcsec), 1e-6),
+            "ysize_arcsec": max(float(ysize_arcsec), 1e-6),
+        }
+    )
+    return result
+
 
 def observer_fov_box_to_world_corners(
     *,
@@ -371,6 +424,26 @@ def project_world_to_pixel(world: SkyCoord, smap) -> tuple[np.ndarray, np.ndarra
         return None
     return x, y
 
+def world_to_local_cartesian_mm(world: SkyCoord, *, z_base_mm: float = 0.0) -> np.ndarray | None:
+    """Extract cartesian mm rows from world coords and shift z by z_base_mm."""
+    if world is None:
+        return None
+    try:
+        rows = np.column_stack(
+            [
+                np.asarray(world.x.to_value(u.Mm), dtype=float),
+                np.asarray(world.y.to_value(u.Mm), dtype=float),
+                np.asarray(world.z.to_value(u.Mm), dtype=float) - float(z_base_mm),
+            ]
+        )
+    except Exception:
+        return None
+    if rows.ndim != 2 or rows.shape[1] != 3 or rows.shape[0] == 0:
+        return None
+    if not np.all(np.isfinite(rows)):
+        return None
+    return rows.astype(float)
+
 
 def __getattr__(name: str):
     if name in {"Box", "BoxGeometryMixin"}:
@@ -396,6 +469,9 @@ __all__ = [
     "project_coordinate_edges_to_observer_hpc",
     "project_box_front_face_to_observer_hpc",
     "project_world_to_pixel",
+    "build_fov_box_from_red_box_world",
+    "build_fov_box_from_user_hpc_and_red_box_world",
+    "world_to_local_cartesian_mm",
     "Box",
     "BoxGeometryMixin",
 ]

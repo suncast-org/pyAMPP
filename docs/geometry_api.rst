@@ -6,6 +6,25 @@ observer-aware projection and field-of-view calculations. It promotes the
 tested gxbox geometry kernel into an import path that downstream code can rely
 on without depending on the GUI or viewer entrypoints.
 
+Canonical Model Loading Requirement
+-----------------------------------
+
+Geometry consumers should use ``pyampp.io`` for model restore so contract
+completion and observer normalization happen before geometry APIs are called.
+
+Use:
+
+- ``pyampp.io.load_model_from_h5``
+- ``pyampp.io.load_model_from_sav``
+
+Avoid direct application-level restores through low-level readers such as
+``pyampp.gxbox.boxutils.read_b3d_h5`` for new code.
+
+``read_b3d_h5`` now delegates to ``pyampp.io.load_model_from_h5`` and therefore
+inherits contract completion and observer normalization, but ``pyampp.io``
+remains the canonical, stable app-level surface with clearer return-type
+expectations.
+
 Scope of This Update
 --------------------
 
@@ -119,6 +138,16 @@ Function Contracts
 
 Examples
 --------
+
+Load a model through the canonical I/O path, then call geometry:
+
+.. code-block:: python
+
+   from pyampp import io, geometry
+
+   model = io.load_model_from_h5("/path/to/model.h5")
+   contract = model["metadata"]["geometry_contract"]
+   red_world = geometry.world_corners_from_geometry_contract(contract)
 
 Convert local model points to world coordinates:
 

@@ -39,6 +39,9 @@ h5tree = "pyampp.util.h5tree:app"
 gxrefmap-view = "pyampp.gxbox.gxrefmap_view:app"
 gx-idl2fov2box = "pyampp.util.idl_execute_to_gxfov2box:main"
 gx-fov2box2idl = "pyampp.util.gxfov2box_to_idl:main"
+h5thin = "pyampp.util.h5thin:app"
+h5thin-export = "pyampp.util.h5thin_export:app"
+pyampp-demo-notebooks = "pyampp.util.demo_notebooks:main"
 
 [project.optional-dependencies]
 tests = [

@@ -30,6 +30,14 @@ def _make_minimal_h5(path: Path) -> None:
         g.attrs["model_type"] = "nlfff"
 
 
+def _make_metadata_only_h5(path: Path) -> None:
+    """Write a thin metadata-only HDF5 without field payload groups."""
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as f:
+        metadata = f.create_group("metadata")
+        metadata.create_dataset("id", data=np.bytes_("thin_only"))
+
+
 def _make_minimal_result():
     from pyampp.gxbox.selector_api import (
         BoxGeometrySelection,
@@ -124,7 +132,7 @@ class TestPersistSelectorResultOutputPath:
             _make_minimal_h5(Path(out_h5))
 
         with patch(
-            "pyampp.gxbox.gxbox_selector_view.build_h5_from_sav",
+            "pyampp.io.model.build_h5_from_sav",
             side_effect=_fake_build_h5_from_sav,
         ):
             ret = _persist_selector_result_to_entry(fake_sav, result, output_path=dest)
@@ -182,3 +190,68 @@ def test_write_b3d_h5_handles_nested_metadata_object_dtype(tmp_path):
     loaded = read_b3d_h5(str(out))
     assert "metadata" in loaded
     assert "geometry_contract" in loaded["metadata"]
+
+
+def test_save_model_to_h5_serializes_geometry_contract_object(tmp_path):
+    """Saving models with GeometryContract objects must not fail with object dtype errors."""
+    from pyampp.geometry.contract import GeometryContract, RSUN_HMI_METERS
+    from pyampp.gxbox.boxutils import read_b3d_h5
+    from pyampp.io import save_model_to_h5
+
+    out = tmp_path / "contract_object_save.h5"
+    contract = GeometryContract(
+        nx=8,
+        ny=6,
+        nz=4,
+        dr_x=0.002,
+        dr_y=0.002,
+        dr_z=0.002,
+        rsun_m=RSUN_HMI_METERS,
+        anchor_lon_deg=120.5,
+        anchor_lat_deg=-13.2,
+        anchor_radius_rsun=1.0,
+        frame="heliographic_stonyhurst",
+        obstime="2020-11-26T19:58:33",
+        inferred_from="index",
+    )
+
+    model = {
+        "corona": {
+            "bx": np.zeros((8, 6, 4), dtype=np.float32),
+            "by": np.zeros((8, 6, 4), dtype=np.float32),
+            "bz": np.zeros((8, 6, 4), dtype=np.float32),
+            "attrs": {"model_type": "nlfff"},
+        },
+        "metadata": {
+            "axis_order_3d": "xyz",
+            "geometry_contract": contract,
+        },
+    }
+
+    save_model_to_h5(model, out)
+
+    loaded = read_b3d_h5(str(out))
+    assert "metadata" in loaded
+    assert "geometry_contract" in loaded["metadata"]
+    contract_group = loaded["metadata"]["geometry_contract"]
+    assert int(contract_group["nx"]) == 8
+    assert float(contract_group["anchor_lon_deg"]) == pytest.approx(120.5)
+
+
+def test_view_h5_can_prepare_rejects_metadata_only_h5(tmp_path):
+    from pyampp.gxbox.view_h5 import can_prepare_model_for_viewer
+
+    path = tmp_path / "thin_only.h5"
+    _make_metadata_only_h5(path)
+
+    assert can_prepare_model_for_viewer(path) is False
+
+
+def test_selector_view_rejects_metadata_only_h5(tmp_path):
+    from pyampp.gxbox.gxbox_selector_view import _build_session_input
+
+    path = tmp_path / "thin_only.h5"
+    _make_metadata_only_h5(path)
+
+    with pytest.raises(ValueError, match="metadata-only thin HDF5"):
+        _build_session_input(path)
