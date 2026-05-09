@@ -99,6 +99,7 @@ def world_corners_from_geometry_contract(
     contract: GeometryContract,
     *,
     obstime: str | Time | None = None,
+    observer: str | SkyCoord | None = "earth",
 ) -> SkyCoord | None:
     """Build red-box world corners from a completed geometry contract."""
     if contract is None:
@@ -127,15 +128,22 @@ def world_corners_from_geometry_contract(
         return None
 
     frame_name = str(contract.frame or "heliographic_stonyhurst").strip().lower()
-    frame_cls = HeliographicCarrington if "carrington" in frame_name else HeliographicStonyhurst
 
     try:
-        anchor = SkyCoord(
-            lon=anchor_lon * u.deg,
-            lat=anchor_lat * u.deg,
-            radius=(anchor_radius * rsun_m) * u.m,
-            frame=frame_cls(obstime=obs_time),
-        )
+        if "carrington" in frame_name:
+            anchor = SkyCoord(
+                lon=anchor_lon * u.deg,
+                lat=anchor_lat * u.deg,
+                radius=(anchor_radius * rsun_m) * u.m,
+                frame=HeliographicCarrington(obstime=obs_time, observer=observer),
+            )
+        else:
+            anchor = SkyCoord(
+                lon=anchor_lon * u.deg,
+                lat=anchor_lat * u.deg,
+                radius=(anchor_radius * rsun_m) * u.m,
+                frame=HeliographicStonyhurst(obstime=obs_time),
+            )
         # Use an observer-centered Cartesian frame at the anchor so the red-box
         # z-axis points along the local LOS from the anchor, matching gxbox semantics.
         frame_local = Heliocentric(observer=anchor, obstime=obs_time)
@@ -143,9 +151,10 @@ def world_corners_from_geometry_contract(
     except Exception:
         return None
 
-    sx_mm = nx * dr_x
-    sy_mm = ny * dr_y
-    sz_mm = nz * dr_z
+    rsun_mm = rsun_m / 1e6  # metres → Mm
+    sx_mm = nx * dr_x * rsun_mm
+    sy_mm = ny * dr_y * rsun_mm
+    sz_mm = nz * dr_z * rsun_mm
     local_corners_mm = np.asarray(
         [
             [-0.5 * sx_mm, -0.5 * sy_mm, 0.0],

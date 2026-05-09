@@ -93,6 +93,7 @@ Thumbs.db
 # ------------------------------
 *.fits
 *.h5
+!docs/notebooks/data/*.h5
 
 # ------------------------------
 # Local test scratch files (keep local, do not track)
