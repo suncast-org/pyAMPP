@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 import h5py
 import numpy as np
@@ -471,12 +471,32 @@ def load_model_from_h5(
     return model_dict
 
 
+@overload
+def load_model_from_sav(
+    sav_path: Path | str,
+    *,
+    strict: bool = False,
+    keep_temp_h5: Literal[False] = False,
+) -> dict[str, Any]:
+    ...
+
+
+@overload
+def load_model_from_sav(
+    sav_path: Path | str,
+    *,
+    strict: bool = False,
+    keep_temp_h5: Literal[True],
+) -> tuple[dict[str, Any], Path]:
+    ...
+
+
 def load_model_from_sav(
     sav_path: Path | str,
     *,
     strict: bool = False,
     keep_temp_h5: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, Any] | tuple[dict[str, Any], Path]:
     """
     Load a model from SAV format with geometry contract enforcement.
 

@@ -104,9 +104,10 @@ def test_world_corners_from_geometry_contract_builds_red_box() -> None:
     xs = np.asarray(world.x.to_value(), dtype=float)
     ys = np.asarray(world.y.to_value(), dtype=float)
     zs = np.asarray(world.z.to_value(), dtype=float)
-    assert np.isclose(np.max(xs) - np.min(xs), 40.0)
-    assert np.isclose(np.max(ys) - np.min(ys), 30.0)
-    assert np.isclose(np.max(zs) - np.min(zs), 20.0)
+    rsun_mm = RSUN_HMI_METERS / 1e6
+    assert np.isclose(np.max(xs) - np.min(xs), 40.0 * rsun_mm)
+    assert np.isclose(np.max(ys) - np.min(ys), 30.0 * rsun_mm)
+    assert np.isclose(np.max(zs) - np.min(zs), 20.0 * rsun_mm)
 
 
 def test_world_corners_from_geometry_contract_rejects_invalid_values() -> None:
