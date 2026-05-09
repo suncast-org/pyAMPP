@@ -56,6 +56,23 @@ _DEFAULT_MAP_IDS = (
     "335",
 )
 
+
+def _contains_viewer_field_payload(entry_loaded: dict[str, Any]) -> bool:
+    if not isinstance(entry_loaded, dict):
+        return False
+
+    for key in ("corona", "nlfff", "pot"):
+        group = entry_loaded.get(key)
+        if isinstance(group, dict) and any(name in group for name in ("bx", "by", "bz", "bcube")):
+            return True
+
+    chromo = entry_loaded.get("chromo")
+    if isinstance(chromo, dict):
+        if any(name in chromo for name in ("bx", "by", "bz", "bcube", "chromo_bcube")):
+            return True
+
+    return False
+
 def _normalize_observer_key(observer_key: str | None) -> str:
     raw = observer_key
     if isinstance(raw, (bytes, bytearray)):
@@ -359,6 +376,13 @@ def _available_map_ids_from_sources(map_files: dict[str, str], refmaps: dict[str
 
 def _build_session_input(entry_path: Path) -> SelectorSessionInput:
     entry_loaded = _load_entry_box_any(entry_path)
+    if not _contains_viewer_field_payload(entry_loaded):
+        raise ValueError(
+            "Incompatible model file for gxbox-view2d: missing 3D field payload "
+            f"(corona/chromo). File: {entry_path}. "
+            "This looks like a metadata-only thin HDF5 (e.g. h5thin-export output), "
+            "which is supported for geometry metadata workflows but not for 2D/3D viewer rendering."
+        )
     time_iso, geometry = _geometry_from_entry(entry_loaded, entry_path)
     meta = entry_loaded.get("metadata", {}) if isinstance(entry_loaded, dict) else {}
     execute_text = _decode_id_text(meta.get("execute", "")) if isinstance(meta, dict) else ""
@@ -654,7 +678,15 @@ def main() -> int:
         entry_arg = picked
 
     entry_path = Path(entry_arg).expanduser().resolve()
-    session_input = _build_session_input(entry_path)
+    try:
+        session_input = _build_session_input(entry_path)
+    except Exception as exc:
+        QMessageBox.critical(
+            None,
+            "Incompatible Model",
+            str(exc),
+        )
+        return 2
     dialog = FovBoxSelectorDialog(session_input=session_input, entry_box_path=entry_path)
     dialog.setWindowTitle(f"FOV / Box Selector - {entry_path.name}")
     def _on_save_as_clicked() -> None:

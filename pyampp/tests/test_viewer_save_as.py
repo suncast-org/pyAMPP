@@ -30,6 +30,14 @@ def _make_minimal_h5(path: Path) -> None:
         g.attrs["model_type"] = "nlfff"
 
 
+def _make_metadata_only_h5(path: Path) -> None:
+    """Write a thin metadata-only HDF5 without field payload groups."""
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as f:
+        metadata = f.create_group("metadata")
+        metadata.create_dataset("id", data=np.bytes_("thin_only"))
+
+
 def _make_minimal_result():
     from pyampp.gxbox.selector_api import (
         BoxGeometrySelection,
@@ -228,3 +236,22 @@ def test_save_model_to_h5_serializes_geometry_contract_object(tmp_path):
     contract_group = loaded["metadata"]["geometry_contract"]
     assert int(contract_group["nx"]) == 8
     assert float(contract_group["anchor_lon_deg"]) == pytest.approx(120.5)
+
+
+def test_view_h5_can_prepare_rejects_metadata_only_h5(tmp_path):
+    from pyampp.gxbox.view_h5 import can_prepare_model_for_viewer
+
+    path = tmp_path / "thin_only.h5"
+    _make_metadata_only_h5(path)
+
+    assert can_prepare_model_for_viewer(path) is False
+
+
+def test_selector_view_rejects_metadata_only_h5(tmp_path):
+    from pyampp.gxbox.gxbox_selector_view import _build_session_input
+
+    path = tmp_path / "thin_only.h5"
+    _make_metadata_only_h5(path)
+
+    with pytest.raises(ValueError, match="metadata-only thin HDF5"):
+        _build_session_input(path)

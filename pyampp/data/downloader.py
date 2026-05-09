@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from glob import glob
@@ -28,7 +29,10 @@ class SDOImageDownloader:
     """
 
     SUPPORTED_BACKENDS = ("fido", "drms")
-    DRMS_MAX_WORKERS = 5
+    DRMS_MAX_WORKERS = 3
+    DRMS_HMI_MAX_WORKERS = 1
+    DRMS_EXPORT_RETRIES = 24
+    DRMS_THROTTLE_BACKOFF_SECONDS = 5
 
     def __init__(
         self,
@@ -40,6 +44,7 @@ class SDOImageDownloader:
         backend="drms",
         force_download=False,
         poll_seconds=5,
+        drms_sequential=False,
     ):
         self.time = time if isinstance(time, Time) else Time(time)
         self.uv = uv
@@ -48,6 +53,8 @@ class SDOImageDownloader:
         self.backend = str(backend or "drms").strip().lower()
         self.force_download = bool(force_download)
         self.poll_seconds = max(1, int(poll_seconds))
+        self.drms_sequential = bool(drms_sequential)
+        self._drms_throttle_seen = False
         if self.backend not in self.SUPPORTED_BACKENDS:
             raise ValueError(
                 f"Unsupported downloader backend '{backend}'. "
@@ -179,6 +186,9 @@ class SDOImageDownloader:
         return self._check_files_exist(self.path, returnfilelist=True)
 
     def _download_images_drms(self):
+        self._drms_throttle_seen = False
+        if self.drms_sequential:
+            print("DRMS sequential mode enabled: forcing single-worker downloads")
         files = self._check_files_exist(self.path, returnfilelist=True)
         for key, path in list(files.items()):
             if path and not self._fits_has_map_metadata(path):
@@ -199,11 +209,12 @@ class SDOImageDownloader:
             ("hmi.M_720s", "magnetogram", "magnetogram"),
             ("hmi.Ic_noLimbDark_720s", "continuum", "continuum"),
         ]
-        jobs = []
+        hmi_jobs = []
+        context_jobs = []
         if self.hmi:
             for idx, (series, segment, key) in enumerate(hmi_tasks, start=1):
                 if not files.get(key):
-                    jobs.append(
+                    hmi_jobs.append(
                         {
                             "key": key,
                             "series": series,
@@ -217,7 +228,7 @@ class SDOImageDownloader:
         if self.euv:
             for idx, wave in enumerate(AIA_EUV_PASSBANDS, start=1):
                 if not files.get(wave):
-                    jobs.append(
+                    context_jobs.append(
                         {
                             "key": wave,
                             "series": "aia.lev1_euv_12s",
@@ -231,7 +242,7 @@ class SDOImageDownloader:
         if self.uv:
             for idx, wave in enumerate(AIA_UV_PASSBANDS, start=1):
                 if not files.get(wave):
-                    jobs.append(
+                    context_jobs.append(
                         {
                             "key": wave,
                             "series": "aia.lev1_uv_24s",
@@ -242,11 +253,14 @@ class SDOImageDownloader:
                         }
                     )
 
-        if jobs:
-            workers = max(1, min(self.DRMS_MAX_WORKERS, len(jobs)))
+        def _run_jobs(jobs, workers, label):
+            if not jobs:
+                return []
+            failed = []
+            max_workers = max(1, min(workers, len(jobs)))
             if len(jobs) > 1:
-                print(f"DRMS: downloading {len(jobs)} products with up to {workers} workers")
-            with ThreadPoolExecutor(max_workers=workers) as pool:
+                print(f"DRMS: downloading {len(jobs)} {label} products with up to {max_workers} workers")
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 future_to_job = {}
                 for job in jobs:
                     print(job["label"])
@@ -263,12 +277,36 @@ class SDOImageDownloader:
                     job = future_to_job[future]
                     try:
                         files[job["key"]] = future.result() or ""
+                        if not files[job["key"]]:
+                            failed.append(job)
                     except Exception as exc:
                         print(
                             "DRMS task failed for "
                             f"{job['series']}{{{job['segment']}}}: {exc}"
                         )
                         files[job["key"]] = ""
+                        failed.append(job)
+            return failed
+
+        # HMI requests are serialized to avoid JSOC pending-export throttling.
+        hmi_workers = 1 if self.drms_sequential else self.DRMS_HMI_MAX_WORKERS
+        _run_jobs(hmi_jobs, hmi_workers, "HMI")
+        # Context AIA products keep parallelism from PR40.
+        context_workers = 1 if self.drms_sequential else self.DRMS_MAX_WORKERS
+        failed_context = _run_jobs(context_jobs, context_workers, "AIA")
+        if (
+            failed_context
+            and context_workers > 1
+            and self._drms_throttle_seen
+        ):
+            retry_jobs = [job for job in failed_context if not files.get(job["key"])]
+            if retry_jobs:
+                print(
+                    "DRMS throttling detected during AIA parallel fetch; "
+                    "retrying missing AIA products sequentially"
+                )
+                self._drms_throttle_seen = False
+                _run_jobs(retry_jobs, 1, "AIA retry")
 
         return self._check_files_exist(self.path, returnfilelist=True)
 
@@ -703,19 +741,33 @@ class SDOImageDownloader:
 
         export_record = f"{chosen['record']}{{{segment}}}"
         print(f"  nearest record: {chosen['record']}")
-        try:
-            request = client.export(
-                export_record,
-                method="url_quick",
-                protocol="fits",
-                email=jsoc_notify_email(),
-                filenamefmt=False,
-            )
-            request.wait(sleep=self.poll_seconds)
-            urls_df = request.urls
-        except Exception as exc:
-            print(f"DRMS export failed for {export_record}: {exc}")
-            return ""
+        urls_df = None
+        for attempt in range(1, self.DRMS_EXPORT_RETRIES + 1):
+            try:
+                request = client.export(
+                    export_record,
+                    method="url_quick",
+                    protocol="fits",
+                    email=jsoc_notify_email(),
+                    filenamefmt=False,
+                )
+                request.wait(sleep=self.poll_seconds)
+                urls_df = request.urls
+                break
+            except Exception as exc:
+                msg = str(exc)
+                throttled = "pending export requests" in msg.lower() or "status=7" in msg.lower()
+                if throttled and attempt < self.DRMS_EXPORT_RETRIES:
+                    self._drms_throttle_seen = True
+                    backoff = max(self.poll_seconds, self.DRMS_THROTTLE_BACKOFF_SECONDS)
+                    print(
+                        f"DRMS export throttled for {export_record}; retry {attempt}/{self.DRMS_EXPORT_RETRIES} "
+                        f"after {backoff}s"
+                    )
+                    time.sleep(backoff)
+                    continue
+                print(f"DRMS export failed for {export_record}: {exc}")
+                return ""
 
         if urls_df is None or len(urls_df) == 0:
             print(f"DRMS export returned no URLs for {export_record}")

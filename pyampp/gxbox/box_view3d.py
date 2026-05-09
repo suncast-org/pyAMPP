@@ -28,6 +28,23 @@ import numpy as np
 
 logging.getLogger("sunpy").setLevel(logging.WARNING)
 
+
+def _contains_viewer_field_payload(b3d: dict) -> bool:
+    if not isinstance(b3d, dict):
+        return False
+
+    for key in ("corona", "nlfff", "pot"):
+        group = b3d.get(key)
+        if isinstance(group, dict) and any(name in group for name in ("bx", "by", "bz", "bcube")):
+            return True
+
+    chromo = b3d.get("chromo")
+    if isinstance(chromo, dict):
+        if any(name in chromo for name in ("bx", "by", "bz", "bcube", "chromo_bcube")):
+            return True
+
+    return False
+
 ## todo is it possible to add 3d crosshair to the plotter?
 ## todo integrate NLFFF extrapolation module. https://github.com/Alexey-Stupishin/pyAMaFiL
 def minval(min_val):
@@ -2814,7 +2831,23 @@ class MagFieldViewer(BackgroundPlotter):
         filename = QFileDialog.getOpenFileName(self, "Load Box", default_filename, "HDF5 Files (*.h5)")[0]
         if not filename:
             return
-        self.box.b3d = load_model_from_h5(filename)
+        try:
+            loaded = load_model_from_h5(filename)
+        except Exception as exc:
+            QMessageBox.critical(self.app_window, "Load Failed", f"Could not read model file:\n{exc}")
+            return
+
+        if not _contains_viewer_field_payload(loaded):
+            QMessageBox.critical(
+                self.app_window,
+                "Incompatible Model",
+                "This file does not contain a 3D field payload (corona/chromo).\n\n"
+                "It appears to be a metadata-only thin HDF5 (e.g. h5thin-export output), "
+                "which cannot be rendered by gxbox-view3d.",
+            )
+            return
+
+        self.box.b3d = loaded
 
         if "corona" in self.box.b3d:
             self.b3dtype = "corona"
@@ -2834,6 +2867,13 @@ class MagFieldViewer(BackgroundPlotter):
                     chromo["by"] = bcube[:, :, :, 1]
                     chromo["bz"] = bcube[:, :, :, 2]
                     self.box.b3d["chromo"] = chromo
+        else:
+            QMessageBox.critical(
+                self.app_window,
+                "Incompatible Model",
+                "No known model types found in file (expected corona/chromo).",
+            )
+            return
         self.init_grid()
         self._apply_streamline_control_state()
         self.previous_params = {}

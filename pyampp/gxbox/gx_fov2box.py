@@ -66,6 +66,47 @@ from pyampp.util.config import (
 app = typer.Typer(help="Run gx_fov2box pipeline without GUI and save model stages.")
 
 
+def _spherical_screen_context_for_observer(observer):
+    if hasattr(Helioprojective, "assume_spherical_screen"):
+        return Helioprojective.assume_spherical_screen(observer)
+    try:
+        from sunpy.coordinates.screens import SphericalScreen
+
+        return SphericalScreen(observer)
+    except Exception:
+        return contextlib.nullcontext()
+
+
+def _is_offdisk_submap_nan_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "submap" in text
+        and "nan" in text
+        and (
+            "off-disk" in text
+            or "off disk" in text
+            or "sphericalscreen" in text
+            or "spherical_screen" in text
+        )
+    )
+
+
+def _submap_with_fov_safe(smap: Map, fov_bottom_left: SkyCoord, fov_top_right: SkyCoord) -> Map:
+    frame = smap.coordinate_frame
+    try:
+        bl = fov_bottom_left.transform_to(frame)
+        tr = fov_top_right.transform_to(frame)
+        return smap.submap(bl, top_right=tr)
+    except ValueError as exc:
+        if not _is_offdisk_submap_nan_error(exc):
+            raise
+        observer = getattr(frame, "observer", None)
+        with _spherical_screen_context_for_observer(observer):
+            bl = fov_bottom_left.transform_to(frame)
+            tr = fov_top_right.transform_to(frame)
+            return smap.submap(bl, top_right=tr)
+
+
 @dataclass
 class Fov2BoxConfig:
     time: Optional[str]
@@ -81,6 +122,7 @@ class Fov2BoxConfig:
     data_dir: str
     gxmodel_dir: str
     download_backend: str
+    drms_sequential: bool
     force_download: bool
     entry_box: Optional[str]
     save_empty_box: bool
@@ -1202,6 +1244,7 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("data_dir", cfg.data_dir, "SDO download/cache directory"),
         ("gxmodel_dir", cfg.gxmodel_dir, "Output gx_models directory"),
         ("download_backend", cfg.download_backend, "SDO downloader backend"),
+        ("drms_sequential", cfg.drms_sequential, "Force single-worker DRMS downloads (HMI and AIA)"),
         ("force_download", cfg.force_download, "Bypass local cache hits and redownload requested SDO products"),
         ("entry_box", cfg.entry_box, "Path to precomputed HDF5 box"),
         ("save_empty_box", cfg.save_empty_box, "Save NONE stage"),
@@ -1257,6 +1300,7 @@ def _load_hmi_maps_from_downloader(
     euv: bool,
     uv: bool,
     download_backend: str = "drms",
+    drms_sequential: bool = False,
     force_download: bool = False,
     disambig_method: int = 2,
     strict_required: bool = True,
@@ -1272,25 +1316,48 @@ def _load_hmi_maps_from_downloader(
         return missing
 
     requested_time = Time(time)
-    downloader = SDOImageDownloader(
-        time,
-        data_dir=str(data_dir),
-        euv=False,
-        uv=False,
-        hmi=True,
-        backend=download_backend,
-        force_download=force_download,
-    )
+    def _new_downloader(*, obs_time: Time, want_euv: bool, want_uv: bool, want_hmi: bool):
+        kwargs = {
+            "data_dir": str(data_dir),
+            "euv": want_euv,
+            "uv": want_uv,
+            "hmi": want_hmi,
+            "backend": download_backend,
+            "force_download": force_download,
+        }
+        if download_backend == "drms":
+            kwargs["drms_sequential"] = drms_sequential
+        try:
+            return SDOImageDownloader(obs_time, **kwargs)
+        except TypeError as exc:
+            if "drms_sequential" in str(exc):
+                kwargs.pop("drms_sequential", None)
+                return SDOImageDownloader(obs_time, **kwargs)
+            raise
+
+    downloader = _new_downloader(obs_time=time, want_euv=False, want_uv=False, want_hmi=True)
     missing_before = _missing_items(downloader.existence_report, "hmi_b", "hmi_m", "hmi_ic")
     t0 = time_mod.perf_counter()
     files = dict(downloader.download_images())
     hmi_elapsed = time_mod.perf_counter() - t0
     downloaded = force_download or len(missing_before) > 0
     required = ["field", "inclination", "azimuth", "disambig", "continuum", "magnetogram"]
-    missing = [k for k in required if not files.get(k)]
-    if missing and strict_required:
-        raise RuntimeError(f"Missing required HMI files: {missing}")
-    if missing and not strict_required:
+    optional_requested: list[str] = []
+    if euv:
+        optional_requested.extend(list(AIA_EUV_PASSBANDS))
+    if uv:
+        optional_requested.extend(list(AIA_UV_PASSBANDS))
+    missing_required = [k for k in required if not files.get(k)]
+    missing_optional = [k for k in optional_requested if not files.get(k)]
+    if missing_required and strict_required:
+        print("Download summary:")
+        print(f"- required missing: {missing_required}")
+        print(f"- optional missing: {missing_optional}")
+        raise RuntimeError(f"Missing required HMI files: {missing_required}")
+    if missing_required and not strict_required:
+        print("Download summary:")
+        print(f"- required missing: {missing_required}")
+        print(f"- optional missing: {missing_optional}")
         info = {
             "requested_obs_time": requested_time.isot,
             "resolved_obs_time": None,
@@ -1299,7 +1366,9 @@ def _load_hmi_maps_from_downloader(
             "hmi_elapsed": hmi_elapsed,
             "context_elapsed": 0.0,
             "missing_before": missing_before,
-            "missing_after": missing,
+            "missing_after": missing_required,
+            "missing_required": missing_required,
+            "missing_optional": missing_optional,
             "files": files,
         }
         return {}, info
@@ -1325,14 +1394,11 @@ def _load_hmi_maps_from_downloader(
 
     context_elapsed = 0.0
     if euv or uv:
-        context_downloader = SDOImageDownloader(
-            resolved_obs_time,
-            data_dir=str(data_dir),
-            euv=euv,
-            uv=uv,
-            hmi=False,
-            backend=download_backend,
-            force_download=force_download,
+        context_downloader = _new_downloader(
+            obs_time=resolved_obs_time,
+            want_euv=euv,
+            want_uv=uv,
+            want_hmi=False,
         )
         context_missing_before = _missing_items(context_downloader.existence_report, "euv", "uv")
         missing_before.extend(context_missing_before)
@@ -1344,6 +1410,11 @@ def _load_hmi_maps_from_downloader(
             if key in required:
                 continue
             files[key] = path
+        missing_optional = [k for k in optional_requested if not files.get(k)]
+
+    print("Download summary:")
+    print(f"- required missing: {missing_required}")
+    print(f"- optional missing: {missing_optional}")
 
     for key, path in files.items():
         if key in ("field", "inclination", "azimuth", "disambig", "continuum", "magnetogram"):
@@ -1361,6 +1432,9 @@ def _load_hmi_maps_from_downloader(
         "hmi_elapsed": hmi_elapsed,
         "context_elapsed": context_elapsed,
         "missing_before": missing_before,
+        "missing_after": missing_required,
+        "missing_required": missing_required,
+        "missing_optional": missing_optional,
         "files": files,
     }
     return maps, info
@@ -1781,6 +1855,7 @@ def main(
     gxmodel_dir: str = typer.Option(GXMODEL_DIR, "--gxmodel-dir", help="GX model output directory"),
     download_backend: Optional[str] = typer.Option(None, "--download-backend", help="Compatibility override: explicitly set downloader backend to fido or drms"),
     use_fido: bool = typer.Option(False, "--use-fido", help="Use the legacy SunPy/Fido downloader instead of the default DRMS backend"),
+    drms_sequential: bool = typer.Option(False, "--drms-sequential", help="Force DRMS downloads to single-worker mode for maximum reliability"),
     force_download: bool = typer.Option(False, "--force-download", help="Bypass local cache hits and redownload requested SDO products"),
     entry_box: Optional[str] = typer.Option(None, "--entry-box", help="Existing HDF5/SAV box"),
     save_empty_box: bool = typer.Option(False, "--save-empty-box", help="Save NONE stage"),
@@ -1837,6 +1912,7 @@ def main(
         data_dir=data_dir,
         gxmodel_dir=gxmodel_dir,
         download_backend=download_backend or "drms",
+        drms_sequential=drms_sequential,
         force_download=force_download,
         entry_box=entry_box,
         save_empty_box=save_empty_box,
@@ -2196,6 +2272,7 @@ def main(
             cfg.euv,
             cfg.uv,
             download_backend=cfg.download_backend,
+            drms_sequential=cfg.drms_sequential,
             force_download=cfg.force_download,
             disambig_method=disambig_method,
             strict_required=(_last_stage_tag(cfg.stop_after) != "DL"),
@@ -2271,9 +2348,7 @@ def main(
         )
 
         def submap_with_fov(_map: Map) -> Map:
-            bl = fov_coords[0].transform_to(_map.coordinate_frame)
-            tr = fov_coords[1].transform_to(_map.coordinate_frame)
-            return _map.submap(bl, top_right=tr)
+            return _submap_with_fov_safe(_map, fov_coords[0], fov_coords[1])
 
         def _extract_cutouts():
             return (
