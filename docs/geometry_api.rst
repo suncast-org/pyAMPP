@@ -18,8 +18,12 @@ Use:
 - ``pyampp.io.load_model_from_sav``
 
 Avoid direct application-level restores through low-level readers such as
-``pyampp.gxbox.boxutils.read_b3d_h5``, which do not enforce metadata
-normalization by themselves.
+``pyampp.gxbox.boxutils.read_b3d_h5`` for new code.
+
+``read_b3d_h5`` now delegates to ``pyampp.io.load_model_from_h5`` and therefore
+inherits contract completion and observer normalization, but ``pyampp.io``
+remains the canonical, stable app-level surface with clearer return-type
+expectations.
 
 Scope of This Update
 --------------------

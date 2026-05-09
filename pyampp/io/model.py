@@ -424,9 +424,10 @@ def load_model_from_h5(
     Policy:
     - Try to read pre-stored contract from HDF5 (Tier 1+2 metadata)
     - If not present, infer/compute missing Tier 1+2 metadata from available
-      fallbacks (index, execute, cube shape, dr)
+            fallbacks (base/index, cube shape, dr)
     - Always normalize observer ephemeris at load time
-    - Return complete model dict guaranteed to have Tier 1+2 metadata
+        - Return normalized model dict; contract presence depends on completion
+            success and ``strict`` mode
 
     Args:
         h5_path: Path to HDF5 file
@@ -434,8 +435,10 @@ def load_model_from_h5(
                If False, return model with available metadata (best-effort)
 
     Returns:
-        Model dict with Tier 1+2 metadata guaranteed to be present
-        (or as complete as fallbacks allow for old models)
+        Normalized model dict. When contract completion succeeds,
+        ``metadata.geometry_contract`` is attached; when ``strict=False``,
+        completion failures are tolerated and the model may be returned without
+        that field.
 
     Raises:
         RuntimeError: If strict=True and contract cannot be completed

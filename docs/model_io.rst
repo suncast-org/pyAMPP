@@ -16,7 +16,7 @@ Policy:
 - New models: Tier 1 + Tier 2 geometry metadata must be complete.
 - Legacy models (SAV or incomplete HDF5): missing Tier 1 + Tier 2 fields are
   inferred from available fallbacks (for example: ``base/index``,
-  ``metadata/execute``, coronal cube shape, ``corona/dr``).
+  coronal cube shape, ``corona/dr``).
 - On save, completed contract metadata is persisted to HDF5 so next load does
   not need to recompute those fields.
 - If a loaded model is not saved, recomputation on future loads is expected and
@@ -74,8 +74,11 @@ Recommended for application and downstream code:
 
 - Do import from ``pyampp.io`` for model load/save.
 - Do import from ``pyampp.geometry`` for geometry operations.
-- Do not use ``pyampp.gxbox.boxutils.read_b3d_h5`` as an app-level load path.
-  It is a low-level reader and does not enforce model normalization.
+- Prefer ``pyampp.io`` as the canonical app-level interface.
+- ``pyampp.gxbox.boxutils.read_b3d_h5`` currently delegates to
+  ``pyampp.io.load_model_from_h5`` and therefore does perform contract
+  completion and observer normalization, but it remains a legacy compatibility
+  surface with gxbox-shaped return conventions.
 
 This separation removes duplicated fallback logic in downstream consumers and
 keeps one authoritative contract-completion path in pyAMPP.
