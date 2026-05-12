@@ -14,13 +14,12 @@ completion and observer normalization happen before geometry APIs are called.
 
 Use:
 
-- ``pyampp.io.load_model_from_h5``
-- ``pyampp.io.load_model_from_sav``
+- ``pyampp.io.load_model``
 
 Avoid direct application-level restores through low-level readers such as
 ``pyampp.gxbox.boxutils.read_b3d_h5`` for new code.
 
-``read_b3d_h5`` now delegates to ``pyampp.io.load_model_from_h5`` and therefore
+``read_b3d_h5`` now delegates to ``pyampp.io.load_model`` and therefore
 inherits contract completion and observer normalization, but ``pyampp.io``
 remains the canonical, stable app-level surface with clearer return-type
 expectations.
@@ -145,7 +144,7 @@ Load a model through the canonical I/O path, then call geometry:
 
    from pyampp import io, geometry
 
-   model = io.load_model_from_h5("/path/to/model.h5")
+   model = io.load_model("/path/to/model.h5")
    contract = model["metadata"]["geometry_contract"]
    red_world = geometry.world_corners_from_geometry_contract(contract)
 

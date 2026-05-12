@@ -316,9 +316,7 @@ class Box(BoxGeometryMixin):
         origin = self._origin.transform_to(
             HeliographicCarrington(observer="earth", obstime=getattr(self._origin, "obstime", None))
         )
-        shape = self._dims[:-1][::-1] / self._res.to(self._dims.unit)
-        shape = list(shape.value)
-        shape = [int(np.ceil(s)) for s in shape]
+        shape = [int(v) for v in self._dims_pix[:-1][::-1]]
         rsun = (IDL_HMI_RSUN_M * u.m).to(self._res.unit)
         scale = np.arcsin(self._res / rsun).to(u.deg) / u.pix
         scale = u.Quantity((scale, scale))
@@ -329,9 +327,7 @@ class Box(BoxGeometryMixin):
 
     def _get_bottom_top_header(self, dsun_obs=None):
         origin = self._origin.transform_to(self._frame_obs)
-        shape = self._dims[:-1][::-1] / self._res.to(self._dims.unit)
-        shape = list(shape.value)
-        shape = [int(np.ceil(s)) for s in shape]
+        shape = [int(v) for v in self._dims_pix[:-1][::-1]]
         if dsun_obs is None:
             dsun_obs = origin.observer.radius.to(self._res.unit)
         else:

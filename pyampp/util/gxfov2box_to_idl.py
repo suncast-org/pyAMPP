@@ -165,7 +165,6 @@ def _build_idl_execute(kw: Dict[str, str], bool_flags: List[str]) -> Tuple[str, 
         "--jump2chromo": "JUMP2CHROMO",
         "--rebuild": "REBUILD",
         "--rebuild-from-none": "REBUILD_FROM_NONE",
-        "--clone-only": "CLONE_ONLY",
         "--info": "INFO",
     }
     for flag in bool_flags:

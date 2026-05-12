@@ -114,13 +114,6 @@ build/
 docs/_build/
 
 # Local/generated parity-report artifacts (keep out of PRs)
-reports/parity_review/assets/
-reports/parity_review/data/
-reports/parity_review/figures/
-reports/parity_review/*.pdf
-reports/parity_review/PARITY_FULL_STAGE_ASSESSMENT.md
-reports/parity_review/PARITY_REVIEW_PRESENTATION.md
-reports/parity_review/PRESENTATION_COMPARISON_TEST_CHR_NONE.md
 
 # Private local notes (not for version control)
 notes/private/

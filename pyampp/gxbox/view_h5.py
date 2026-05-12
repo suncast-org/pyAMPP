@@ -27,10 +27,10 @@ from sunpy.sun import constants as sun_consts
 from pyampp.gxbox.box import Box, BoxGeometryMixin
 from pyampp.gxbox.boxutils import read_b3d_h5, normalize_observer_metadata
 from pyampp.gxbox.gx_fov2box import _decode_id_text, _extract_execute_geometry, _infer_time_from_entry_loaded
-from pyampp.io import load_model_from_h5, load_model_from_sav
+from pyampp.io import load_model
 from pyampp.gxbox.observer_restore import resolve_observer_with_info
-from PyQt5.QtWidgets import QApplication, QFileDialog
-from PyQt5.QtCore import QTimer
+from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox, QProgressDialog
+from PyQt5.QtCore import Qt, QTimer
 
 
 def _contains_viewer_field_payload(b3d: dict) -> bool:
@@ -56,7 +56,7 @@ def _ensure_viewer_compatible_model(b3d: dict, model_path: Path) -> None:
     raise ValueError(
         "Incompatible model file for gxbox-view3d: missing 3D field payload "
         f"(corona/chromo). File: {model_path}. "
-        "This looks like a metadata-only thin HDF5 (e.g. h5thin-export output), "
+        "This looks like a metadata-only thin HDF5 (e.g. export-model-metadata output), "
         "which is supported for geometry metadata workflows but not for 2D/3D viewer rendering."
     )
 
@@ -313,23 +313,20 @@ def prepare_model_for_viewer(model_path: str | Path) -> tuple[SimpleBox, Time, s
     -------
     tuple
         ``(box, obs_time, b3dtype, temp_h5_path)`` where ``temp_h5_path`` is a
-        temporary conversion artifact for ``.sav`` inputs (or ``None`` for ``.h5``).
+        temporary conversion artifact when the canonical loader had to materialize one.
     """
     model_path = Path(model_path).expanduser().resolve()
     temp_h5_path = None
     
-    # Load model with contract enforcement via centralized model.io loader
-    if model_path.suffix.lower() == ".sav":
-        try:
-            b3d, temp_h5_path = load_model_from_sav(model_path, keep_temp_h5=True)
-        except Exception as exc:
-            raise RuntimeError(
-                "SAV input requires converter module 'pyampp.util.build_h5_from_sav'. "
-                "Run conversion manually to H5, then reopen."
-            ) from exc
-        print(f"Converted SAV to temporary HDF5: {temp_h5_path}")
-    else:
-        b3d = load_model_from_h5(model_path)
+    try:
+        b3d, temp_h5_path = load_model(model_path, keep_temp_h5=True)
+    except Exception as exc:
+        raise RuntimeError(
+            "Model input could not be loaded through pyampp.io.load_model. "
+            "If this is a legacy SAV file, verify the conversion dependencies are available."
+        ) from exc
+    if temp_h5_path is not None:
+        print(f"Materialized temporary HDF5: {temp_h5_path}")
 
     _ensure_viewer_compatible_model(b3d, model_path)
     
@@ -421,19 +418,35 @@ def main() -> int:
         h5_arg = selected[0]
 
     model_path = Path(h5_arg).expanduser().resolve()
+    loading_dialog = QProgressDialog(None, None, 0, 0, None)
+    loading_dialog.setWindowTitle("Opening Model")
+    loading_dialog.setLabelText(f"Loading {model_path.name}...")
+    loading_dialog.setCancelButton(None)
+    loading_dialog.setMinimumDuration(0)
+    loading_dialog.setWindowModality(Qt.ApplicationModal)
+    loading_dialog.setAutoClose(False)
+    loading_dialog.setAutoReset(False)
+    loading_dialog.show()
+    QApplication.setOverrideCursor(Qt.WaitCursor)
+    app.processEvents()
     try:
         box, obs_time, b3dtype, temp_h5_path = prepare_model_for_viewer(model_path)
     except Exception as exc:
+        loading_dialog.close()
+        QApplication.restoreOverrideCursor()
         try:
-            from PyQt5.QtWidgets import QMessageBox
-
             QMessageBox.critical(None, "Incompatible Model", str(exc))
         except Exception:
             print(f"Error: {exc}")
         return 2
+    finally:
+        if loading_dialog.isVisible():
+            loading_dialog.close()
+        QApplication.restoreOverrideCursor()
+        app.processEvents()
 
     warnings.filterwarnings("ignore", category=PyVistaDeprecationWarning)
-    save_target = model_path if model_path.suffix.lower() == ".h5" else None
+    save_target = model_path if temp_h5_path is None else None
     box_norm_direction, box_view_up = _viewer_camera_vectors(box, obs_time)
     viewer = MagFieldViewer(
         box,

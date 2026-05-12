@@ -23,9 +23,9 @@ def _apply_geometry_contract_to_h5(h5_path: Path, *, strict: bool = False) -> bo
     When ``strict`` is True, incomplete contracts raise.
     """
     # Canonical path: delegate completion/persistence to io.model.
-    from pyampp.io.model import complete_and_persist_contract_in_h5
+    from pyampp.io.model import _complete_and_persist_contract_in_h5
 
-    return complete_and_persist_contract_in_h5(h5_path, strict=strict)
+    return _complete_and_persist_contract_in_h5(h5_path, strict=strict)
 
 
 def _decode_if_bytes(v: Any) -> Any:
@@ -62,9 +62,11 @@ def _field(box: Any, name: str, default=None):
 
 def _load_box(sav_path: Path):
     data = readsav(str(sav_path), verbose=False)
-    if "box" not in data:
-        raise ValueError(f"Input SAV does not contain 'box': {sav_path}")
-    return data["box"].flat[0]
+    if "box" in data:
+        return data["box"].flat[0]
+    if "pbox" in data:
+        return data["pbox"].flat[0]
+    raise ValueError(f"Input SAV does not contain 'box' or 'pbox': {sav_path}")
 
 
 def _ensure_group(f: h5py.File | h5py.Group, name: str):
@@ -168,6 +170,8 @@ def _normalize_czyx_from_components_or_bcube(box: Any) -> np.ndarray | None:
         by = np.asarray(box["BY"], dtype=np.float32)
         bz = np.asarray(box["BZ"], dtype=np.float32)
         if bx.ndim == 3 and by.shape == bx.shape and bz.shape == bx.shape:
+            # scipy.readsav restores GX BOX component cubes in (z, y, x), which
+            # already matches the canonical HDF5 3D axis order.
             return np.stack([bx, by, bz], axis=0)
     return None
 
@@ -495,9 +499,6 @@ def main() -> None:
     args = _parse_args()
     out_h5 = build_h5_from_sav(args.sav_path, args.out_h5, template_h5=args.template_h5)
     print(f"Wrote: {out_h5}")
-
-
-__all__ = ["build_h5_from_sav", "main"]
 
 
 if __name__ == "__main__":

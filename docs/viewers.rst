@@ -88,6 +88,12 @@ h5tree
 ------
 
 ``h5tree`` prints a compact tree of HDF5 groups/datasets and their shapes/dtypes.
+It accepts either canonical ``.h5`` input or legacy ``.sav`` input.
+For ``.sav`` input, the file is normalized through ``load_model()`` first and
+the tree is printed from that canonical in-memory structure, so the reported
+tree matches what a ``load_model()`` consumer receives without paying for an
+extra default HDF5 rewrite. Use ``--save-normalized`` when you also want the
+canonical HDF5 written to disk.
 
 Metadata behavior:
 
@@ -101,6 +107,18 @@ Usage:
 .. code-block:: bash
 
    h5tree /path/to/model.h5
+
+Inspect the canonical normalized tree for a legacy SAV:
+
+.. code-block:: bash
+
+   h5tree /path/to/model.sav
+
+Persist that normalized canonical HDF5 while also printing its tree:
+
+.. code-block:: bash
+
+   h5tree /path/to/model.sav --save-normalized /path/to/model.normalized.h5
 
 Suppress metadata values:
 

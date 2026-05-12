@@ -5,21 +5,10 @@ import shutil
 
 import h5py
 import numpy as np
-import pytest
 
 from pyampp.geometry.contract import complete_geometry_contract
 from pyampp.gxbox.boxutils import read_b3d_h5, write_b3d_h5
-
-
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_MODEL_PATH = (
-    WORKSPACE_ROOT
-    / "pyGXrender-test-data"
-    / "raw"
-    / "models"
-    / "model_loader_parity_20201126T195831"
-    / "hmi.M_720s.20201126_195831.E18S19CR.CEA.NAS.CHR.clone.h5"
-)
+from pyampp.tests._fits_header import canonical_base_index_header
 
 
 def _upgrade_dict_with_contract(model: dict) -> dict:
@@ -57,7 +46,11 @@ def test_legacy_upgrade_roundtrip_synthetic(tmp_path: Path) -> None:
             "attrs": {"model_type": "nlfff"},
         },
         "base": {
-            "index": "CRVAL1=10\nCRVAL2=-5\nRSUN_REF=695700000.0\nDATE-OBS='2020-11-26T19:58:31'\nEND\n",
+            "index": canonical_base_index_header(date_obs="2020-11-26T19:58:31"),
+            "bx": np.zeros((8, 6), dtype=np.float32),
+            "by": np.zeros((8, 6), dtype=np.float32),
+            "bz": np.zeros((8, 6), dtype=np.float32),
+            "ic": np.ones((8, 6), dtype=np.float32),
         },
         "metadata": {
             "id": "synthetic.test.model",
@@ -78,26 +71,7 @@ def test_legacy_upgrade_roundtrip_synthetic(tmp_path: Path) -> None:
     assert isinstance(metadata, dict)
     contract = metadata.get("geometry_contract")
     assert isinstance(contract, dict)
-    assert int(contract["nx"]) == 8
+    assert int(contract["nx"]) == 4
     assert int(contract["ny"]) == 6
-    assert int(contract["nz"]) == 4
+    assert int(contract["nz"]) == 8
     assert abs(float(contract["dr_x"]) - 0.002) < 1e-12
-
-
-def test_legacy_upgrade_roundtrip_real_fixture(tmp_path: Path) -> None:
-    if not LEGACY_MODEL_PATH.exists():
-        pytest.skip("Legacy fixture model not available on this machine.")
-
-    dst = tmp_path / "legacy_upgraded.h5"
-    loaded = read_b3d_h5(str(LEGACY_MODEL_PATH))
-    upgraded = _upgrade_dict_with_contract(loaded)
-    shutil.copy2(LEGACY_MODEL_PATH, dst)
-    _write_geometry_contract_group(dst, upgraded["metadata"]["geometry_contract"])
-
-    result = read_b3d_h5(str(dst))
-    metadata = result.get("metadata", {})
-    contract = metadata.get("geometry_contract")
-    assert isinstance(contract, dict)
-    assert int(contract["nx"]) > 0
-    assert int(contract["ny"]) > 0
-    assert int(contract["nz"]) > 0

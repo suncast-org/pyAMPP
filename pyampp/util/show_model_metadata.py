@@ -6,9 +6,9 @@ from typing import Any
 
 import typer
 
-from pyampp.io import load_geometry_contract_and_observer_from_h5
+from pyampp.io import load_model_metadata
 
-app = typer.Typer(help="Inspect thin metadata payload (full metadata + optional observer) from an HDF5 model.")
+app = typer.Typer(help="Inspect canonical model metadata (full metadata + optional observer) from any supported pyAMPP model file.")
 
 
 def _observer_summary(observer: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -28,14 +28,14 @@ def _observer_summary(observer: dict[str, Any] | None) -> dict[str, Any] | None:
 def main(
     path: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False, readable=True),
     json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
-    require_contract: bool = typer.Option(
+    strict: bool = typer.Option(
         False,
-        "--require-contract",
-        help="Exit non-zero if geometry_contract is missing.",
+        "--strict",
+        help="Fail if geometry contract cannot be completed during model restore.",
     ),
 ) -> None:
-    """Inspect thin model metadata (full metadata plus optional observer)."""
-    thin = load_geometry_contract_and_observer_from_h5(path)
+    """Inspect canonical model metadata (full metadata plus optional observer)."""
+    thin = load_model_metadata(path, strict=strict)
     if thin is None:
         payload = {
             "path": str(path),
@@ -47,9 +47,7 @@ def main(
         else:
             print(f"{path}")
             print("geometry_contract: missing")
-            print("observer: skipped (no thin model payload)")
-        if require_contract:
-            raise typer.Exit(code=2)
+            print("observer: absent")
         raise typer.Exit(code=0)
 
     contract = thin["metadata"]["geometry_contract"]

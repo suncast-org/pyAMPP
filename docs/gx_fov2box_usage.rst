@@ -141,10 +141,9 @@ Clone or normalize an entry box without recomputation
 
 .. code-block:: bash
 
-   gx-fov2box \
-     --entry-box /path/to/model.sav \
-     --gxmodel-dir /path/to/output_dir \
-     --clone-only
+   pyampp-export-model \
+     --model-path /path/to/model.sav \
+     --out-h5 /path/to/output_dir/model.h5
 
 This is the simplest way to convert a legacy SAV entry box into normalized HDF5.
 
@@ -167,10 +166,9 @@ Recommended patterns:
 
   .. code-block:: bash
 
-     gx-fov2box \
-       --entry-box /path/to/model.sav \
-       --gxmodel-dir /path/to/output_dir \
-       --clone-only
+     pyampp-export-model \
+       --model-path /path/to/model.sav \
+       --out-h5 /path/to/output_dir/model.h5
 
   Use this when you want the closest HDF5 equivalent of the original SAV entry.
   This path does not rerun ``POT``, ``NAS``, ``GEN``, or ``CHR``.
@@ -277,8 +275,6 @@ Important control flags:
 - ``--rebuild-from-none``:
   treat the entry as the authoritative ``NONE``-equivalent source and run
   forward from there
-- ``--clone-only``:
-  normalize/copy entry content without recomputing
 - ``--jump2potential``
 - ``--jump2bounds``
 - ``--jump2nlfff``

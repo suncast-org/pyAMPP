@@ -14,13 +14,15 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+from pyampp.tests._fits_header import canonical_base_index_header
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _make_minimal_h5(path: Path) -> None:
-    """Write a minimal HDF5 with a corona group."""
+    """Write a minimal canonical full-model HDF5 with corona and base groups."""
     h5py = pytest.importorskip("h5py")
     with h5py.File(path, "w") as f:
         g = f.create_group("corona")
@@ -28,6 +30,12 @@ def _make_minimal_h5(path: Path) -> None:
         g.create_dataset("by", data=np.zeros((5, 5, 5), dtype=np.float32))
         g.create_dataset("bz", data=np.zeros((5, 5, 5), dtype=np.float32))
         g.attrs["model_type"] = "nlfff"
+        base = f.create_group("base")
+        base.create_dataset("index", data=np.bytes_(canonical_base_index_header(date_obs="2020-11-26T19:58:33")))
+        base.create_dataset("bx", data=np.zeros((5, 5), dtype=np.float32))
+        base.create_dataset("by", data=np.zeros((5, 5), dtype=np.float32))
+        base.create_dataset("bz", data=np.zeros((5, 5), dtype=np.float32))
+        base.create_dataset("ic", data=np.ones((5, 5), dtype=np.float32))
 
 
 def _make_metadata_only_h5(path: Path) -> None:
@@ -176,6 +184,13 @@ def test_write_b3d_h5_handles_nested_metadata_object_dtype(tmp_path):
             "bz": np.zeros((3, 3, 3), dtype=np.float32),
             "attrs": {"model_type": "nlfff"},
         },
+        "base": {
+            "index": canonical_base_index_header(date_obs="2020-11-26T19:58:33"),
+            "bx": np.zeros((3, 3), dtype=np.float32),
+            "by": np.zeros((3, 3), dtype=np.float32),
+            "bz": np.zeros((3, 3), dtype=np.float32),
+            "ic": np.ones((3, 3), dtype=np.float32),
+        },
         "metadata": {
             "axis_order_3d": "xyz",
             "geometry_contract": {
@@ -192,11 +207,11 @@ def test_write_b3d_h5_handles_nested_metadata_object_dtype(tmp_path):
     assert "geometry_contract" in loaded["metadata"]
 
 
-def test_save_model_to_h5_serializes_geometry_contract_object(tmp_path):
+def test_save_model_serializes_geometry_contract_object(tmp_path):
     """Saving models with GeometryContract objects must not fail with object dtype errors."""
     from pyampp.geometry.contract import GeometryContract, RSUN_HMI_METERS
     from pyampp.gxbox.boxutils import read_b3d_h5
-    from pyampp.io import save_model_to_h5
+    from pyampp.io import save_model
 
     out = tmp_path / "contract_object_save.h5"
     contract = GeometryContract(
@@ -222,13 +237,20 @@ def test_save_model_to_h5_serializes_geometry_contract_object(tmp_path):
             "bz": np.zeros((8, 6, 4), dtype=np.float32),
             "attrs": {"model_type": "nlfff"},
         },
+        "base": {
+            "index": canonical_base_index_header(date_obs="2020-11-26T19:58:33"),
+            "bx": np.zeros((8, 6), dtype=np.float32),
+            "by": np.zeros((8, 6), dtype=np.float32),
+            "bz": np.zeros((8, 6), dtype=np.float32),
+            "ic": np.ones((8, 6), dtype=np.float32),
+        },
         "metadata": {
             "axis_order_3d": "xyz",
             "geometry_contract": contract,
         },
     }
 
-    save_model_to_h5(model, out)
+    save_model(model, out)
 
     loaded = read_b3d_h5(str(out))
     assert "metadata" in loaded

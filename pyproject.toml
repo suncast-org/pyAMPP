@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-    "setuptools>=62.1",
+    "setuptools>=77.0.0",
     "wheel",
     "extension-helpers",
     "numpy>=1.25",
@@ -13,7 +13,16 @@ version = "1.0.1"
 description = "Python Automatic Model Production Pipeline"
 readme = "README.rst"
 requires-python = ">=3.10"
-license = { file = "licenses/LICENSE.rst", content-type = "text/plain" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "SUNCAST team", email = "sijie.yu@njit.edu" },
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
 dependencies = ["sunpy[all]",
     "numpy>=1.25",
     "drms",
@@ -28,6 +37,9 @@ dependencies = ["sunpy[all]",
     "typer",
 ]
 
+[project.urls]
+Repository = "https://github.com/suncast-org/pyAMPP"
+
 [project.scripts]
 pyampp = "pyampp.gxbox.gxampp:app"
 gxbox-view3d = "pyampp.gxbox.view_h5:main"
@@ -38,9 +50,10 @@ gx_fov2box = "pyampp.gxbox.gx_fov2box:app"
 h5tree = "pyampp.util.h5tree:app"
 gxrefmap-view = "pyampp.gxbox.gxrefmap_view:app"
 gx-idl2fov2box = "pyampp.util.idl_execute_to_gxfov2box:main"
+pyampp-export-model = "pyampp.util.export_model:main"
 gx-fov2box2idl = "pyampp.util.gxfov2box_to_idl:main"
-h5thin = "pyampp.util.h5thin:app"
-h5thin-export = "pyampp.util.h5thin_export:app"
+show-model-metadata = "pyampp.util.show_model_metadata:app"
+export-model-metadata = "pyampp.util.export_model_metadata:app"
 pyampp-demo-notebooks = "pyampp.util.demo_notebooks:main"
 
 [project.optional-dependencies]

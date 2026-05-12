@@ -25,7 +25,6 @@ from pyAMaFiL.mag_field_proc import (
     mfp_util_invert_index_array,
     mfp_util_transpose_index,
 )
-from scipy.io import readsav
 from sunpy.coordinates import (Heliocentric, HeliographicCarrington, HeliographicStonyhurst,
                                Helioprojective, get_earth)
 from sunpy.map import Map
@@ -35,7 +34,6 @@ from pyampp.gx_chromo.combo_model import combo_model
 from pyampp.gx_chromo.decompose import decompose
 from pyampp.gxbox.box import Box
 from pyampp.gxbox.boxutils import (
-    extract_sav_refmaps,
     hmi_b2ptr,
     hmi_disambig,
     read_b3d_h5,
@@ -43,16 +41,14 @@ from pyampp.gxbox.boxutils import (
     compute_vertical_current,
     load_sunpy_map_compat,
     map_from_data_header_compat,
-    normalize_observer_metadata,
     remap_vertical_current_inputs,
-    serialize_sav_index_header,
 )
-from pyampp.io import load_model_from_h5
+from pyampp.io import load_model
 from pyampp.gxbox.gx_box2id import gx_box2id
 from pyampp.gxbox.observer_restore import (
     build_pb0r_metadata_from_ephemeris,
-    normalize_observer_key,
     resolve_named_observer,
+    normalize_observer_key,
 )
 from pyampp.util.config import (
     DOWNLOAD_DIR,
@@ -156,7 +152,6 @@ class Fov2BoxConfig:
     jump2chromo: bool
     rebuild: bool
     rebuild_from_none: bool
-    clone_only: bool
     info: bool
 
 
@@ -303,6 +298,20 @@ def _stage_file_base(obs_time: Time, coord_tag: str, projection_tag: str = "CEA"
 
 def _stage_filename(out_dir: Path, base: str, stage_tag: str) -> Path:
     return out_dir / f"{base}.{stage_tag}.h5"
+
+
+def _effective_box_dims_from_base(
+    box_dims: Tuple[int, int, int],
+    base_group: Dict[str, Any],
+) -> Tuple[int, int, int]:
+    bx = base_group.get("bx") if isinstance(base_group, dict) else None
+    if bx is None:
+        return box_dims
+    arr = np.asarray(bx)
+    if arr.ndim != 2:
+        return box_dims
+    ny, nx = arr.shape
+    return int(nx), int(ny), int(box_dims[2])
 
 
 def _last_stage_tag(stop_after: Optional[str]) -> str:
@@ -903,8 +912,6 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
         cmd.append("--rebuild")
     if cfg.rebuild_from_none:
         cmd.append("--rebuild-from-none")
-    if cfg.clone_only:
-        cmd.append("--clone-only")
     return shlex.join(cmd)
 
 
@@ -1274,7 +1281,6 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("jump2chromo", cfg.jump2chromo, "Start from entry box and jump to CHR"),
         ("rebuild", cfg.rebuild, "Ignore entry stage payload and rebuild from NONE"),
         ("rebuild_from_none", cfg.rebuild_from_none, "Strip entry to NONE-equivalent and continue forward"),
-        ("clone_only", cfg.clone_only, "Convert/copy entry-box to normalized H5 without recomputation"),
     ]
     print("gx-fov2box --info")
     for name, value, desc in runtime_rows + rows:
@@ -1601,207 +1607,8 @@ def _h5_corona_to_internal_xyz(corona: dict, axis_order_3d: Optional[str]) -> di
     return out
 
 
-def _sav_cube_to_internal_xyz(arr: np.ndarray, ny: int, nx: int) -> np.ndarray:
-    a = np.asarray(arr)
-    if a.ndim != 3:
-        return a
-    # SAV restores commonly as (z,y,x) or (x,y,z); normalize to internal (x,y,z).
-    if a.shape[1:] == (ny, nx):   # z,y,x
-        return a.transpose((2, 1, 0))
-    if a.shape[:2] == (nx, ny):   # x,y,z
-        return a
-    if a.shape[:2] == (ny, nx):   # y,x,z
-        return a.transpose((1, 0, 2))
-    if a.shape[1:] == (nx, ny):   # z,x,y
-        return a.transpose((1, 2, 0))
-    return a
-
-
-def _decode_sav_value(v) -> str:
-    if hasattr(v, "item"):
-        v = v.item()
-    if isinstance(v, bytes):
-        return v.decode("utf-8", errors="ignore")
-    return str(v)
-
-
-def _sav_scalar(v):
-    if hasattr(v, "item"):
-        try:
-            return v.item()
-        except Exception:
-            pass
-    return v
-
-
-def _sav_line_to_flat(arr: np.ndarray) -> np.ndarray:
-    a = np.asarray(arr)
-    if a.ndim <= 1:
-        return a.reshape(-1)
-    return a.T.reshape(-1, order="F")
-
-
 def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
-    if entry_path.suffix.lower() == ".h5":
-        return load_model_from_h5(str(entry_path))
-    if entry_path.suffix.lower() != ".sav":
-        raise ValueError(f"--entry-box must be .h5 or .sav, got: {entry_path}")
-
-    data = readsav(str(entry_path), python_dict=True, verbose=False)
-    if "box" in data:
-        box = data["box"][0]
-    elif "pbox" in data:
-        box = data["pbox"][0]
-    else:
-        raise ValueError(f"SAV entry box missing box/pbox structure: {entry_path}")
-
-    out: Dict[str, Any] = {}
-    names = set(box.dtype.names or [])
-
-    base = None
-    index = box["INDEX"][0] if "INDEX" in names else None
-    dr = np.asarray(box["DR"], dtype=np.float64).reshape(-1) if "DR" in names else None
-    corona_base = int(_sav_scalar(box["CORONA_BASE"])) if "CORONA_BASE" in names else None
-    if "BASE" in names:
-        base_raw = box["BASE"][0]
-        bnames = set(base_raw.dtype.names or [])
-        if {"BX", "BY", "BZ"}.issubset(bnames):
-            base = {
-                "bx": np.asarray(base_raw["BX"]),
-                "by": np.asarray(base_raw["BY"]),
-                "bz": np.asarray(base_raw["BZ"]),
-            }
-            if "IC" in bnames:
-                base["ic"] = np.asarray(base_raw["IC"])
-            if "CHROMO_MASK" in bnames:
-                base["chromo_mask"] = np.asarray(base_raw["CHROMO_MASK"])
-            if index is not None:
-                base["index"] = serialize_sav_index_header(index)
-            out["base"] = base
-
-    ny = nx = None
-    if base is not None:
-        ny, nx = np.asarray(base["bx"]).shape
-
-    # Build corona from BX/BY/BZ or BCUBE.
-    if {"BX", "BY", "BZ"}.issubset(names) and ny is not None and nx is not None:
-        out["corona"] = {
-            "bx": _sav_cube_to_internal_xyz(np.asarray(box["BX"]), ny, nx),
-            "by": _sav_cube_to_internal_xyz(np.asarray(box["BY"]), ny, nx),
-            "bz": _sav_cube_to_internal_xyz(np.asarray(box["BZ"]), ny, nx),
-            "attrs": {"model_type": "unknown"},
-        }
-    elif "BCUBE" in names and ny is not None and nx is not None:
-        bc = np.asarray(box["BCUBE"])
-        # scipy commonly restores BCUBE as (comp, z, y, x)
-        if bc.ndim == 4 and bc.shape[0] == 3:
-            out["corona"] = {
-                "bx": _sav_cube_to_internal_xyz(bc[0], ny, nx),
-                "by": _sav_cube_to_internal_xyz(bc[1], ny, nx),
-                "bz": _sav_cube_to_internal_xyz(bc[2], ny, nx),
-                "attrs": {"model_type": "unknown"},
-            }
-    if "corona" in out and dr is not None and dr.size >= 3:
-        out["corona"]["dr"] = dr.astype(np.float64)
-    if "corona" in out and corona_base is not None:
-        out["corona"]["corona_base"] = int(corona_base)
-
-    # Lines metadata if present.
-    lines = {}
-    for k in ("STARTIDX", "ENDIDX", "SEED_IDX", "SEEDIDX", "APEX_IDX", "APEXIDX", "CODES",
-              "AVFIELD", "PHYSLENGTH", "STATUS", "VOXEL_STATUS"):
-        if k in names:
-            kk = (
-                k.lower()
-                .replace("startidx", "start_idx")
-                .replace("endidx", "end_idx")
-                .replace("seedidx", "seed_idx")
-                .replace("apexidx", "apex_idx")
-                .replace("avfield", "av_field")
-                .replace("physlength", "phys_length")
-                .replace("status", "voxel_status")
-            )
-            lines[kk] = _sav_line_to_flat(np.asarray(box[k]))
-    if dr is not None and dr.size >= 3:
-        lines["dr"] = dr.astype(np.float64)
-    if lines:
-        out["lines"] = lines
-
-    # CHR fields if present.
-    chromo = {}
-    for k in ("CHROMO_IDX", "CHROMO_N", "CHROMO_T", "N_P", "N_HI", "N_HTOT", "TR", "TR_H",
-              "CHROMO_LAYERS", "DZ", "CHROMO_MASK"):
-        if k in names:
-            kk = k.lower()
-            if k == "DZ" and ny is not None and nx is not None:
-                chromo[kk] = _sav_cube_to_internal_xyz(np.asarray(box[k]), ny, nx)
-            else:
-                chromo[kk] = np.asarray(box[k])
-    if "CHROMO_BCUBE" in names and ny is not None and nx is not None:
-        cbc = np.asarray(box["CHROMO_BCUBE"])
-        if cbc.ndim == 4 and cbc.shape[0] == 3:
-            chromo["bx"] = _sav_cube_to_internal_xyz(cbc[0], ny, nx)
-            chromo["by"] = _sav_cube_to_internal_xyz(cbc[1], ny, nx)
-            chromo["bz"] = _sav_cube_to_internal_xyz(cbc[2], ny, nx)
-    if base is not None and "chromo_mask" in base and "chromo_mask" not in chromo:
-        chromo["chromo_mask"] = np.asarray(base["chromo_mask"], dtype=np.int32)
-    if chromo:
-        out["chromo"] = chromo
-
-    grid = {}
-    if dr is not None and dr.size >= 2:
-        grid["dx"] = np.float64(dr[0])
-        grid["dy"] = np.float64(dr[1])
-    if "DZ" in names:
-        if ny is not None and nx is not None:
-            grid["dz"] = _sav_cube_to_internal_xyz(np.asarray(box["DZ"], dtype=np.float64), ny, nx)
-        else:
-            grid["dz"] = np.asarray(box["DZ"], dtype=np.float64)
-
-    voxel_id = None
-    if "corona" in out and dr is not None and dr.size >= 3:
-        voxel_id = gx_box2id(out)
-    if voxel_id is not None:
-        grid["voxel_id"] = np.asarray(voxel_id, dtype=np.uint32)
-    if grid:
-        out["grid"] = grid
-
-    refmaps = {}
-    for _order_index, map_id, map_data, map_header in extract_sav_refmaps(box):
-        refmaps[map_id] = {"data": map_data, "wcs_header": map_header}
-    if refmaps:
-        out["refmaps"] = refmaps
-
-    if index is not None:
-        observer_meta: Dict[str, Any] = {
-            "name": "earth",
-            "label": "Earth",
-        }
-        ephemeris: Dict[str, Any] = {}
-        inames = set(index.dtype.names or ())
-        if "DATE_OBS" in inames:
-            ephemeris["obs_date"] = _decode_sav_value(index["DATE_OBS"])
-        if "HGLN_OBS" in inames:
-            ephemeris["hgln_obs_deg"] = float(_sav_scalar(index["HGLN_OBS"]))
-        if "HGLT_OBS" in inames:
-            ephemeris["hglt_obs_deg"] = float(_sav_scalar(index["HGLT_OBS"]))
-        if "DSUN_OBS" in inames:
-            ephemeris["dsun_cm"] = float(u.Quantity(float(_sav_scalar(index["DSUN_OBS"])), u.m).to_value(u.cm))
-        ephemeris["rsun_cm"] = float(u.Quantity(IDL_HMI_RSUN_M, u.m).to_value(u.cm))
-        observer_meta["ephemeris"] = ephemeris
-        pb0r = build_pb0r_metadata_from_ephemeris(
-            ephemeris,
-            observer_key=observer_meta.get("name"),
-            obs_time=ephemeris.get("obs_date"),
-        )
-        if pb0r:
-            observer_meta["pb0r"] = pb0r
-        out["observer"] = observer_meta
-
-    sid = _decode_sav_value(box["ID"]) if "ID" in names else entry_path.stem
-    execute = _decode_sav_value(box["EXECUTE"]) if "EXECUTE" in names else ""
-    out["metadata"] = {"id": sid, "execute": execute}
-    return normalize_observer_metadata(out)
+    return load_model(entry_path)
 
 
 def _resolve_box_params(cfg: Fov2BoxConfig) -> Tuple[Time, Tuple[int, int, int], float]:
@@ -1810,7 +1617,7 @@ def _resolve_box_params(cfg: Fov2BoxConfig) -> Tuple[Time, Tuple[int, int, int],
     dx_km = cfg.dx_km
     if cfg.entry_box:
         entry_path = Path(cfg.entry_box)
-        if entry_path.exists() and entry_path.suffix.lower() in (".h5", ".sav"):
+        if entry_path.exists():
             box_b3d = _load_entry_box_any(entry_path)
             corona = box_b3d.get("corona")
             if corona is not None:
@@ -1895,7 +1702,6 @@ def main(
     jump2chromo: bool = typer.Option(False, "--jump2chromo", help="Jump to CHR"),
     rebuild: bool = typer.Option(False, "--rebuild", help="Recompute from NONE using entry-box parameters"),
     rebuild_from_none: bool = typer.Option(False, "--rebuild-from-none", help="Start from entry-box NONE-equivalent and run forward"),
-    clone_only: bool = typer.Option(False, "--clone-only", help="Normalize/copy entry-box to H5 without recomputation"),
     info: bool = typer.Option(False, "--info", help="Show resolved defaults and exit"),
 ) -> None:
     cfg = Fov2BoxConfig(
@@ -1946,7 +1752,6 @@ def main(
         jump2chromo=jump2chromo,
         rebuild=rebuild,
         rebuild_from_none=rebuild_from_none,
-        clone_only=clone_only,
         info=info,
     )
 
@@ -1990,10 +1795,6 @@ def main(
         _print_info(cfg)
         return
 
-    if cfg.clone_only and not cfg.entry_box:
-        raise ValueError("--clone-only requires --entry-box")
-    if cfg.clone_only and (cfg.rebuild or cfg.rebuild_from_none):
-        raise ValueError("--clone-only cannot be combined with --rebuild or --rebuild-from-none")
     if cfg.rebuild_from_none and not cfg.entry_box:
         raise ValueError("--rebuild-from-none requires --entry-box")
     if cfg.rebuild and cfg.rebuild_from_none:
@@ -2059,61 +1860,6 @@ def main(
             )
 
     observer_metadata = _observer_metadata_from_entry(entry_loaded, cfg) if entry_loaded is not None else None
-
-    if cfg.clone_only:
-        assert entry_loaded is not None
-        assert entry_stage is not None
-        if jump_flags_set and target_stage != entry_stage:
-            raise ValueError(
-                f"--clone-only allows only no jump or jump-to-self; got entry {entry_stage} -> {target_stage}."
-            )
-        # Prefer inferred time from entry path/id for output folder naming.
-        obs_time = Time(cfg.time) if cfg.time else None
-        if obs_time is None and cfg.entry_box:
-            inferred = _infer_time_from_entry_loaded(entry_loaded, Path(cfg.entry_box))
-            if inferred:
-                obs_time = Time(inferred)
-        if obs_time is None:
-            raise ValueError("--clone-only requires --time or inferable time from --entry-box filename.")
-
-        out_dir = _stage_output_dir(cfg.gxmodel_dir, obs_time)
-        src_id = _decode_id_text(entry_loaded.get("metadata", {}).get("id", "")).strip()
-        _, inferred_tag = _split_stage_id(src_id) if src_id else ("", "")
-        stage_tag = inferred_tag or _stage_tag_from_stage(entry_stage)
-        if src_id:
-            out_path = out_dir / f"{src_id}.h5"
-        else:
-            base = _stage_file_base(obs_time, "CLONE", projection_tag="CEA")
-            out_path = _stage_filename(out_dir, base, stage_tag)
-
-        clone_box = dict(entry_loaded)
-        meta = dict(clone_box.get("metadata", {}))
-        meta.setdefault("execute", _build_execute_cmd(cfg))
-        meta.setdefault("id", out_path.stem)
-        entry_suffix = Path(cfg.entry_box).suffix.lower() if cfg.entry_box else ""
-        projection_tag = _decode_id_text(
-            meta.get("projection") or ("TOP" if cfg.top else "CEA")
-        ).upper()
-        meta.setdefault(
-            "lineage",
-            f"ENTRY.{stage_tag}.{entry_suffix.lstrip('.').upper() or 'H5'}->{stage_tag}.h5",
-        )
-        meta.setdefault("disambiguation", "IDL" if entry_suffix == ".sav" else "HMI")
-        meta.setdefault("projection", projection_tag)
-        meta.setdefault("axis_order_2d", "yx")
-        meta.setdefault("axis_order_3d", "zyx")
-        meta.setdefault("vector_layout", "split_components")
-        clone_box["metadata"] = meta
-        if observer_metadata is not None:
-            clone_box["observer"] = observer_metadata
-        clone_source_axis_order_3d = "xyz" if entry_suffix == ".sav" else _decode_id_text(
-            meta.get("axis_order_3d", "zyx")
-        ).lower()
-        clone_box = _normalize_stage_for_h5(clone_box, source_axis_order_3d=clone_source_axis_order_3d)
-        write_b3d_h5(str(out_path), clone_box)
-        print("\nCompleted gx-fov2box clone-only. Output file:")
-        print(f"- {out_path}")
-        return
 
     import time as time_mod
     import warnings
@@ -2474,6 +2220,8 @@ def main(
         base = _stage_file_base(obs_time, coord_tag, projection_tag=projection_tag)
         observer_metadata = _observer_metadata_from_source_map(maps["field"], cfg)
 
+    box_dims_resolved = _effective_box_dims_from_base(box_dims_resolved, base_group)
+
     empty_grid = np.zeros((box_dims_resolved[0], box_dims_resolved[1], box_dims_resolved[2]), dtype=float)
     default_grid = {"dx": float(dr3[0]), "dy": float(dr3[1]), "dz": np.array([float(dr3[2])], dtype=float)}
 
@@ -2488,8 +2236,7 @@ def main(
             entry_id = _decode_id_text(entry_meta.get("id", "")).strip()
             _, entry_stage_tag = _split_stage_id(entry_id) if entry_id else ("", "")
             entry_stage_for_marker = entry_stage_tag or _stage_tag_from_stage(entry_stage or target_stage)
-            entry_fmt = "SAV" if str(cfg.entry_box or "").lower().endswith(".sav") else "H5"
-            lineage_marker = f"ENTRY.{entry_stage_for_marker}.{entry_fmt}"
+            lineage_marker = f"ENTRY.{entry_stage_for_marker}"
             lineage_root = lineage_marker
     else:
         lineage_root = "OBS"
@@ -2637,6 +2384,9 @@ def main(
                     "attrs": {"model_type": "none"},
                 }
             }
+            from pyampp.io.model import ensure_geometry_contract_in_metadata
+            # Inject geometry_contract before writing NONE stage
+            ensure_geometry_contract_in_metadata(stage_box)
             save_stage("NONE", stage_box, source_axis_order_3d="zyx")
             stage_times["NONE"] = progress.finish()
         if cfg.empty_box_only or _last_stage_tag(cfg.stop_after) == "NONE":
@@ -2674,14 +2424,14 @@ def main(
     def _run_nlfff_from_bnd(bnd_box: dict) -> dict:
         maglib = MagFieldProcessor()
         maglib.load_cube_vars({
-            "bx": bnd_box["by"].swapaxes(0, 1),
-            "by": bnd_box["bx"].swapaxes(0, 1),
+            "bx": bnd_box["bx"].swapaxes(0, 1),
+            "by": bnd_box["by"].swapaxes(0, 1),
             "bz": bnd_box["bz"].swapaxes(0, 1),
         })
         res_nlf = maglib.NLFFF()
         return {
-            "bx": res_nlf["by"].swapaxes(0, 1),
-            "by": res_nlf["bx"].swapaxes(0, 1),
+            "bx": res_nlf["bx"].swapaxes(0, 1),
+            "by": res_nlf["by"].swapaxes(0, 1),
             "bz": res_nlf["bz"].swapaxes(0, 1),
             "dr": dr3,
             "attrs": {"model_type": "nlfff"},

@@ -108,10 +108,9 @@ metadata/
    - Export contract/core APIs for public use
 
 4. **pyampp/io/model.py** (new)
-   - `load_model_from_h5()`: canonical H5 loader with contract enforcement
-   - `load_model_from_sav()`: canonical SAV loader (SAV->H5->canonical load)
-   - `save_model_to_h5()`: canonical save path with contract persistence
-   - `complete_and_persist_contract_in_h5()`: in-place upgrade helper
+   - `load_model()`: canonical provenance-agnostic loader with contract enforcement
+   - `save_model()`: canonical save path with contract persistence
+   - `load_model_metadata()`: canonical metadata/observer inspection helper
 
 5. **pyampp/io/__init__.py** (new)
    - Exposes public model I/O APIs
@@ -185,11 +184,11 @@ All application-level model restore/save should use `pyampp.io`:
 ```python
 from pyampp import io
 
-model = io.load_model_from_h5("model.h5")
+model = io.load_model("model.h5")
 # or
-model = io.load_model_from_sav("model.sav")
+model = io.load_model("model.sav")
 
-io.save_model_to_h5(model, "updated_model.h5")
+io.save_model(model, "updated_model.h5")
 ```
 
 Behavior:
@@ -209,7 +208,7 @@ After `build_h5_from_sav()` writes the H5 file, it calls `_apply_geometry_contra
 Downstream usage should import directly from public pyAMPP surfaces:
 
 - `from pyampp import io, geometry`
-- load via `io.load_model_from_h5` / `io.load_model_from_sav`
+- load via `io.load_model`
 - consume geometry contract and geometry constructors from `pyampp.geometry`
 
 ## Backward Compatibility

@@ -101,7 +101,7 @@ Contract semantics:
   to be complete for new pyAMPP outputs.
 - Legacy models may be missing this group on disk; canonical loaders complete
   and attach these fields at load time.
-- Saving through ``pyampp.io.save_model_to_h5`` persists the completed contract
+- Saving through ``pyampp.io.save_model`` persists the completed contract
   to this location.
 
 ``observer``

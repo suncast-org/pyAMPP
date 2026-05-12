@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import tempfile
 
 import h5py
 import numpy as np
@@ -16,6 +15,7 @@ from matplotlib.figure import Figure
 from matplotlib import colors
 import sunpy.map
 from sunpy.visualization import colormaps as sunpy_colormaps
+from pyampp.io import load_model
 
 from .boxutils import map_from_data_header_compat
 
@@ -122,22 +122,19 @@ def _collect_maps(h5f: h5py.File) -> list[MapSpec]:
 
 
 def _resolve_model_to_h5(path: Path) -> tuple[Path, Optional[Path]]:
-    """Return an HDF5 path, converting SAV input to temporary HDF5 when needed."""
+    """Return an HDF5 path, materializing a temporary HDF5 when the canonical loader needs one."""
     path = path.expanduser().resolve()
-    if path.suffix.lower() != ".sav":
-        return path, None
     try:
-        from pyampp.util.build_h5_from_sav import build_h5_from_sav
+        _model_dict, tmp_h5 = load_model(path, keep_temp_h5=True)
     except Exception as exc:
         raise RuntimeError(
-            "SAV input requires converter module 'pyampp.util.build_h5_from_sav'. "
-            "Run conversion manually to H5, then reopen."
+            "Model input could not be materialized through pyampp.io.load_model. "
+            "Run canonical conversion to H5 manually, then reopen, if legacy conversion dependencies are unavailable."
         ) from exc
-    tmp_dir = Path(tempfile.mkdtemp(prefix="pyampp_refmap_view_"))
-    tmp_h5 = tmp_dir / f"{path.stem}.viewer.h5"
-    build_h5_from_sav(sav_path=path, out_h5=tmp_h5, template_h5=None)
-    print(f"Converted SAV to temporary HDF5: {tmp_h5}")
-    return tmp_h5, tmp_h5
+    if tmp_h5 is not None:
+        print(f"Materialized temporary HDF5: {tmp_h5}")
+        return tmp_h5, tmp_h5
+    return path, None
 
 
 class RefmapViewer(QtWidgets.QMainWindow):

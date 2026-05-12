@@ -4,14 +4,14 @@ from pathlib import Path
 
 import typer
 
-from pyampp.io import export_thin_model_from_h5
+from pyampp.io import export_thin_model
 
-app = typer.Typer(help="Export metadata-only thin HDF5 (full metadata + optional observer) from a full model HDF5.")
+app = typer.Typer(help="Export metadata-only thin HDF5 (full metadata + optional observer) from any supported model file.")
 
 
 @app.command()
 def main(
-    source_h5: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False, readable=True),
+    source_model: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False, readable=True),
     output_h5: Path | None = typer.Option(
         None,
         "--output",
@@ -25,7 +25,7 @@ def main(
     ),
 ) -> None:
     """Create a portable metadata-only thin model HDF5."""
-    out = export_thin_model_from_h5(source_h5, output_h5=output_h5, strict=strict)
+    out = export_thin_model(source_model, output_h5=output_h5, strict=strict)
     print(out)
 
 

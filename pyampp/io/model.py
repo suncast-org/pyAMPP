@@ -1,26 +1,18 @@
-"""
-Centralized model loading and saving with geometry contract enforcement.
-
-ARCHITECTURE:
-This module is the single canonical loader for all model formats (SAV, H5).
-It enforces the following contract on ALL model restores:
-- Tier 1 metadata (box dims, voxel resolution) completeness
-- Tier 2 metadata (world anchor, observation time) completeness
-- Observer ephemeris normalization at load time
-
-For new models: enforce strict contract completeness.
-For old models (SAV, incomplete H5): compute/infer missing Tier 1+2 fields
-from available fallbacks (index, execute, cube shape, dr) and add them to
-the loaded model.
-
-When an old model is saved back to H5, those computed fields get persisted.
-On next load, persisted fields are used; if not saved, they are recomputed.
-
-This eliminates the need for geometry to recompute or branch on metadata
-state, and centralizes all model I/O paths through contract-enforced loaders.
-"""
-
 from __future__ import annotations
+
+"""
+Canonical pyAMPP Model I/O: Provenance-Agnostic Loader/Writer Contract
+
+This module enforces the canonical, provenance-agnostic contract for all pyAMPP model I/O:
+
+1. All supported input formats (SAV, old H5, new H5) are normalized by the loader to a single canonical in-memory structure.
+2. The loader injects or upgrades all required geometry_contract and related metadata if missing or outdated.
+3. The writer serializes the in-memory structure as-is, without adding or mutating metadata.
+4. The output HDF5 is canonical and idempotent: repeated load/save cycles produce identical files, regardless of provenance.
+5. The CLI (e.g., clone_sav.py) is a thin wrapper around this process.
+
+This guarantees that pyAMPP model data is provenance-agnostic and round-trip idempotent, and that all downstream consumers see a single, canonical data structure.
+"""
 
 import tempfile
 from pathlib import Path
@@ -33,11 +25,143 @@ from pyampp.geometry.contract import (
     GeometryContract,
     complete_geometry_contract,
 )
+
+def ensure_geometry_contract_in_metadata(model_dict: dict, strict: bool = False) -> None:
+    """
+    Ensure model_dict["metadata"]["geometry_contract"] is present and up-to-date.
+    If missing or outdated, computes and injects a new contract.
+    """
+    if not isinstance(model_dict, dict):
+        return
+    metadata = model_dict.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        model_dict["metadata"] = metadata
+    contract = metadata.get("geometry_contract")
+    # If already a valid GeometryContract, nothing to do
+    if isinstance(contract, GeometryContract):
+        return
+    # If present as dict, try to upgrade
+    if isinstance(contract, dict):
+        try:
+            metadata["geometry_contract"] = GeometryContract.from_dict(contract)
+            return
+        except Exception:
+            pass
+    # Otherwise, compute and inject
+    new_contract = complete_geometry_contract(model_dict, strict=strict)
+    if new_contract is not None:
+        metadata["geometry_contract"] = new_contract
+        model_dict["metadata"] = metadata
 from pyampp.gxbox.boxutils import (
     normalize_observer_metadata,
 )
-from pyampp.util.build_h5_from_sav import build_h5_from_sav
+from pyampp.io._sav_convert import build_h5_from_sav
 
+
+_CANONICAL_AXIS_ORDER_2D = "yx"
+_CANONICAL_AXIS_ORDER_3D = "zyx"
+_CANONICAL_VECTOR_LAYOUT = "split_components"
+
+
+def _missing_metadata_text(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    return False
+
+
+def _legacy_lineage_placeholder(source_kind: str) -> str:
+    if source_kind == "sav":
+        return "legacy-sav:unknown"
+    return "legacy-h5:unknown"
+
+
+def _backfill_canonical_metadata(
+    model_dict: dict[str, Any],
+    *,
+    source_path: Path,
+    source_kind: str,
+) -> dict[str, Any]:
+    metadata = model_dict.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        model_dict["metadata"] = metadata
+
+    if _missing_metadata_text(metadata.get("id")):
+        metadata["id"] = source_path.stem
+    if _missing_metadata_text(metadata.get("axis_order_2d")):
+        metadata["axis_order_2d"] = _CANONICAL_AXIS_ORDER_2D
+    if _missing_metadata_text(metadata.get("axis_order_3d")):
+        metadata["axis_order_3d"] = _CANONICAL_AXIS_ORDER_3D
+    if _missing_metadata_text(metadata.get("vector_layout")):
+        metadata["vector_layout"] = _CANONICAL_VECTOR_LAYOUT
+    if _missing_metadata_text(metadata.get("lineage")):
+        metadata["lineage"] = _legacy_lineage_placeholder(source_kind)
+
+    return model_dict
+
+
+@overload
+def load_model(
+    filename: Path | str,
+    *,
+    strict: bool = False,
+    keep_temp_h5: Literal[False] = False,
+) -> dict[str, Any]:
+    ...
+
+
+@overload
+def load_model(
+    filename: Path | str,
+    *,
+    strict: bool = False,
+    keep_temp_h5: Literal[True],
+) -> tuple[dict[str, Any], Path | None]:
+    ...
+
+
+def load_model(
+    filename: Path | str,
+    *,
+    strict: bool = False,
+    keep_temp_h5: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], Path | None]:
+    """Load a pyAMPP model through the canonical provenance-agnostic boundary."""
+    path = Path(filename)
+    suffix = path.suffix.lower()
+    if suffix == ".h5":
+        model = _load_model_h5(path, strict=strict)
+        if keep_temp_h5:
+            return model, None
+        return model
+    if suffix == ".sav":
+        return _load_model_sav(path, strict=strict, keep_temp_h5=keep_temp_h5)
+    raise ValueError(f"Unsupported model format for {path}; expected a canonical pyAMPP .h5 or legacy .sav file")
+
+def _normalize_model_dict(obj):
+    """
+    Recursively decode bytes/arrays to strings for all dict/list fields.
+    Ensures base/index and metadata fields are stringified for legacy H5/SAV.
+    """
+    import numpy as np
+    if isinstance(obj, dict):
+        return {k: _normalize_model_dict(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_normalize_model_dict(v) for v in obj)
+    if isinstance(obj, (bytes, np.bytes_)):
+        return obj.decode("utf-8", "ignore")
+    if isinstance(obj, np.ndarray):
+        if obj.dtype.kind in ("S", "a") and obj.size == 1:
+            return obj.astype(str).item()
+        if obj.dtype.kind in ("S", "a"):
+            return obj.astype(str).tolist()
+        if obj.shape == ():
+            return obj.item()
+        return obj.tolist()
+    return obj
 
 def _prepare_model_for_h5_write(model_dict: dict[str, Any]) -> dict[str, Any]:
     """Return a shallow-copied payload safe for generic HDF5 writers."""
@@ -263,7 +387,7 @@ def _read_h5_node(node) -> Any:
     return arr
 
 
-def load_geometry_contract_and_observer_from_h5(
+def _load_geometry_contract_and_observer_from_h5(
     h5_path: Path | str,
 ) -> dict[str, Any] | None:
     """
@@ -303,7 +427,7 @@ def load_geometry_contract_and_observer_from_h5(
     return thin_model
 
 
-def save_thin_model_to_h5(
+def save_thin_model(
     thin_model: dict[str, Any],
     h5_path: Path | str,
 ) -> None:
@@ -346,34 +470,34 @@ def save_thin_model_to_h5(
     _write_b3d_h5_raw(str(h5_path), write_payload)
 
 
-def export_thin_model_from_h5(
-    source_h5: Path | str,
+def export_thin_model(
+    source_model: Path | str,
     output_h5: Path | str | None = None,
     *,
     strict: bool = False,
 ) -> Path:
     """
-    Generate a metadata-only thin model HDF5 from a full model HDF5.
+    Generate a metadata-only thin model HDF5 from any supported full model input.
 
     The output file contains only:
       - metadata (full metadata section)
       - observer (if present)
 
     Args:
-        source_h5: Path to source full HDF5 model
+        source_model: Path to source full model (.h5 or .sav)
         output_h5: Destination path. If omitted, writes sibling
                   ``<source_stem>_metadata.h5`` next to source.
-        strict: Passed to ``load_model_from_h5`` for contract completion.
+        strict: Passed to ``load_model`` for contract completion.
 
     Returns:
         Path to written thin HDF5 file.
     """
-    source_h5 = Path(source_h5)
+    source_model = Path(source_model)
     if output_h5 is None:
-        output_h5 = source_h5.with_name(f"{source_h5.stem}_metadata.h5")
+        output_h5 = source_model.with_name(f"{source_model.stem}_metadata.h5")
     output_h5 = Path(output_h5)
 
-    model = load_model_from_h5(source_h5, strict=strict)
+    model = load_model(source_model, strict=strict)
     metadata = model.get("metadata") if isinstance(model, dict) else None
     if not isinstance(metadata, dict) or "geometry_contract" not in metadata:
         raise RuntimeError("Source model has no geometry_contract after restore.")
@@ -383,8 +507,34 @@ def export_thin_model_from_h5(
     if isinstance(observer, dict):
         thin_model["observer"] = observer
 
-    save_thin_model_to_h5(thin_model, output_h5)
+    save_thin_model(thin_model, output_h5)
     return output_h5
+
+
+def load_model_metadata(
+    model_path: Path | str,
+    *,
+    strict: bool = False,
+) -> dict[str, Any] | None:
+    """
+    Load canonical metadata plus optional observer from any supported model file.
+
+    Returns None when the restored model has no metadata dictionary or when the
+    completed metadata still lacks a geometry contract.
+    """
+    model = load_model(model_path, strict=strict)
+    if not isinstance(model, dict):
+        return None
+
+    metadata = model.get("metadata")
+    if not isinstance(metadata, dict) or "geometry_contract" not in metadata:
+        return None
+
+    thin_model: dict[str, Any] = {"metadata": metadata}
+    observer = model.get("observer")
+    if isinstance(observer, dict):
+        thin_model["observer"] = observer
+    return thin_model
 
 
 def _write_contract_to_h5(h5_path: Path | str, contract: GeometryContract) -> bool:
@@ -413,10 +563,37 @@ def _write_contract_to_h5(h5_path: Path | str, contract: GeometryContract) -> bo
         return False
 
 
-def load_model_from_h5(
+def _has_model_payload(model_dict: dict[str, Any]) -> bool:
+    return any(
+        key in model_dict
+        for key in ("corona", "chromo", "base", "refmaps", "lines", "potential", "bounds")
+    )
+
+
+def _require_canonical_base_maps(model_dict: dict[str, Any]) -> None:
+    if not isinstance(model_dict, dict) or not _has_model_payload(model_dict):
+        return
+
+    base = model_dict.get("base")
+    if not isinstance(base, dict):
+        raise RuntimeError("Canonical full models must include a base group with index and bx/by/bz/ic maps.")
+
+    if not any(base.get(key) is not None for key in ("index", "index_header", "wcs_header")):
+        raise RuntimeError("Canonical full models must include base index metadata.")
+
+    missing = [key for key in ("bx", "by", "bz", "ic") if base.get(key) is None]
+    if missing:
+        raise RuntimeError(
+            "Canonical full models must include base LOS maps: " + ", ".join(missing)
+        )
+
+
+def _load_model_h5(
     h5_path: Path | str,
     *,
     strict: bool = False,
+    source_path: Path | None = None,
+    source_kind: str = "h5",
 ) -> dict[str, Any]:
     """
     Load a model from HDF5 with geometry contract enforcement.
@@ -444,38 +621,66 @@ def load_model_from_h5(
         RuntimeError: If strict=True and contract cannot be completed
     """
     h5_path = Path(h5_path)
+    source_path = Path(source_path) if source_path is not None else h5_path
     if not h5_path.exists():
         raise FileNotFoundError(f"H5 file not found: {h5_path}")
 
     # Read model structure from H5
     model_dict = _read_b3d_h5_raw(str(h5_path))
 
+    # Recursively normalize all bytes/arrays to strings for legacy compatibility
+    model_dict = _normalize_model_dict(model_dict)
+
+
     # Try to use pre-stored contract first
     stored_contract = _read_contract_from_h5(h5_path)
     if stored_contract is not None:
-        # Contract is already persisted; use it directly
         if "metadata" not in model_dict:
             model_dict["metadata"] = {}
         model_dict["metadata"]["geometry_contract"] = stored_contract
-        # Still normalize observer metadata
         model_dict = normalize_observer_metadata(model_dict)
+        model_dict = _backfill_canonical_metadata(
+            model_dict,
+            source_path=source_path,
+            source_kind=source_kind,
+        )
+        _require_canonical_base_maps(model_dict)
         return model_dict
 
-    # Contract not persisted; try to complete/infer it
-    contract = complete_geometry_contract(model_dict, strict=strict)
+
+    # If corona.dr is missing but bx exists, infer dr as (1.0, 1.0, 1.0) (default)
+    corona = model_dict.get("corona")
+    if isinstance(corona, dict) and "dr" not in corona:
+        for key in ("bx", "by", "bz"):
+            if key in corona:
+                arr = np.asarray(corona[key])
+                if isinstance(arr, np.ndarray) and arr.ndim == 3:
+                    corona["dr"] = np.array([1.0, 1.0, 1.0], dtype=np.float64)
+                    break
+
+    # Contract not persisted; always attempt to infer from available metadata and cube shapes
+    contract = complete_geometry_contract(model_dict, strict=False)
     if contract is not None:
         if "metadata" not in model_dict:
             model_dict["metadata"] = {}
         model_dict["metadata"]["geometry_contract"] = contract
+    elif strict:
+        raise RuntimeError("Cannot infer geometry_contract from available data.")
 
     # Always normalize observer metadata at load time
     model_dict = normalize_observer_metadata(model_dict)
+    model_dict = _backfill_canonical_metadata(
+        model_dict,
+        source_path=source_path,
+        source_kind=source_kind,
+    )
+    _require_canonical_base_maps(model_dict)
 
     return model_dict
 
 
 @overload
-def load_model_from_sav(
+def _load_model_sav(
     sav_path: Path | str,
     *,
     strict: bool = False,
@@ -485,7 +690,7 @@ def load_model_from_sav(
 
 
 @overload
-def load_model_from_sav(
+def _load_model_sav(
     sav_path: Path | str,
     *,
     strict: bool = False,
@@ -494,7 +699,7 @@ def load_model_from_sav(
     ...
 
 
-def load_model_from_sav(
+def _load_model_sav(
     sav_path: Path | str,
     *,
     strict: bool = False,
@@ -503,7 +708,7 @@ def load_model_from_sav(
     """
     Load a model from SAV format with geometry contract enforcement.
 
-    This converts SAV to a temporary H5 and loads via load_model_from_h5,
+    This converts SAV to a temporary H5 and loads via the canonical H5 reader,
     ensuring all models from SAV source go through the same contract-enforced
     loader.
 
@@ -527,7 +732,12 @@ def load_model_from_sav(
 
     try:
         build_h5_from_sav(sav_path=sav_path, out_h5=temp_h5_path)
-        model_dict = load_model_from_h5(temp_h5_path, strict=strict)
+        model_dict = _load_model_h5(
+            temp_h5_path,
+            strict=strict,
+            source_path=sav_path,
+            source_kind="sav",
+        )
 
         if keep_temp_h5:
             return model_dict, temp_h5_path
@@ -539,7 +749,7 @@ def load_model_from_sav(
         raise
 
 
-def save_model_to_h5(
+def save_model(
     model_dict: dict[str, Any],
     h5_path: Path | str,
 ) -> None:
@@ -568,7 +778,7 @@ def save_model_to_h5(
         _write_contract_to_h5(h5_path, contract)
 
 
-def complete_and_persist_contract_in_h5(
+def _complete_and_persist_contract_in_h5(
     h5_path: Path | str,
     *,
     strict: bool = False,
@@ -613,11 +823,9 @@ def complete_and_persist_contract_in_h5(
 
 
 __all__ = [
-    "load_model_from_h5",
-    "load_model_from_sav",
-    "save_model_to_h5",
-    "complete_and_persist_contract_in_h5",
-    "load_geometry_contract_and_observer_from_h5",
-    "save_thin_model_to_h5",
-    "export_thin_model_from_h5",
+    "load_model",
+    "load_model_metadata",
+    "save_model",
+    "save_thin_model",
+    "export_thin_model",
 ]
