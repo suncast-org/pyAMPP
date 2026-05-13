@@ -34,6 +34,8 @@ GX_FOV2BOX_SCRIPT = PYAMPP_ROOT / "pyampp" / "gxbox" / "gx_fov2box.py"
 class StageStep:
     entry_stage: str
     target_stage: str
+    entry_sav_suffixes: tuple[str, ...]
+    target_sav_suffixes: tuple[str, ...]
     jump_flag: str
     save_flag: str
     stop_after: str
@@ -45,6 +47,8 @@ STAGE_STEPS: tuple[StageStep, ...] = (
     StageStep(
         entry_stage="NONE",
         target_stage="POT",
+        entry_sav_suffixes=(".NONE.SAV",),
+        target_sav_suffixes=(".POT.SAV",),
         jump_flag="--jump2potential",
         save_flag="--save-potential",
         stop_after="pot",
@@ -54,6 +58,8 @@ STAGE_STEPS: tuple[StageStep, ...] = (
     StageStep(
         entry_stage="POT",
         target_stage="BND",
+        entry_sav_suffixes=(".POT.SAV",),
+        target_sav_suffixes=(".BND.SAV",),
         jump_flag="--jump2bounds",
         save_flag="--save-bounds",
         stop_after="bnd",
@@ -63,6 +69,8 @@ STAGE_STEPS: tuple[StageStep, ...] = (
     StageStep(
         entry_stage="BND",
         target_stage="NAS",
+        entry_sav_suffixes=(".BND.SAV",),
+        target_sav_suffixes=(".NAS.SAV",),
         jump_flag="--jump2nlfff",
         save_flag="--save-nas",
         stop_after="nas",
@@ -72,6 +80,8 @@ STAGE_STEPS: tuple[StageStep, ...] = (
     StageStep(
         entry_stage="NAS",
         target_stage="GEN",
+        entry_sav_suffixes=(".NAS.SAV",),
+        target_sav_suffixes=(".NAS.GEN.SAV",),
         jump_flag="--jump2lines",
         save_flag="--save-gen",
         stop_after="gen",
@@ -81,6 +91,8 @@ STAGE_STEPS: tuple[StageStep, ...] = (
     StageStep(
         entry_stage="GEN",
         target_stage="CHR",
+        entry_sav_suffixes=(".NAS.GEN.SAV",),
+        target_sav_suffixes=(".NAS.GEN.CHR.SAV",),
         jump_flag="--jump2chromo",
         save_flag="--save-chr",
         stop_after="chr",
@@ -192,6 +204,23 @@ def _discover_idl_stage_files(idl_stage_dir: Path) -> dict[str, Path]:
     return stage_files
 
 
+def _pick_idl_stage_file(
+    idl_stage_dir: Path,
+    suffixes: tuple[str, ...],
+    *,
+    label: str,
+) -> Path:
+    matches = sorted(
+        candidate for candidate in idl_stage_dir.glob("*.sav") if any(candidate.name.upper().endswith(suffix) for suffix in suffixes)
+    )
+    if len(matches) != 1:
+        raise FileNotFoundError(
+            "Could not uniquely identify IDL stage SAV file. "
+            f"label={label!r}, suffixes={suffixes!r}, matches={[str(path) for path in matches]}"
+        )
+    return matches[0]
+
+
 def _run_command(command: list[str], log_path: Path, cwd: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -241,22 +270,23 @@ def _export_one_idl_stage(
 def _ensure_exported_stage(
     *,
     python_exe: Path,
-    stage: str,
-    stage_files: dict[str, Path],
+    label: str,
+    sav_path: Path,
     export_dir: Path,
     log_dir: Path,
     exported_stage_h5: dict[str, Path],
 ) -> Path:
-    if stage in exported_stage_h5:
-        return exported_stage_h5[stage]
-    exported_stage_h5[stage] = _export_one_idl_stage(
+    cache_key = str(sav_path.resolve())
+    if cache_key in exported_stage_h5:
+        return exported_stage_h5[cache_key]
+    exported_stage_h5[cache_key] = _export_one_idl_stage(
         python_exe=python_exe,
-        stage=stage,
-        sav_path=stage_files[stage],
+        stage=label,
+        sav_path=sav_path,
         export_dir=export_dir,
         log_dir=log_dir,
     )
-    return exported_stage_h5[stage]
+    return exported_stage_h5[cache_key]
 
 
 def _scan_h5_files(root: Path) -> set[Path]:
@@ -454,23 +484,33 @@ def main() -> int:
         "rtol": args.rtol,
         "atol": args.atol,
         "stage_files": {stage: str(path) for stage, path in stage_files.items()},
-        "exported_stage_h5": {stage: str(path) for stage, path in exported_stage_h5.items()},
+        "exported_stage_h5": {},
         "steps": [],
     }
 
     for step in STAGE_STEPS:
+        entry_sav = _pick_idl_stage_file(
+            idl_stage_dir,
+            step.entry_sav_suffixes,
+            label=f"{step.entry_stage} entry",
+        )
+        target_sav = _pick_idl_stage_file(
+            idl_stage_dir,
+            step.target_sav_suffixes,
+            label=f"{step.target_stage} target",
+        )
         entry_h5 = _ensure_exported_stage(
             python_exe=python_exe,
-            stage=step.entry_stage,
-            stage_files=stage_files,
+            label=step.entry_stage,
+            sav_path=entry_sav,
             export_dir=export_dir,
             log_dir=log_dir,
             exported_stage_h5=exported_stage_h5,
         )
         target_h5 = _ensure_exported_stage(
             python_exe=python_exe,
-            stage=step.target_stage,
-            stage_files=stage_files,
+            label=step.target_stage,
+            sav_path=target_sav,
             export_dir=export_dir,
             log_dir=log_dir,
             exported_stage_h5=exported_stage_h5,
@@ -504,6 +544,8 @@ def main() -> int:
             {
                 "entry_stage": step.entry_stage,
                 "target_stage": step.target_stage,
+                "entry_sav": str(entry_sav),
+                "target_sav": str(target_sav),
                 "entry_h5": str(entry_h5),
                 "exported_target_h5": str(target_h5),
                 "produced_target_h5": str(produced_target),
@@ -512,7 +554,7 @@ def main() -> int:
             }
         )
 
-    report["exported_stage_h5"] = {stage: str(path) for stage, path in exported_stage_h5.items()}
+    report["exported_stage_h5"] = exported_stage_h5
 
     report_path = report_dir / "gx_idl2py_stage_parity_report.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
