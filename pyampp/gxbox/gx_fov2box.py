@@ -480,6 +480,55 @@ def _warn_impossible_save_requests(cfg: Fov2BoxConfig, start_stage: str) -> None
         )
 
 
+def _clone_corona_with_model_type(corona: Dict[str, Any], model_type: str) -> Dict[str, Any]:
+    cloned = dict(corona)
+    attrs = cloned.get("attrs")
+    attrs_dict = dict(attrs) if isinstance(attrs, dict) else {}
+    attrs_dict["model_type"] = model_type
+    cloned["attrs"] = attrs_dict
+    return cloned
+
+
+def _prepare_resume_jump_boxes(
+    active_jump: Optional[str],
+    entry_stage: Optional[str],
+    entry_corona: Optional[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    pot_box = None
+    bnd_box = None
+    nlfff_box = None
+
+    if active_jump not in ("potential", "bounds", "nlfff"):
+        return pot_box, bnd_box, nlfff_box
+    if not entry_corona:
+        raise ValueError("--entry-box does not contain corona vectors required by selected jump/recompute action.")
+
+    if active_jump == "potential":
+        # NONE->POT must compute a fresh potential field from the base boundary.
+        if entry_stage != "NONE":
+            pot_box = _clone_corona_with_model_type(entry_corona, "pot")
+        return pot_box, bnd_box, nlfff_box
+
+    if active_jump == "bounds":
+        # NONE->BND and POT->BND need real forward-stage computation instead of
+        # relabeling the entry corona as a later stage.
+        if entry_stage == "POT":
+            pot_box = _clone_corona_with_model_type(entry_corona, "pot")
+        elif entry_stage not in (None, "NONE"):
+            bnd_box = _clone_corona_with_model_type(entry_corona, "bnd")
+        return pot_box, bnd_box, nlfff_box
+
+    if entry_stage == "POT":
+        pot_box = _clone_corona_with_model_type(entry_corona, "pot")
+    elif entry_stage == "BND":
+        bnd_box = _clone_corona_with_model_type(entry_corona, "bnd")
+    elif entry_stage in ("NAS", "GEN", "CHR"):
+        nlfff_box = _clone_corona_with_model_type(entry_corona, "nlfff")
+    else:
+        raise ValueError(f"Unsupported entry stage for --jump2nlfff path: {entry_stage}")
+    return pot_box, bnd_box, nlfff_box
+
+
 def _stage_tag_from_stage(stage: str) -> str:
     return {
         "NONE": "NONE",
@@ -715,6 +764,26 @@ def _load_maglib_idl_cube(maglib: Any, box: Dict[str, Any], dr: Any = 0.001 * u.
     load_vars = getattr(maglib, "_MagFieldProcessor__load_vars")
     load_vars(bx, by, bz, dr)
     return bx, by, bz
+
+
+def _solve_nlfff_from_bnd(bnd_box: Dict[str, Any], dr: Any) -> Dict[str, Any]:
+    """Run the NLFFF solver from an internal ``(x, y, z)`` BND cube.
+
+    The solver-facing layout must match the IDL ``mfoLines`` path: load the
+    cube through the same component swap and ``(z, x, y)`` transpose used by
+    ``_load_maglib_idl_cube()``, then convert the solver output back to the
+    internal ``(x, y, z)`` convention.
+    """
+    maglib = MagFieldProcessor()
+    _load_maglib_idl_cube(maglib, bnd_box, dr)
+    res_nlf = maglib.NLFFF()
+    return {
+        "bx": np.asarray(res_nlf["by"]).transpose((1, 2, 0)),
+        "by": np.asarray(res_nlf["bx"]).transpose((1, 2, 0)),
+        "bz": np.asarray(res_nlf["bz"]).transpose((1, 2, 0)),
+        "dr": np.asarray(bnd_box["dr"], dtype=float).copy(),
+        "attrs": {"model_type": "nlfff"},
+    }
 
 
 def _decode_id_text(v: Any) -> str:
@@ -2421,22 +2490,6 @@ def main(
         bnd["bz"][:, :, 0] = np.asarray(base_group["bz"], dtype=float).T
         return bnd
 
-    def _run_nlfff_from_bnd(bnd_box: dict) -> dict:
-        maglib = MagFieldProcessor()
-        maglib.load_cube_vars({
-            "bx": bnd_box["bx"].swapaxes(0, 1),
-            "by": bnd_box["by"].swapaxes(0, 1),
-            "bz": bnd_box["bz"].swapaxes(0, 1),
-        })
-        res_nlf = maglib.NLFFF()
-        return {
-            "bx": res_nlf["bx"].swapaxes(0, 1),
-            "by": res_nlf["by"].swapaxes(0, 1),
-            "bz": res_nlf["bz"].swapaxes(0, 1),
-            "dr": dr3,
-            "attrs": {"model_type": "nlfff"},
-        }
-
     active_jump = None
     if cfg.entry_box and not cfg.rebuild:
         if target_stage == "POT":
@@ -2477,33 +2530,18 @@ def main(
     if not goto_lines:
         pot_box = None
         bnd_box = None
+        nlfff_box = None
 
         if active_jump in ("potential", "bounds", "nlfff"):
-            if not entry_corona:
-                raise ValueError("--entry-box does not contain corona vectors required by selected jump/recompute action.")
-            if active_jump == "potential":
-                pot_box = entry_corona
-                if str(pot_box.get("attrs", {}).get("model_type", "")).lower() != "pot":
-                    pot_box["attrs"] = {"model_type": "pot"}
-            elif active_jump == "bounds":
-                bnd_box = entry_corona
-                if str(bnd_box.get("attrs", {}).get("model_type", "")).lower() not in ("bnd", "bounds"):
-                    bnd_box["attrs"] = {"model_type": "bnd"}
-            elif active_jump == "nlfff":
-                # Target NAS can start from POT/BND/NAS entry cubes.
-                if entry_stage == "POT":
-                    pot_box = entry_corona
-                    bnd_box = _make_bnd_from_pot(pot_box)
-                elif entry_stage == "BND":
-                    bnd_box = entry_corona
-                elif entry_stage in ("NAS", "GEN", "CHR"):
-                    nlfff_box = entry_corona
-                    if str(nlfff_box.get("attrs", {}).get("model_type", "")).lower() != "nlfff":
-                        nlfff_box["attrs"] = {"model_type": "nlfff"}
-                else:
-                    raise ValueError(f"Unsupported entry stage for --jump2nlfff path: {entry_stage}")
+            pot_box, bnd_box, nlfff_box = _prepare_resume_jump_boxes(
+                active_jump,
+                entry_stage,
+                entry_corona,
+            )
+            if active_jump == "nlfff" and entry_stage == "POT" and pot_box is not None:
+                bnd_box = _make_bnd_from_pot(pot_box)
 
-        if pot_box is None and bnd_box is None and "nlfff_box" not in locals():
+        if pot_box is None and bnd_box is None and nlfff_box is None:
             with _StageProgress("Computing POT model") as progress:
                 pot_box = _make_pot_box()
                 save_stage("POT", {"corona": pot_box})
@@ -2535,7 +2573,7 @@ def main(
                 finalize()
                 return
 
-        if "nlfff_box" not in locals():
+        if nlfff_box is None:
             if cfg.use_potential:
                 if pot_box is None:
                     pot_box = _make_pot_box()
@@ -2552,7 +2590,7 @@ def main(
                         pot_box = _make_pot_box()
                     bnd_box = _make_bnd_from_pot(pot_box)
                 with _StageProgress("Computing NAS model") as progress:
-                    nlfff_box = _run_nlfff_from_bnd(bnd_box)
+                    nlfff_box = _solve_nlfff_from_bnd(bnd_box, dr3)
                     save_stage("NAS", {"corona": nlfff_box})
                     stage_times["NAS"] = progress.finish()
                 if cfg.nlfff_only or _last_stage_tag(cfg.stop_after) == "NAS":

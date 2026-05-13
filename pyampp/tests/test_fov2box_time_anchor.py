@@ -141,6 +141,126 @@ def test_refmap_wcs_header_preserves_date_obs():
     assert header["RSUN_REF"] == 6.96e8
 
 
+def test_prepare_resume_jump_boxes_none_to_potential_recomputes() -> None:
+    entry_corona = {
+        "bx": np.zeros((2, 2, 2), dtype=float),
+        "by": np.zeros((2, 2, 2), dtype=float),
+        "bz": np.zeros((2, 2, 2), dtype=float),
+        "attrs": {"model_type": "none"},
+    }
+
+    pot_box, bnd_box, nlfff_box = gx_fov2box._prepare_resume_jump_boxes(
+        "potential",
+        "NONE",
+        entry_corona,
+    )
+
+    assert pot_box is None
+    assert bnd_box is None
+    assert nlfff_box is None
+
+
+def test_prepare_resume_jump_boxes_pot_to_bounds_uses_pot_then_computes_bnd() -> None:
+    entry_corona = {
+        "bx": np.ones((2, 2, 2), dtype=float),
+        "by": np.ones((2, 2, 2), dtype=float),
+        "bz": np.ones((2, 2, 2), dtype=float),
+        "attrs": {"model_type": "pot"},
+    }
+
+    pot_box, bnd_box, nlfff_box = gx_fov2box._prepare_resume_jump_boxes(
+        "bounds",
+        "POT",
+        entry_corona,
+    )
+
+    assert pot_box is not None
+    assert pot_box is not entry_corona
+    assert pot_box["attrs"]["model_type"] == "pot"
+    assert bnd_box is None
+    assert nlfff_box is None
+
+
+def test_solve_nlfff_from_bnd_uses_idl_loader_and_restores_internal_xyz() -> None:
+    bnd_box = {
+        "bx": np.arange(8, dtype=float).reshape(2, 2, 2),
+        "by": np.arange(8, dtype=float).reshape(2, 2, 2) + 10.0,
+        "bz": np.arange(8, dtype=float).reshape(2, 2, 2) + 20.0,
+        "dr": np.array([0.1, 0.2, 0.3], dtype=float),
+        "attrs": {"model_type": "bnd"},
+    }
+
+    class _FakeMagLib:
+        def NLFFF(self):
+            return {
+                "bx": np.array(
+                    [
+                        [[1.0, 2.0], [3.0, 4.0]],
+                        [[5.0, 6.0], [7.0, 8.0]],
+                    ]
+                ),
+                "by": np.array(
+                    [
+                        [[101.0, 102.0], [103.0, 104.0]],
+                        [[105.0, 106.0], [107.0, 108.0]],
+                    ]
+                ),
+                "bz": np.array(
+                    [
+                        [[201.0, 202.0], [203.0, 204.0]],
+                        [[205.0, 206.0], [207.0, 208.0]],
+                    ]
+                ),
+            }
+
+    fake_maglib = _FakeMagLib()
+    loaded = []
+
+    def _fake_load_maglib_idl_cube(maglib, box, dr):
+        loaded.append((maglib, box, np.asarray(dr, dtype=float)))
+
+    with patch.object(gx_fov2box, "MagFieldProcessor", return_value=fake_maglib), patch.object(
+        gx_fov2box,
+        "_load_maglib_idl_cube",
+        side_effect=_fake_load_maglib_idl_cube,
+    ):
+        nlfff_box = gx_fov2box._solve_nlfff_from_bnd(bnd_box, np.array([0.1, 0.2, 0.3], dtype=float))
+
+    assert len(loaded) == 1
+    assert loaded[0][0] is fake_maglib
+    assert loaded[0][1] is bnd_box
+    assert np.array_equal(loaded[0][2], np.array([0.1, 0.2, 0.3], dtype=float))
+    assert nlfff_box["attrs"]["model_type"] == "nlfff"
+    assert np.array_equal(nlfff_box["dr"], np.array([0.1, 0.2, 0.3], dtype=float))
+    assert np.array_equal(
+        nlfff_box["bx"],
+        np.array(
+            [
+                [[101.0, 105.0], [102.0, 106.0]],
+                [[103.0, 107.0], [104.0, 108.0]],
+            ]
+        ),
+    )
+    assert np.array_equal(
+        nlfff_box["by"],
+        np.array(
+            [
+                [[1.0, 5.0], [2.0, 6.0]],
+                [[3.0, 7.0], [4.0, 8.0]],
+            ]
+        ),
+    )
+    assert np.array_equal(
+        nlfff_box["bz"],
+        np.array(
+            [
+                [[201.0, 205.0], [202.0, 206.0]],
+                [[203.0, 207.0], [204.0, 208.0]],
+            ]
+        ),
+    )
+
+
 def test_build_index_header_converts_hgs_cea_reference_point_to_carrington():
     source_map = _FakeSourceMap("2025-11-26T15:34:31.400")
     bottom_header = fits.Header()

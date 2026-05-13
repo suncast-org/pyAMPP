@@ -119,6 +119,10 @@ The repository also includes a heavier IDL-versus-pyAMPP stage-parity workflow
 for users who want to validate stage-by-stage resume behavior against locally
 generated IDL reference SAV files.
 
+The pyAMPP side of this workflow uses the staged IDL SAV files directly as
+`--entry-box` inputs so the real resume path is exercised. The exported HDF5
+files are used only as canonical comparison targets for each stage.
+
 Script:
 
 ```bash
@@ -198,6 +202,15 @@ and include the usual stage set:
 - `...NAS.GEN.sav`
 - `...NAS.CHR.sav`
 
+Important labeling note for the final stage:
+
+- IDL typically labels the chromospheric target as `NAS.CHR.sav`.
+- pyAMPP may label the comparable generated result as `NAS.GEN.CHR.h5`, because
+  the Python workflow exposes the explicit `NAS -> CHR` jump that IDL does not
+  name separately.
+- The parity script therefore treats those CHR naming variants as equivalent
+  stage targets rather than assuming one exact suffix family.
+
 ### Running the parity workflow
 
 With defaults:
@@ -216,6 +229,68 @@ python -u real_data_checks/check_idl2py_stage_parity.py \
   --clean
 ```
 
+To print the exact per-stage resume, export, and comparison plan without
+executing any commands or writing artifacts:
+
+```bash
+python -u real_data_checks/check_idl2py_stage_parity.py --dry-run
+```
+
+To regenerate only the JSON report from an existing artifact tree, without
+rerunning resume or export commands:
+
+```bash
+python -u real_data_checks/check_idl2py_stage_parity.py \
+  --idl-stage-dir /path/to/OUT_DIR/2020-11-26 \
+  --artifact-root /path/to/artifacts \
+  --report-only
+```
+
+To rerun only one transition and then regenerate the full JSON report from the
+updated artifact tree:
+
+```bash
+python -u real_data_checks/check_idl2py_stage_parity.py \
+  --idl-stage-dir /path/to/OUT_DIR/2020-11-26 \
+  --artifact-root /path/to/artifacts \
+  --stage BND->NAS
+```
+
+Because `>` is a shell redirection operator, the transition form should either
+be quoted or written with the shell-safe `ENTRY:TARGET` syntax:
+
+```bash
+python -u real_data_checks/check_idl2py_stage_parity.py \
+  --artifact-root /path/to/artifacts \
+  --stage "BND->NAS"
+```
+
+```bash
+python -u real_data_checks/check_idl2py_stage_parity.py \
+  --artifact-root /path/to/artifacts \
+  --stage BND:NAS
+```
+
+You can also select a transition by target stage name when it is unambiguous,
+for example:
+
+```bash
+python -u real_data_checks/check_idl2py_stage_parity.py \
+  --artifact-root /path/to/artifacts \
+  --stage NAS
+```
+
+Notes for single-stage reruns:
+
+- the selected transition is rerun, but the report is rebuilt for all stages
+  from the current artifact tree
+- `--clean` is intentionally rejected with `--stage`, because removing the
+  whole artifact tree would also remove the other stages needed for the
+  regenerated full report
+- `--report-only --stage ...` is accepted but behaves like `--report-only`: it
+  reuses existing artifacts and regenerates the full report without rerunning
+  the selected stage
+
 Recommended workflow:
 
 - choose an `OUT_DIR` for the IDL run that points to your GX model root,
@@ -227,7 +302,8 @@ Recommended workflow:
 Artifacts written under the artifact root:
 
 - `idl_exported/` canonical HDF5 exports of the IDL stage SAV files
-- `pyampp_generated/` pyAMPP-generated resume outputs for each branch
+- `pyampp_generated/` pyAMPP-generated resume outputs for each branch, using
+  the staged IDL SAV files as entry boxes
 - `logs/` one log per export and resume step
 - `reports/gx_idl2py_stage_parity_report.json` final comparison report
 
