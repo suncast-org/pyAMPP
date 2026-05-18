@@ -124,6 +124,48 @@ def test_sav_loader_backfills_missing_canonical_metadata(tmp_path):
     assert model["metadata"]["lineage"] == "legacy-sav:unknown"
 
 
+def test_sav_loader_preserves_numeric_line_arrays_in_canonical_model(tmp_path):
+    import h5py
+
+    from pyampp.io.model import _load_model_sav
+
+    sav_path = tmp_path / "legacy_lines.NAS.GEN.sav"
+    sav_path.write_bytes(b"placeholder")
+
+    def _write_legacy_temp_h5(*, sav_path, out_h5):
+        with h5py.File(out_h5, "w") as f:
+            corona = f.create_group("corona")
+            corona.create_dataset("bx", data=np.zeros((2, 2, 2), dtype=np.float32))
+            corona.create_dataset("by", data=np.zeros((2, 2, 2), dtype=np.float32))
+            corona.create_dataset("bz", data=np.zeros((2, 2, 2), dtype=np.float32))
+            corona.create_dataset("dr", data=np.array([1.0, 1.0, 1.0], dtype=np.float64))
+            corona.attrs["model_type"] = "nlfff"
+
+            base = f.create_group("base")
+            base.create_dataset("index", data=np.bytes_(canonical_base_index_header(date_obs="2020-11-26T19:58:31")))
+            base.create_dataset("bx", data=np.zeros((2, 2), dtype=np.float32))
+            base.create_dataset("by", data=np.zeros((2, 2), dtype=np.float32))
+            base.create_dataset("bz", data=np.zeros((2, 2), dtype=np.float32))
+            base.create_dataset("ic", data=np.ones((2, 2), dtype=np.float32))
+
+            lines = f.create_group("lines")
+            lines.create_dataset("start_idx", data=np.array([0, 1], dtype=np.int64))
+            lines.create_dataset("end_idx", data=np.array([1, 2], dtype=np.int64))
+            lines.create_dataset("av_field", data=np.array([1.0, 2.0], dtype=np.float64))
+            lines.create_dataset("phys_length", data=np.array([3.0, 4.0], dtype=np.float64))
+            lines.create_dataset("voxel_status", data=np.array([0, 1], dtype=np.uint8))
+
+    with patch("pyampp.io.model.build_h5_from_sav", side_effect=_write_legacy_temp_h5):
+        model = _load_model_sav(sav_path)
+
+    assert isinstance(model["lines"]["phys_length"], np.ndarray)
+    assert model["lines"]["phys_length"].dtype == np.float64
+    assert isinstance(model["lines"]["start_idx"], np.ndarray)
+    assert model["lines"]["start_idx"].dtype == np.int64
+    assert isinstance(model["lines"]["voxel_status"], np.ndarray)
+    assert model["lines"]["voxel_status"].dtype == np.uint8
+
+
 def test_export_model_canonicalizes_legacy_h5(tmp_path, monkeypatch, capsys):
     import h5py
 

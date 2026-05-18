@@ -181,11 +181,1063 @@ def test_prepare_resume_jump_boxes_pot_to_bounds_uses_pot_then_computes_bnd() ->
     assert nlfff_box is None
 
 
-def test_solve_nlfff_from_bnd_uses_idl_loader_and_restores_internal_xyz() -> None:
+def test_jump_allowed_preserves_supported_expert_shortcuts() -> None:
+    assert gx_fov2box._jump_allowed("NONE", "BND") is True
+    assert gx_fov2box._jump_allowed("POT", "NAS") is True
+    assert gx_fov2box._jump_allowed("POT", "GEN") is True
+    assert gx_fov2box._jump_allowed("POT", "CHR") is True
+    assert gx_fov2box._jump_allowed("NAS", "CHR") is True
+
+
+def test_jump_allowed_rejects_unsupported_skips() -> None:
+    assert gx_fov2box._jump_allowed("NONE", "NAS") is False
+    assert gx_fov2box._jump_allowed("BND", "GEN") is False
+    assert gx_fov2box._jump_allowed("BND", "CHR") is False
+
+
+def test_jump_chain_records_implicit_intermediate_stages() -> None:
+    assert gx_fov2box._jump_chain("NONE", "BND") == ("NONE", "POT", "BND")
+    assert gx_fov2box._jump_chain("POT", "NAS") == ("POT", "BND", "NAS")
+    assert gx_fov2box._jump_chain("POT", "GEN") == ("POT", "GEN")
+    assert gx_fov2box._jump_chain("NAS", "CHR") == ("NAS", "CHR")
+
+
+def _make_transition_cfg(**overrides):
+    params = dict(
+        time=None,
+        coords=None,
+        hpc=True,
+        hgc=False,
+        hgs=False,
+        cea=True,
+        top=False,
+        box_dims=None,
+        dx_km=1400.0,
+        pad_frac=0.1,
+        data_dir="/tmp",
+        gxmodel_dir="/tmp",
+        nlfff_lib=None,
+        download_backend="drms",
+        drms_sequential=False,
+        force_download=False,
+        entry_box="/tmp/model.h5",
+        save_empty_box=False,
+        save_potential=False,
+        save_bounds=False,
+        save_nas=False,
+        save_gen=False,
+        save_chr=False,
+        stop_after=None,
+        empty_box_only=False,
+        potential_only=False,
+        nlfff_only=False,
+        generic_only=False,
+        use_potential=False,
+        skip_lines=False,
+        center_vox=False,
+        reduce_passed=None,
+        euv=False,
+        uv=False,
+        sfq=False,
+        observer_name="earth",
+        fov_xc=None,
+        fov_yc=None,
+        fov_xsize=None,
+        fov_ysize=None,
+        square_fov=False,
+        jump2potential=False,
+        jump2bounds=False,
+        jump2nlfff=False,
+        jump2lines=False,
+        jump2chromo=False,
+        rebuild=False,
+        rebuild_from_none=False,
+        info=False,
+    )
+    params.update(overrides)
+    return gx_fov2box.Fov2BoxConfig(**params)
+
+
+def test_plan_transition_tracks_resume_jump_mode() -> None:
+    cfg = _make_transition_cfg(jump2lines=True)
+
+    plan = gx_fov2box._plan_transition(cfg, "POT")
+
+    assert plan.target_stage == "GEN"
+    assert plan.jump_chain == ("POT", "GEN")
+    assert plan.active_jump == "lines"
+    assert plan.goto_lines is True
+    assert plan.goto_chromo is False
+
+
+def test_plan_transition_rejects_unsupported_resume_skip() -> None:
+    cfg = _make_transition_cfg(jump2lines=True)
+
+    try:
+        gx_fov2box._plan_transition(cfg, "BND")
+    except ValueError as exc:
+        assert "cannot jump to GEN" in str(exc)
+    else:
+        raise AssertionError("Expected unsupported BND->GEN resume jump to be rejected")
+
+
+def test_prepare_resume_state_backfills_base_and_infers_metadata() -> None:
+    entry_loaded = {
+        "base": {
+            "bx": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=float),
+            "by": np.array([[5.0, 6.0], [7.0, 8.0]], dtype=float),
+            "bz": np.array([[9.0, 10.0], [11.0, 12.0]], dtype=float),
+        },
+        "refmaps": {"Bz_reference": {"data": np.ones((2, 2), dtype=float)}},
+        "corona": {
+            "dr": np.array([0.1, 0.2, 0.3], dtype=float),
+        },
+        "metadata": {
+            "projection": "top",
+            "id": "20251126_153431.UNKNOWN.TOP.POT",
+        },
+    }
+    cfg = _make_transition_cfg(entry_box="/tmp/model.h5", dx_km=1400.0)
+
+    prepared = gx_fov2box._prepare_resume_state(entry_loaded, cfg, Time("2025-11-26T15:34:31"))
+
+    assert np.array_equal(prepared.base_group["ic"], entry_loaded["base"]["bz"])
+    assert "chromo_mask" in prepared.base_group
+    assert prepared.refmaps == entry_loaded["refmaps"]
+    assert np.array_equal(prepared.base_bz_arr, entry_loaded["base"]["bz"])
+    assert np.array_equal(prepared.base_ic_arr, entry_loaded["base"]["bz"])
+    assert np.array_equal(prepared.bottom_bz_data, entry_loaded["base"]["bz"])
+    assert prepared.projection_tag == "TOP"
+    assert prepared.base == "20251126_153431.UNKNOWN.TOP"
+    assert np.array_equal(prepared.dr3, np.array([0.1, 0.2, 0.3], dtype=float))
+
+
+def test_prepare_observation_state_builds_expected_prepared_payload() -> None:
+    class _ScaleAxis:
+        def __init__(self, value):
+            self._value = value
+
+        def to_value(self, unit):
+            return self._value
+
+    class _Scale:
+        axis1 = _ScaleAxis(1.0)
+        axis2 = _ScaleAxis(1.0)
+
+    class _WCSW:
+        crpix = [1.0, 1.0]
+
+    class _WCSWrap:
+        wcs = _WCSW()
+
+    class _MiniMap:
+        def __init__(self, data):
+            self.data = np.asarray(data, dtype=float)
+            self.meta = {"dummy": True}
+            self.rsun_obs = 972.3 * u.arcsec
+            self.scale = _Scale()
+            self.wcs = _WCSWrap()
+            self.dsun = 1.0 * u.m
+
+        def reproject_to(self, header, algorithm="exact"):
+            return self
+
+    class _FakeBox:
+        def __init__(self, *args, **kwargs):
+            header = fits.Header()
+            header["CTYPE1"] = "HPLN-TAN"
+            header["CTYPE2"] = "HPLT-TAN"
+            self.bottom_cea_header = header
+
+        def bottom_top_header(self, dsun_obs=None):
+            return self.bottom_cea_header
+
+        def bounds_coords_bl_tr(self, pad_frac=0.1):
+            return (None, None)
+
+    maps = {
+        "field": _MiniMap([[1, 2], [3, 4]]),
+        "inclination": _MiniMap([[0, 0], [0, 0]]),
+        "azimuth": _MiniMap([[0, 0], [0, 0]]),
+        "continuum": _MiniMap([[10, 11], [12, 13]]),
+        "magnetogram": _MiniMap([[20, 21], [22, 23]]),
+    }
+    cfg = _make_transition_cfg(entry_box=None, coords=(10.0, 20.0), box_dims=(2, 2, 2), dx_km=1400.0)
+
+    with patch.object(gx_fov2box, "_load_hmi_maps_from_downloader", return_value=(maps, {"resolved_obs_time": None})), patch.object(
+        gx_fov2box, "_resolve_cli_observer", return_value=gx_fov2box.get_earth(Time("2025-11-26T15:34:31"))
+    ), patch.object(gx_fov2box, "Box", _FakeBox), patch.object(
+        gx_fov2box, "hmi_b2ptr", return_value=(maps["field"], maps["field"], maps["field"])
+    ), patch.object(
+        gx_fov2box, "_submap_with_fov_safe", side_effect=lambda smap, bl, tr: smap
+    ), patch.object(
+        gx_fov2box, "map_from_data_header_compat", side_effect=lambda data, meta: _MiniMap(data)
+    ), patch.object(
+        gx_fov2box, "_build_index_header", return_value="INDEXHDR"
+    ), patch.object(
+        gx_fov2box, "_refmap_wcs_header", return_value="REFHDR"
+    ), patch.object(
+        gx_fov2box, "remap_vertical_current_inputs", side_effect=lambda a, b, c: (a, b, c)
+    ), patch.object(
+        gx_fov2box, "compute_vertical_current", return_value=np.ones((2, 2), dtype=float)
+    ), patch.object(
+        gx_fov2box, "_format_coord_tag", return_value="TAG"
+    ), patch.object(
+        gx_fov2box, "_observer_metadata_from_source_map", return_value={"observer": "earth"}
+    ):
+        prepared = gx_fov2box._prepare_observation_state(
+            cfg,
+            Time("2025-11-26T15:34:31"),
+            (2, 2, 2),
+            lambda label, func: func(),
+            0.0,
+        )
+
+    assert prepared is not None
+    assert prepared.maps is maps
+    assert prepared.base_group["index"] == "INDEXHDR"
+    assert "Bz_reference" in prepared.refmaps
+    assert "Ic_reference" in prepared.refmaps
+    assert "Vert_current" in prepared.refmaps
+    assert prepared.projection_tag == "CEA"
+    assert prepared.base.endswith(".TAG.CEA")
+    assert prepared.observer_metadata == {"observer": "earth"}
+    assert prepared.vert_current_error is None
+
+
+def test_prepare_run_state_unifies_resume_and_lineage_metadata() -> None:
+    entry_loaded = {
+        "base": {
+            "bx": np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=float),
+            "by": np.array([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]], dtype=float),
+            "bz": np.array([[13.0, 14.0], [15.0, 16.0], [17.0, 18.0]], dtype=float),
+        },
+        "refmaps": {},
+        "corona": {
+            "bx": np.arange(24, dtype=float).reshape(4, 3, 2),
+            "by": np.arange(24, dtype=float).reshape(4, 3, 2) + 100.0,
+            "bz": np.arange(24, dtype=float).reshape(4, 3, 2) + 200.0,
+            "dr": np.array([0.1, 0.2, 0.3], dtype=float),
+            "attrs": {"model_type": "pot"},
+        },
+        "chromo": {"legacy_lines": np.array([1, 2, 3], dtype=int)},
+        "metadata": {
+            "projection": "cea",
+            "id": "20251126_153431.UNKNOWN.CEA.POT",
+            "axis_order_3d": "zyx",
+        },
+    }
+    cfg = _make_transition_cfg(entry_box="/tmp/model.h5")
+
+    prepared = gx_fov2box._prepare_run_state(
+        cfg,
+        True,
+        entry_loaded,
+        "POT",
+        "POT",
+        Time("2025-11-26T15:34:31"),
+        (2, 3, 4),
+        {"observer": "entry"},
+        lambda label, func: func(),
+        0.0,
+    )
+
+    assert prepared is not None
+    assert prepared.maps is None
+    assert prepared.base == "20251126_153431.UNKNOWN.CEA"
+    assert prepared.lineage_root == "ENTRY.POT"
+    assert prepared.lineage_marker == "ENTRY.POT"
+    assert prepared.entry_stage_for_marker == "POT"
+    assert prepared.observer_metadata == {"observer": "entry"}
+    assert prepared.entry_model == "pot"
+    assert prepared.entry_lines == entry_loaded["chromo"]
+    assert prepared.entry_corona is not None
+    assert prepared.entry_corona["bx"].shape == (2, 3, 4)
+    assert np.array_equal(
+        prepared.entry_corona["bx"],
+        np.asarray(entry_loaded["corona"]["bx"]).transpose((2, 1, 0)),
+    )
+
+
+def test_prepare_run_state_unifies_observation_preparation() -> None:
+    obs_prepared = gx_fov2box.ObservationPreparedState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps={"field": object()},
+        base_group={"bz": np.ones((2, 2), dtype=float)},
+        refmaps={"Bz_reference": {"data": np.ones((2, 2), dtype=float)}},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.1, 0.1], dtype=float),
+        observer_metadata={"observer": "earth"},
+    )
+    cfg = _make_transition_cfg(entry_box=None)
+
+    with patch.object(gx_fov2box, "_prepare_observation_state", return_value=obs_prepared):
+        prepared = gx_fov2box._prepare_run_state(
+            cfg,
+            False,
+            None,
+            None,
+            "NONE",
+            Time("2025-11-26T15:34:31"),
+            (2, 2, 2),
+            None,
+            lambda label, func: func(),
+            0.0,
+        )
+
+    assert prepared is not None
+    assert prepared.maps == obs_prepared.maps
+    assert prepared.lineage_root == "OBS"
+    assert prepared.lineage_marker == ""
+    assert prepared.entry_stage_for_marker == ""
+    assert prepared.observer_metadata == {"observer": "earth"}
+
+
+def test_prepare_transition_stage_inputs_handles_lines_jump_from_entry() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps=None,
+        base_group={"bz": np.ones((2, 2), dtype=float)},
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.2, 0.3], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+        entry_corona={
+            "bx": np.ones((2, 2, 2), dtype=float),
+            "by": np.ones((2, 2, 2), dtype=float),
+            "bz": np.ones((2, 2, 2), dtype=float),
+            "dr": np.array([0.1, 0.2, 0.3], dtype=float),
+            "attrs": {"model_type": "nlfff"},
+        },
+        entry_lines={"codes": np.array([1], dtype=int)},
+    )
+    transition_plan = gx_fov2box.TransitionPlan(
+        target_stage="GEN",
+        jump_chain=("NAS", "GEN"),
+        active_jump="lines",
+        goto_lines=True,
+        goto_chromo=False,
+    )
+
+    prepared = gx_fov2box._prepare_transition_stage_inputs(
+        prepared_run,
+        transition_plan,
+        entry_stage="NAS",
+        box_dims_resolved=(2, 2, 2),
+    )
+
+    assert prepared.goto_lines is True
+    assert prepared.nlfff_box == prepared_run.entry_corona
+    assert prepared.entry_lines == prepared_run.entry_lines
+    assert prepared.pot_box is None
+    assert prepared.bnd_box is None
+
+
+def test_prepare_transition_stage_inputs_materializes_bnd_for_pot_to_nlfff_jump() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps=None,
+        base_group={
+            "bx": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=float),
+            "by": np.array([[5.0, 6.0], [7.0, 8.0]], dtype=float),
+            "bz": np.array([[9.0, 10.0], [11.0, 12.0]], dtype=float),
+        },
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.2, 0.3], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+        entry_corona={
+            "bx": np.ones((2, 2, 2), dtype=float),
+            "by": np.ones((2, 2, 2), dtype=float) * 2.0,
+            "bz": np.ones((2, 2, 2), dtype=float) * 3.0,
+            "dr": np.array([0.1, 0.2, 0.3], dtype=float),
+            "attrs": {"model_type": "pot"},
+        },
+    )
+    transition_plan = gx_fov2box.TransitionPlan(
+        target_stage="NAS",
+        jump_chain=("POT", "BND", "NAS"),
+        active_jump="nlfff",
+        goto_lines=False,
+        goto_chromo=False,
+    )
+
+    prepared = gx_fov2box._prepare_transition_stage_inputs(
+        prepared_run,
+        transition_plan,
+        entry_stage="POT",
+        box_dims_resolved=(2, 2, 2),
+    )
+
+    assert prepared.active_jump == "nlfff"
+    assert prepared.pot_box is not None
+    assert prepared.bnd_box is not None
+    assert prepared.nlfff_box is None
+    assert np.array_equal(prepared.bnd_box["bx"][:, :, 0], prepared_run.base_group["bx"].T)
+
+
+def test_run_nas_stage_uses_prepared_spacing_for_potential_path() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps=None,
+        base_group={"bz": np.ones((2, 2), dtype=float)},
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.2, 0.3], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    cfg = _make_transition_cfg(use_potential=True, nlfff_only=False, stop_after=None)
+    pot_box = {
+        "bx": np.ones((2, 2, 2), dtype=float),
+        "by": np.ones((2, 2, 2), dtype=float) * 2.0,
+        "bz": np.ones((2, 2, 2), dtype=float) * 3.0,
+        "attrs": {"model_type": "pot"},
+    }
+    saved = []
+
+    class _FakeProgress:
+        def __init__(self, label):
+            self.label = label
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def finish(self):
+            return 0.0
+
+    result = gx_fov2box._run_nas_stage(
+        cfg,
+        prepared_run,
+        pot_box,
+        None,
+        None,
+        (2, 2, 2),
+        lambda stage_tag, stage_box, **kwargs: saved.append((stage_tag, stage_box)),
+        lambda: (_ for _ in ()).throw(AssertionError("finalize should not be called")),
+        {},
+        _FakeProgress,
+    )
+
+    assert result.finalized is False
+    assert saved == []
+    assert result.nlfff_box["attrs"]["model_type"] == "pot"
+    assert np.array_equal(result.nlfff_box["dr"], prepared_run.dr3)
+
+
+def test_compute_none_stage_box_returns_canonical_xyz_payload() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps=None,
+        base_group={
+            "bx": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=float),
+            "by": np.array([[5.0, 6.0], [7.0, 8.0]], dtype=float),
+            "bz": np.array([[9.0, 10.0], [11.0, 12.0]], dtype=float),
+        },
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.2, 0.3], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+
+    stage_box = gx_fov2box._compute_none_stage_box(prepared_run, (2, 2, 2))
+
+    assert stage_box["corona"]["attrs"]["model_type"] == "none"
+    assert stage_box["corona"]["bx"].shape == (2, 2, 2)
+    assert np.array_equal(stage_box["corona"]["bx"][:, :, 0], prepared_run.base_group["bx"].T)
+    assert np.array_equal(stage_box["corona"]["by"][:, :, 0], prepared_run.base_group["by"].T)
+    assert np.array_equal(stage_box["corona"]["bz"][:, :, 0], prepared_run.base_group["bz"].T)
+
+
+def test_compute_none_stage_box_uses_internal_xyz_contract_non_cubic() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps=None,
+        base_group={
+            "bx": np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=float),
+            "by": np.array([[10.0, 20.0, 30.0], [40.0, 50.0, 60.0]], dtype=float),
+            "bz": np.array([[100.0, 200.0, 300.0], [400.0, 500.0, 600.0]], dtype=float),
+        },
+        refmaps={},
+        base_bz_arr=np.ones((2, 3), dtype=float),
+        base_ic_arr=np.ones((2, 3), dtype=float),
+        bottom_bz_data=np.ones((2, 3), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.2, 0.3], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+
+    stage_box = gx_fov2box._compute_none_stage_box(prepared_run, (3, 2, 4))
+    bx = stage_box["corona"]["bx"]
+    by = stage_box["corona"]["by"]
+    bz = stage_box["corona"]["bz"]
+
+    assert bx.shape == (3, 2, 4)
+    assert np.array_equal(bx[:, :, 0], prepared_run.base_group["bx"].T)
+    assert np.array_equal(by[:, :, 0], prepared_run.base_group["by"].T)
+    assert np.array_equal(bz[:, :, 0], prepared_run.base_group["bz"].T)
+    assert np.array_equal(bx[:, :, 1:], np.zeros((3, 2, 3), dtype=float))
+    assert np.array_equal(by[:, :, 1:], np.zeros((3, 2, 3), dtype=float))
+    assert np.array_equal(bz[:, :, 1:], np.zeros((3, 2, 3), dtype=float))
+
+
+def test_normalize_runtime_stage_box_for_pipeline_uses_private_io_normalizer() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps=None,
+        base_group={
+            "bx": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=float),
+            "by": np.array([[5.0, 6.0], [7.0, 8.0]], dtype=float),
+            "bz": np.array([[9.0, 10.0], [11.0, 12.0]], dtype=float),
+            "ic": np.array([[13.0, 14.0], [15.0, 16.0]], dtype=float),
+            "index": "SIMPLE  =                    T",
+        },
+        refmaps={},
+        base_bz_arr=np.array([[9.0, 10.0], [11.0, 12.0]], dtype=float),
+        base_ic_arr=np.array([[13.0, 14.0], [15.0, 16.0]], dtype=float),
+        bottom_bz_data=np.array([[9.0, 10.0], [11.0, 12.0]], dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.2, 0.3], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    stage_box = {
+        "corona": {
+            "bx": np.arange(24, dtype=float).reshape(2, 3, 4),
+            "by": np.arange(24, dtype=float).reshape(2, 3, 4) + 100.0,
+            "bz": np.arange(24, dtype=float).reshape(2, 3, 4) + 200.0,
+            "dr": prepared_run.dr3,
+            "attrs": {"model_type": "none"},
+        }
+    }
+
+    captured = {}
+    expected_loaded = {
+        "corona": {"bx": np.ones((4, 3, 2), dtype=float)},
+        "metadata": {"axis_order_3d": "zyx"},
+    }
+
+    with patch.object(
+        gx_fov2box,
+        "_normalize_loaded_model_dict",
+        return_value=expected_loaded,
+    ) as mocked_normalize:
+        normalized = gx_fov2box._normalize_runtime_stage_box_for_pipeline(
+            stage_box,
+            prepared_run=prepared_run,
+            stage_tag="NONE",
+        )
+
+    assert normalized is expected_loaded
+    mocked_normalize.assert_called_once()
+    payload = mocked_normalize.call_args.args[0]
+    assert mocked_normalize.call_args.kwargs["source_kind"] == "h5"
+    assert mocked_normalize.call_args.kwargs["strict"] is False
+    assert mocked_normalize.call_args.kwargs["stored_contract"] is None
+    assert mocked_normalize.call_args.kwargs["source_path"].name == "BASE.CEA.NONE.h5"
+    assert payload["metadata"]["axis_order_3d"] == "zyx"
+    assert payload["metadata"]["vector_layout"] == "split_components"
+    assert payload["metadata"]["projection"] == "CEA"
+    assert payload["corona"]["bx"].shape == (4, 3, 2)
+    assert np.array_equal(payload["corona"]["bx"], stage_box["corona"]["bx"].transpose((2, 1, 0)))
+    assert "base" in payload
+    assert np.array_equal(payload["base"]["bx"], prepared_run.base_group["bx"])
+
+
+def test_compute_bnd_stage_box_overwrites_bottom_boundary_from_base() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps=None,
+        base_group={
+            "bx": np.array([[101.0, 102.0], [103.0, 104.0]], dtype=float),
+            "by": np.array([[201.0, 202.0], [203.0, 204.0]], dtype=float),
+            "bz": np.array([[301.0, 302.0], [303.0, 304.0]], dtype=float),
+        },
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.2, 0.3], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    pot_box = {
+        "corona": {
+            "bx": np.zeros((2, 2, 2), dtype=float),
+            "by": np.zeros((2, 2, 2), dtype=float),
+            "bz": np.zeros((2, 2, 2), dtype=float),
+            "dr": prepared_run.dr3,
+            "attrs": {"model_type": "pot"},
+        }
+    }
+
+    stage_box = gx_fov2box._compute_bnd_stage_box(prepared_run, pot_box, (2, 2, 2))
+
+    assert stage_box["corona"]["attrs"]["model_type"] == "bnd"
+    assert np.array_equal(stage_box["corona"]["bx"][:, :, 0], prepared_run.base_group["bx"].T)
+    assert np.array_equal(stage_box["corona"]["by"][:, :, 0], prepared_run.base_group["by"].T)
+    assert np.array_equal(stage_box["corona"]["bz"][:, :, 0], prepared_run.base_group["bz"].T)
+
+
+def test_run_gen_chr_stages_stops_after_gen_and_uses_pot_prefix() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps={"field": object()},
+        base_group={"bz": np.ones((2, 2), dtype=float), "ic": np.ones((2, 2), dtype=float)},
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.1, 0.1], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    cfg = _make_transition_cfg(generic_only=True, skip_lines=False, center_vox=False, reduce_passed=2)
+    nlfff_box = {
+        "bx": np.ones((2, 2, 2), dtype=float),
+        "by": np.ones((2, 2, 2), dtype=float),
+        "bz": np.ones((2, 2, 2), dtype=float),
+        "attrs": {"model_type": "pot"},
+    }
+    saved = []
+    finalized = []
+    stage_times = {}
+
+    class _FakeProgress:
+        def __init__(self, label):
+            self.label = label
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def finish(self):
+            return 1.25
+
+    class _FakeMaglib:
+        pass
+
+    fake_lines = {
+        "codes": np.array([1, 2], dtype=int),
+        "apex_idx": np.array([0, 1], dtype=int),
+        "start_idx": np.array([0, 1], dtype=int),
+        "end_idx": np.array([1, 2], dtype=int),
+        "seed_idx": np.array([0, 1], dtype=int),
+        "av_field": np.array([1.0, 2.0], dtype=float),
+        "phys_length": np.array([3.0, 4.0], dtype=float),
+        "voxel_status": np.array([0, 1], dtype=int),
+    }
+
+    with patch.object(gx_fov2box, "MagFieldProcessor", return_value=_FakeMaglib()), patch.object(
+        gx_fov2box,
+        "_load_maglib_idl_cube",
+        side_effect=lambda maglib, box, dr: None,
+    ), patch.object(
+        gx_fov2box,
+        "_lines_fast",
+        return_value=fake_lines,
+    ), patch.object(
+        gx_fov2box,
+        "_make_header",
+        return_value={"header": "ok"},
+    ), patch.object(
+        gx_fov2box,
+        "combo_model",
+        return_value={"phys_length": np.array([3.0, 4.0], dtype=float)},
+    ), patch.object(
+        gx_fov2box,
+        "_make_lines_group",
+        side_effect=lambda lines, dr: {"lines": lines, "dr": dr},
+    ):
+        result = gx_fov2box._run_gen_chr_stages(
+            cfg,
+            prepared_run,
+            nlfff_box,
+            resume_mode=False,
+            entry_stage=None,
+            target_stage="GEN",
+            goto_chromo=False,
+            entry_lines=None,
+            save_stage=lambda stage_tag, stage_box, **kwargs: saved.append((stage_tag, stage_box, kwargs)),
+            finalize=lambda: finalized.append(True),
+            stage_times=stage_times,
+            stage_progress_cls=_FakeProgress,
+        )
+
+    assert result.finalized is True
+    assert finalized == [True]
+    assert len(saved) == 1
+    assert saved[0][0] == "POT.GEN"
+    assert "lines" in saved[0][1]
+    assert np.isclose(stage_times["POT.GEN"], 1.25)
+
+
+def test_run_gen_chr_stages_preserves_legacy_gen_payload_on_jump2chromo() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps={"field": object()},
+        base_group={"bz": np.ones((2, 2), dtype=float), "ic": np.ones((2, 2), dtype=float)},
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.1, 0.1], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    cfg = _make_transition_cfg(generic_only=False, skip_lines=False, center_vox=False, reduce_passed=None)
+    nlfff_box = {
+        "bx": np.ones((2, 2, 2), dtype=float),
+        "by": np.ones((2, 2, 2), dtype=float),
+        "bz": np.ones((2, 2, 2), dtype=float),
+        "attrs": {"model_type": "nlfff"},
+    }
+    saved = []
+    stage_times = {}
+
+    class _FakeProgress:
+        def __init__(self, label):
+            self.label = label
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def finish(self):
+            return 2.5
+
+    legacy_lines = {
+        "start_idx": np.array([0, 1], dtype=int),
+        "end_idx": np.array([1, 2], dtype=int),
+        "av_field": np.array([1.0, 2.0], dtype=float),
+        "phys_length": np.array([3.0, 4.0], dtype=float),
+        "voxel_status": np.array([0, 1], dtype=np.uint8),
+    }
+
+    with patch.object(gx_fov2box, "_make_header", return_value={"header": "ok"}), patch.object(
+        gx_fov2box,
+        "combo_model",
+        return_value={"phys_length": np.array([3.0, 4.0], dtype=float)},
+    ):
+        result = gx_fov2box._run_gen_chr_stages(
+            cfg,
+            prepared_run,
+            nlfff_box,
+            resume_mode=True,
+            entry_stage="GEN",
+            target_stage="CHR",
+            goto_chromo=True,
+            entry_lines=legacy_lines,
+            save_stage=lambda stage_tag, stage_box, **kwargs: saved.append((stage_tag, stage_box, kwargs)),
+            finalize=lambda: None,
+            stage_times=stage_times,
+            stage_progress_cls=_FakeProgress,
+        )
+
+    assert result.finalized is False
+    assert len(saved) == 1
+    assert saved[0][0] == "NAS.GEN.CHR"
+    assert "lines" in saved[0][1]
+    assert np.isclose(stage_times["NAS.GEN.CHR"], 2.5)
+
+
+def test_run_gen_stage_stops_after_gen_and_uses_pot_prefix() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps={"field": object()},
+        base_group={"bz": np.ones((2, 2), dtype=float), "ic": np.ones((2, 2), dtype=float)},
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.1, 0.1], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    cfg = _make_transition_cfg(generic_only=True, skip_lines=False, center_vox=False, reduce_passed=2)
+    nlfff_box = {
+        "bx": np.ones((2, 2, 2), dtype=float),
+        "by": np.ones((2, 2, 2), dtype=float),
+        "bz": np.ones((2, 2, 2), dtype=float),
+        "attrs": {"model_type": "pot"},
+    }
+    saved = []
+    finalized = []
+    stage_times = {}
+
+    class _FakeProgress:
+        def __init__(self, label):
+            self.label = label
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def finish(self):
+            return 1.25
+
+    class _FakeMaglib:
+        pass
+
+    fake_lines = {
+        "codes": np.array([1, 2], dtype=int),
+        "apex_idx": np.array([0, 1], dtype=int),
+        "start_idx": np.array([0, 1], dtype=int),
+        "end_idx": np.array([1, 2], dtype=int),
+        "seed_idx": np.array([0, 1], dtype=int),
+        "av_field": np.array([1.0, 2.0], dtype=float),
+        "phys_length": np.array([3.0, 4.0], dtype=float),
+        "voxel_status": np.array([0, 1], dtype=int),
+    }
+
+    with patch.object(gx_fov2box, "MagFieldProcessor", return_value=_FakeMaglib()), patch.object(
+        gx_fov2box,
+        "_load_maglib_idl_cube",
+        side_effect=lambda maglib, box, dr: None,
+    ), patch.object(
+        gx_fov2box,
+        "_lines_fast",
+        return_value=fake_lines,
+    ):
+        result = gx_fov2box._run_gen_stage(
+            cfg,
+            prepared_run,
+            nlfff_box,
+            resume_mode=False,
+            entry_stage=None,
+            target_stage="GEN",
+            goto_chromo=False,
+            entry_lines=None,
+            save_stage=lambda stage_tag, stage_box, **kwargs: saved.append((stage_tag, stage_box, kwargs)),
+            finalize=lambda: finalized.append(True),
+            stage_times=stage_times,
+            stage_progress_cls=_FakeProgress,
+        )
+
+    assert result.finalized is True
+    assert result.stage_prefix == "POT"
+    assert result.lines is not None
+    assert finalized == [True]
+    assert len(saved) == 1
+    assert saved[0][0] == "POT.GEN"
+    assert np.isclose(stage_times["POT.GEN"], 1.25)
+
+
+def test_run_chr_stage_writes_chr_payload_with_lines() -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps={"field": object()},
+        base_group={
+            "bz": np.ones((2, 2), dtype=float),
+            "ic": np.ones((2, 2), dtype=float),
+            "chromo_mask": np.ones((2, 2), dtype=float),
+        },
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.1, 0.1], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    nlfff_box = {
+        "bx": np.ones((2, 2, 2), dtype=float),
+        "by": np.ones((2, 2, 2), dtype=float),
+        "bz": np.ones((2, 2, 2), dtype=float),
+        "attrs": {"model_type": "nlfff"},
+    }
+    lines = {
+        "codes": np.array([1, 2], dtype=int),
+        "apex_idx": np.array([0, 1], dtype=int),
+        "start_idx": np.array([0, 1], dtype=int),
+        "end_idx": np.array([1, 2], dtype=int),
+        "seed_idx": np.array([0, 1], dtype=int),
+        "av_field": np.array([1.0, 2.0], dtype=float),
+        "phys_length": np.array([3.0, 4.0], dtype=float),
+        "voxel_status": np.array([0, 1], dtype=int),
+    }
+    saved = []
+    stage_times = {}
+
+    class _FakeProgress:
+        def __init__(self, label):
+            self.label = label
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def finish(self):
+            return 2.5
+
+    with patch.object(gx_fov2box, "_make_header", return_value={"header": "ok"}), patch.object(
+        gx_fov2box,
+        "combo_model",
+        return_value={
+            "chromo_bcube": np.ones((2, 2, 2, 3), dtype=float),
+            "phys_length": np.array([3.0, 4.0], dtype=float),
+        },
+    ):
+        gx_fov2box._run_chr_stage(
+            prepared_run,
+            nlfff_box,
+            stage_prefix="NAS",
+            lines=lines,
+            save_stage=lambda stage_tag, stage_box, **kwargs: saved.append((stage_tag, stage_box, kwargs)),
+            stage_times=stage_times,
+            stage_progress_cls=_FakeProgress,
+        )
+
+    assert len(saved) == 1
+    assert saved[0][0] == "NAS.GEN.CHR"
+    assert "chromo" in saved[0][1]
+    assert "lines" in saved[0][1]
+    assert saved[0][2]["chromo_source_axis_order_2d"] == "xy"
+    assert np.isclose(stage_times["NAS.GEN.CHR"], 2.5)
+
+
+def test_save_stage_passthrough_returns_original_payload(tmp_path) -> None:
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=Time("2025-11-26T15:34:31"),
+        maps=None,
+        base_group={
+            "bx": np.ones((2, 2), dtype=float),
+            "by": np.ones((2, 2), dtype=float),
+            "bz": np.ones((2, 2), dtype=float),
+        },
+        refmaps={},
+        base_bz_arr=np.ones((2, 2), dtype=float),
+        base_ic_arr=np.ones((2, 2), dtype=float),
+        bottom_bz_data=np.ones((2, 2), dtype=float),
+        vert_current_error=None,
+        projection_tag="CEA",
+        base="BASE.CEA",
+        dr3=np.array([0.1, 0.1, 0.1], dtype=float),
+        observer_metadata=None,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    cfg = _make_transition_cfg(save_potential=True)
+    produced = []
+    context = gx_fov2box.StageSaveContext(
+        cfg=cfg,
+        prepared_run=prepared_run,
+        execute_cmd="gx-fov2box",
+        out_dir=tmp_path,
+        default_grid={"voxel_id": np.zeros((2, 2, 2), dtype=np.int32)},
+        empty_grid=np.zeros((2, 2, 2), dtype=float),
+        produced=produced,
+    )
+    stage_box = {
+        "corona": {
+            "bx": np.ones((2, 2, 2), dtype=float),
+            "by": np.ones((2, 2, 2), dtype=float) * 2.0,
+            "bz": np.ones((2, 2, 2), dtype=float) * 3.0,
+            "dr": prepared_run.dr3,
+            "attrs": {"model_type": "pot"},
+        }
+    }
+    original_bx = stage_box["corona"]["bx"].copy()
+
+    with patch.object(gx_fov2box, "gx_box2id", return_value=(np.zeros((2, 2, 2), dtype=np.int32), None)), patch.object(
+        gx_fov2box,
+        "write_b3d_h5",
+    ) as mocked_write:
+        returned = gx_fov2box._save_stage_passthrough("POT", stage_box, context=context)
+
+    assert returned is stage_box
+    assert np.array_equal(stage_box["corona"]["bx"], original_bx)
+    mocked_write.assert_called_once()
+    assert len(produced) == 1
+
+
+def test_solve_nlfff_from_bnd_uses_idl_loader_and_preserves_solver_component_names() -> None:
     bnd_box = {
-        "bx": np.arange(8, dtype=float).reshape(2, 2, 2),
-        "by": np.arange(8, dtype=float).reshape(2, 2, 2) + 10.0,
-        "bz": np.arange(8, dtype=float).reshape(2, 2, 2) + 20.0,
+        "bx": np.arange(24, dtype=float).reshape(2, 3, 4),
+        "by": np.arange(24, dtype=float).reshape(2, 3, 4) + 10.0,
+        "bz": np.arange(24, dtype=float).reshape(2, 3, 4) + 20.0,
         "dr": np.array([0.1, 0.2, 0.3], dtype=float),
         "attrs": {"model_type": "bnd"},
     }
@@ -193,24 +1245,9 @@ def test_solve_nlfff_from_bnd_uses_idl_loader_and_restores_internal_xyz() -> Non
     class _FakeMagLib:
         def NLFFF(self):
             return {
-                "bx": np.array(
-                    [
-                        [[1.0, 2.0], [3.0, 4.0]],
-                        [[5.0, 6.0], [7.0, 8.0]],
-                    ]
-                ),
-                "by": np.array(
-                    [
-                        [[101.0, 102.0], [103.0, 104.0]],
-                        [[105.0, 106.0], [107.0, 108.0]],
-                    ]
-                ),
-                "bz": np.array(
-                    [
-                        [[201.0, 202.0], [203.0, 204.0]],
-                        [[205.0, 206.0], [207.0, 208.0]],
-                    ]
-                ),
+                "bx": np.arange(24, dtype=float).reshape(2, 3, 4) + 1.0,
+                "by": np.arange(24, dtype=float).reshape(2, 3, 4) + 101.0,
+                "bz": np.arange(24, dtype=float).reshape(2, 3, 4) + 201.0,
             }
 
     fake_maglib = _FakeMagLib()
@@ -234,30 +1271,15 @@ def test_solve_nlfff_from_bnd_uses_idl_loader_and_restores_internal_xyz() -> Non
     assert np.array_equal(nlfff_box["dr"], np.array([0.1, 0.2, 0.3], dtype=float))
     assert np.array_equal(
         nlfff_box["bx"],
-        np.array(
-            [
-                [[101.0, 105.0], [102.0, 106.0]],
-                [[103.0, 107.0], [104.0, 108.0]],
-            ]
-        ),
+        np.arange(24, dtype=float).reshape(2, 3, 4) + 1.0,
     )
     assert np.array_equal(
         nlfff_box["by"],
-        np.array(
-            [
-                [[1.0, 5.0], [2.0, 6.0]],
-                [[3.0, 7.0], [4.0, 8.0]],
-            ]
-        ),
+        np.arange(24, dtype=float).reshape(2, 3, 4) + 101.0,
     )
     assert np.array_equal(
         nlfff_box["bz"],
-        np.array(
-            [
-                [[201.0, 205.0], [202.0, 206.0]],
-                [[203.0, 207.0], [204.0, 208.0]],
-            ]
-        ),
+        np.arange(24, dtype=float).reshape(2, 3, 4) + 201.0,
     )
 
 

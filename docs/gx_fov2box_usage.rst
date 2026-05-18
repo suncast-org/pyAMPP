@@ -285,6 +285,19 @@ The jump flags are mainly for controlled resume/testing workflows. For ordinary
 use, start from the detected entry stage or use one of the explicit rebuild
 modes.
 
+Supported expert-only jump behavior:
+
+- The GUI does not expose the jump flags as general controls. They remain
+  CLI-level expert options for controlled resume/testing workflows.
+- Some allowed jump requests expand through implicit intermediate stages:
+  - ``NONE -> BND`` expands through ``POT``
+  - ``POT -> NAS`` expands through ``BND``
+- Direct expert shortcuts currently supported by the CLI include:
+  - ``--jump2lines`` from a ``POT`` entry, producing ``POT.GEN``
+  - ``--jump2chromo`` from a ``NAS`` entry, producing a fresh chromo
+    augmentation without requiring existing GEN metadata
+- Unsupported jump requests are rejected explicitly rather than guessed.
+
 Observer and Display Metadata
 -----------------------------
 

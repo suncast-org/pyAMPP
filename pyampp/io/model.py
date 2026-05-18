@@ -143,8 +143,11 @@ def load_model(
 
 def _normalize_model_dict(obj):
     """
-    Recursively decode bytes/arrays to strings for all dict/list fields.
-    Ensures base/index and metadata fields are stringified for legacy H5/SAV.
+    Recursively decode textual byte payloads while preserving numeric ndarrays.
+
+    This keeps the canonical in-memory model contract provenance-agnostic:
+    stage/runtime code should always receive numeric arrays as arrays regardless
+    of whether the source was SAV or HDF5.
     """
     import numpy as np
     if isinstance(obj, dict):
@@ -157,10 +160,10 @@ def _normalize_model_dict(obj):
         if obj.dtype.kind in ("S", "a") and obj.size == 1:
             return obj.astype(str).item()
         if obj.dtype.kind in ("S", "a"):
-            return obj.astype(str).tolist()
+            return obj.astype(str)
         if obj.shape == ():
             return obj.item()
-        return obj.tolist()
+        return obj
     return obj
 
 def _prepare_model_for_h5_write(model_dict: dict[str, Any]) -> dict[str, Any]:
@@ -588,6 +591,57 @@ def _require_canonical_base_maps(model_dict: dict[str, Any]) -> None:
         )
 
 
+def _normalize_loaded_model_dict(
+    model_dict: dict[str, Any],
+    *,
+    source_path: Path,
+    source_kind: str,
+    strict: bool = False,
+    stored_contract: GeometryContract | None = None,
+) -> dict[str, Any]:
+    """Apply the canonical post-read normalization pipeline to a loaded model dict."""
+    model_dict = _normalize_model_dict(model_dict)
+
+    if stored_contract is not None:
+        if "metadata" not in model_dict:
+            model_dict["metadata"] = {}
+        model_dict["metadata"]["geometry_contract"] = stored_contract
+        model_dict = normalize_observer_metadata(model_dict)
+        model_dict = _backfill_canonical_metadata(
+            model_dict,
+            source_path=source_path,
+            source_kind=source_kind,
+        )
+        _require_canonical_base_maps(model_dict)
+        return model_dict
+
+    corona = model_dict.get("corona")
+    if isinstance(corona, dict) and "dr" not in corona:
+        for key in ("bx", "by", "bz"):
+            if key in corona:
+                arr = np.asarray(corona[key])
+                if isinstance(arr, np.ndarray) and arr.ndim == 3:
+                    corona["dr"] = np.array([1.0, 1.0, 1.0], dtype=np.float64)
+                    break
+
+    contract = complete_geometry_contract(model_dict, strict=False)
+    if contract is not None:
+        if "metadata" not in model_dict:
+            model_dict["metadata"] = {}
+        model_dict["metadata"]["geometry_contract"] = contract
+    elif strict:
+        raise RuntimeError("Cannot infer geometry_contract from available data.")
+
+    model_dict = normalize_observer_metadata(model_dict)
+    model_dict = _backfill_canonical_metadata(
+        model_dict,
+        source_path=source_path,
+        source_kind=source_kind,
+    )
+    _require_canonical_base_maps(model_dict)
+    return model_dict
+
+
 def _load_model_h5(
     h5_path: Path | str,
     *,
@@ -625,58 +679,15 @@ def _load_model_h5(
     if not h5_path.exists():
         raise FileNotFoundError(f"H5 file not found: {h5_path}")
 
-    # Read model structure from H5
-    model_dict = _read_b3d_h5_raw(str(h5_path))
-
-    # Recursively normalize all bytes/arrays to strings for legacy compatibility
-    model_dict = _normalize_model_dict(model_dict)
-
-
-    # Try to use pre-stored contract first
     stored_contract = _read_contract_from_h5(h5_path)
-    if stored_contract is not None:
-        if "metadata" not in model_dict:
-            model_dict["metadata"] = {}
-        model_dict["metadata"]["geometry_contract"] = stored_contract
-        model_dict = normalize_observer_metadata(model_dict)
-        model_dict = _backfill_canonical_metadata(
-            model_dict,
-            source_path=source_path,
-            source_kind=source_kind,
-        )
-        _require_canonical_base_maps(model_dict)
-        return model_dict
-
-
-    # If corona.dr is missing but bx exists, infer dr as (1.0, 1.0, 1.0) (default)
-    corona = model_dict.get("corona")
-    if isinstance(corona, dict) and "dr" not in corona:
-        for key in ("bx", "by", "bz"):
-            if key in corona:
-                arr = np.asarray(corona[key])
-                if isinstance(arr, np.ndarray) and arr.ndim == 3:
-                    corona["dr"] = np.array([1.0, 1.0, 1.0], dtype=np.float64)
-                    break
-
-    # Contract not persisted; always attempt to infer from available metadata and cube shapes
-    contract = complete_geometry_contract(model_dict, strict=False)
-    if contract is not None:
-        if "metadata" not in model_dict:
-            model_dict["metadata"] = {}
-        model_dict["metadata"]["geometry_contract"] = contract
-    elif strict:
-        raise RuntimeError("Cannot infer geometry_contract from available data.")
-
-    # Always normalize observer metadata at load time
-    model_dict = normalize_observer_metadata(model_dict)
-    model_dict = _backfill_canonical_metadata(
+    model_dict = _read_b3d_h5_raw(str(h5_path))
+    return _normalize_loaded_model_dict(
         model_dict,
         source_path=source_path,
         source_kind=source_kind,
+        strict=strict,
+        stored_contract=stored_contract,
     )
-    _require_canonical_base_maps(model_dict)
-
-    return model_dict
 
 
 @overload

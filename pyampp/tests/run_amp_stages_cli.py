@@ -284,8 +284,26 @@ def main() -> int:
     by_lff[:, :, 0] = box_by.data
     bz_lff[:, :, 0] = box_bz.data
 
+    bnd_box = {
+        "corona": {
+            "bx": bx_lff,
+            "by": by_lff,
+            "bz": bz_lff,
+            "dr": np.array(dr3),
+            "attrs": {"model_type": "bnd"},
+        }
+    }
+    write_b3d_h5(str(stage_filename(out_dir, obs_time, coord_tag, "BND")), bnd_box)
+
+    # MagFieldProcessor expects the original LFFF cube layout/component naming.
+    bnd_res = {
+        "bx": by_lff.swapaxes(0, 1),
+        "by": bx_lff.swapaxes(0, 1),
+        "bz": bz_lff.swapaxes(0, 1),
+    }
+
     maglib = MagFieldProcessor()
-    maglib.load_cube_vars(pot_res)
+    maglib.load_cube_vars(bnd_res)
     res_nlf = maglib.NLFFF()
 
     nlfff_bx = res_nlf["by"].swapaxes(0, 1)
