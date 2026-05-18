@@ -124,6 +124,22 @@ If ``pytest`` reports an unknown option such as ``--doctest-rst``, the active sh
 We currently keep test and documentation dependencies in ``pyproject.toml`` extras rather than separate requirements files.
 That keeps the install metadata in one authoritative place and lets users opt into ``tests`` and ``docs`` explicitly.
 
+Real-Data Sanity Checks
+-----------------------
+
+The repository also includes a small set of manual real-data sanity checks under
+``real_data_checks/``.
+
+These scripts are intentionally separate from both the normal ``pytest`` suite
+and the usage examples because they:
+
+- depend on local real-data fixtures that are not expected on every machine,
+- can take minutes to run,
+- are meant for targeted validation rather than routine development.
+
+See ``real_data_checks/README.md`` for their purpose, runtime expectations,
+required fixture paths, and command-line usage.
+
 Main Applications
 -----------------
 
@@ -159,7 +175,7 @@ Use these APIs:
 
     from pyampp import io, geometry
 
-    model = io.load_model_from_h5("/path/to/model.h5")
+    model = io.load_model("/path/to/model.h5")
     contract = model["metadata"]["geometry_contract"]
     corners = geometry.world_corners_from_geometry_contract(contract)
 
@@ -167,7 +183,7 @@ Low-level readers under ``pyampp.gxbox.boxutils`` remain available for internal
 and compatibility use, but they are not the canonical application-level load
 entrypoint for contract-enforced workflows.
 
-For portability and collaborator handoff, use ``pyampp.io.export_thin_model_from_h5``
+For portability and collaborator handoff, use ``pyampp.io.export_thin_model``
 to produce a lightweight metadata-only HDF5 artifact containing full ``metadata``
 plus optional ``observer`` sections.
 
@@ -233,8 +249,7 @@ Entry-Box Resume / Jump Rules
 ``gx-fov2box`` supports ``--entry-box`` with ``.h5`` or ``.sav`` input for stage-aware resume/recompute.
 
 - ``--rebuild``: ignore stage payload and recompute from ``NONE`` using resolved entry parameters.
-- ``--clone-only``: convert/copy an entry box to normalized HDF5 without recomputation (useful as ``convert-from-sav``).
-- ``--clone-only`` is the exact normalization path. By contrast, ``--jump2chromo`` resumes at CHR and recomputes that stage from the stored entry payload.
+- ``pyampp-export-model``: canonicalize a legacy ``.sav`` or older ``.h5`` into normalized HDF5 without recomputation.
 - Without ``--jump2*``, the pipeline starts from the detected entry stage.
 - When ``--entry-box`` contains ``metadata/execute``, ``--data-dir`` and ``--gxmodel-dir`` default from that execute string.
 - Explicit CLI values for ``--data-dir`` / ``--gxmodel-dir`` always override execute-derived defaults.
@@ -244,7 +259,6 @@ Entry-Box Resume / Jump Rules
   - ``POT -> NAS`` is explicitly allowed (implicit ``POT -> BND -> NAS``),
   - ``POT -> GEN`` is explicitly allowed (skip both ``BND`` and ``NAS/NLFFF``; keep true POT vectors).
 - Save requests for stages before the selected start stage are ignored with a warning.
-- In ``--clone-only`` mode, only no-jump or jump-to-self is allowed.
 
 Command-Line Tools
 ------------------
@@ -259,8 +273,8 @@ After installation, the following commands become available:
 - ``h5tree``: Print an HDF5 tree (metadata shown by default, plus ``observer/name``, optional ``observer/label`` / ``observer/source``, and ``observer/pb0r/*`` when present; ``--no-metadata`` hides these value lines, ``--meta`` prints them only).
 - ``gx-idl2fov2box``: Translate IDL ``gx_fov2box`` execute strings (or SAV ``EXECUTE``) into Python ``gx-fov2box`` commands.
 - ``gx-fov2box2idl``: Translate Python ``gx-fov2box`` commands (or HDF5 ``metadata/execute``) into simple IDL ``gx_fov2box`` calls.
-- ``h5thin``: Inspect only ``metadata/geometry_contract`` and optional ``observer`` metadata from an HDF5 model.
-- ``h5thin-export``: Generate a metadata-only thin HDF5 (full ``metadata`` + optional ``observer``) from a full model HDF5.
+- ``show-model-metadata``: Inspect canonical ``metadata`` and optional ``observer`` metadata from any supported model file.
+- ``export-model-metadata``: Generate a metadata-only thin HDF5 (full ``metadata`` + optional ``observer``) from any supported model file.
 
 License
 -------

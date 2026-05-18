@@ -15,7 +15,6 @@ from astropy.time import Time
 from PyQt5.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox
 
 from pyampp.data.downloader import SDOImageDownloader
-from pyampp.gxbox.boxutils import read_b3d_h5, write_b3d_h5
 from pyampp.gxbox.fov_selector_gui import FovBoxSelectorDialog
 from pyampp.gxbox.gx_fov2box import (
     _decode_id_text,
@@ -24,7 +23,7 @@ from pyampp.gxbox.gx_fov2box import (
     _infer_time_from_entry_loaded,
     _load_entry_box_any,
 )
-from pyampp.io import load_model_from_h5, load_model_from_sav, save_model_to_h5
+from pyampp.io import load_model, save_model
 from pyampp.gxbox.selector_api import (
     BoxGeometrySelection,
     CoordMode,
@@ -34,7 +33,6 @@ from pyampp.gxbox.selector_api import (
     SelectorSessionInput,
 )
 from pyampp.gxbox.observer_restore import build_pb0r_metadata_from_ephemeris, resolve_observer_with_info
-from pyampp.util.build_h5_from_sav import build_h5_from_sav
 
 _DEFAULT_MAP_IDS = (
     "Bz",
@@ -380,7 +378,7 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
         raise ValueError(
             "Incompatible model file for gxbox-view2d: missing 3D field payload "
             f"(corona/chromo). File: {entry_path}. "
-            "This looks like a metadata-only thin HDF5 (e.g. h5thin-export output), "
+            "This looks like a metadata-only thin HDF5 (e.g. export-model-metadata output), "
             "which is supported for geometry metadata workflows but not for 2D/3D viewer rendering."
         )
     time_iso, geometry = _geometry_from_entry(entry_loaded, entry_path)
@@ -498,15 +496,7 @@ def _persist_selector_result_to_entry(
     if dest.suffix.lower() != ".h5":
         return False
 
-    # Load with contract enforcement via centralized model.io loader
-    if entry_path.suffix.lower() == ".h5":
-        box_data = load_model_from_h5(str(entry_path))
-    else:
-        # SAV origin — load via model.io which ensures contract completeness
-        # If no output path specified, we cannot save SAV result (SAV is source, H5 is dest)
-        if output_path is None:
-            return False
-        box_data = load_model_from_sav(str(entry_path))
+    box_data = load_model(entry_path)
     observer = box_data.get("observer")
     if not isinstance(observer, dict):
         observer = {}
@@ -653,7 +643,7 @@ def _persist_selector_result_to_entry(
         box_data.pop("line_seeds", None)
     
     # Save with contract persistence via centralized model.io loader
-    save_model_to_h5(box_data, dest)
+    save_model(box_data, dest)
     return True
 
 
@@ -733,11 +723,11 @@ def main() -> int:
         line_seeds = dialog.committed_line_seeds()
         fov_box = dialog.current_fov_box_selection()
         observer_state = dialog.current_observer_persistence_state()
-        if entry_path.suffix.lower() == ".sav":
+        if entry_path.suffix.lower() != ".h5":
             btn = QMessageBox.question(
                 dialog,
-                "SAV Model — Save As",
-                "SAV models are read-only and cannot be updated in place.\n\n"
+                "Save As Required",
+                "This model cannot be updated in place.\n\n"
                 "Save the updated model (with your FOV changes) to a new .h5 file?",
                 QMessageBox.Save | QMessageBox.Discard,
                 QMessageBox.Save,

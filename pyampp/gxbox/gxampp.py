@@ -458,7 +458,7 @@ class PyAmppGUI(QMainWindow):
             self._launch_download_fov_selector_placeholder()
             return
         model_path = self._current_viewable_model_path()
-        if model_path is not None and model_path.suffix.lower() == ".h5":
+        if model_path is not None:
             self._launch_box_view2d(model_path)
             return
         self._launch_download_fov_selector_placeholder()

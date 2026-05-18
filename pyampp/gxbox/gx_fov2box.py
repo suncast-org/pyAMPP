@@ -1,3 +1,5 @@
+import ctypes
+import subprocess
 import shlex
 import shutil
 import sys
@@ -9,9 +11,10 @@ import io
 import contextlib
 import datetime as dt
 import threading
-from dataclasses import dataclass
+import time as time_mod
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Callable, List
 
 import astropy.units as u
 import numpy as np
@@ -20,12 +23,12 @@ from astropy.coordinates import SkyCoord
 from astropy.time import Time
 from astropy.io import fits
 from pyAMaFiL.mag_field_lin_fff import MagFieldLinFFF
+from pyAMaFiL import mag_field_wrapper as pyamafil_mag_field_wrapper
 from pyAMaFiL.mag_field_proc import (
     MagFieldProcessor,
     mfp_util_invert_index_array,
     mfp_util_transpose_index,
 )
-from scipy.io import readsav
 from sunpy.coordinates import (Heliocentric, HeliographicCarrington, HeliographicStonyhurst,
                                Helioprojective, get_earth)
 from sunpy.map import Map
@@ -35,7 +38,6 @@ from pyampp.gx_chromo.combo_model import combo_model
 from pyampp.gx_chromo.decompose import decompose
 from pyampp.gxbox.box import Box
 from pyampp.gxbox.boxutils import (
-    extract_sav_refmaps,
     hmi_b2ptr,
     hmi_disambig,
     read_b3d_h5,
@@ -43,16 +45,15 @@ from pyampp.gxbox.boxutils import (
     compute_vertical_current,
     load_sunpy_map_compat,
     map_from_data_header_compat,
-    normalize_observer_metadata,
     remap_vertical_current_inputs,
-    serialize_sav_index_header,
 )
-from pyampp.io import load_model_from_h5
+from pyampp.io import load_model
+from pyampp.io.model import _normalize_loaded_model_dict
 from pyampp.gxbox.gx_box2id import gx_box2id
 from pyampp.gxbox.observer_restore import (
     build_pb0r_metadata_from_ephemeris,
-    normalize_observer_key,
     resolve_named_observer,
+    normalize_observer_key,
 )
 from pyampp.util.config import (
     DOWNLOAD_DIR,
@@ -64,6 +65,111 @@ from pyampp.util.config import (
 
 
 app = typer.Typer(help="Run gx_fov2box pipeline without GUI and save model stages.")
+
+_VALID_REPROJECT_ALGORITHMS = ("adaptive", "exact", "interpolation")
+
+
+def _patch_pyamafil_mag_field_wrapper_for_legacy_libraries() -> None:
+    wrapper_classes = []
+    for candidate in (MagFieldProcessor.__mro__[1], pyamafil_mag_field_wrapper.MagFieldWrapper):
+        if candidate not in wrapper_classes:
+            wrapper_classes.append(candidate)
+
+    for wrapper_cls in wrapper_classes:
+        if getattr(wrapper_cls, "_pyampp_legacy_nlfff_patch", False):
+            continue
+
+        original_init = wrapper_cls.__init__
+        original_set_setting = wrapper_cls.set_setting
+
+        def _fallback_init(self, lib_path=""):
+            if lib_path == "":
+                lib_path = list(Path(pyamafil_mag_field_wrapper.__file__).resolve().parent.glob("WWNLFFFReconstruction*"))[0].as_posix()
+
+            self._MagFieldWrapper__mptr1 = np.ctypeslib.ndpointer(dtype=np.float64, ndim=1, flags="C")
+            self._MagFieldWrapper__mptr2 = np.ctypeslib.ndpointer(dtype=np.float64, ndim=2, flags="C")
+            self._MagFieldWrapper__mptr3 = np.ctypeslib.ndpointer(dtype=np.float64, ndim=3, flags="C")
+            self._MagFieldWrapper__mpint1 = np.ctypeslib.ndpointer(dtype=np.int32, ndim=1, flags="C")
+            self._MagFieldWrapper__mpint2 = np.ctypeslib.ndpointer(dtype=np.int32, ndim=2, flags="C")
+            self._MagFieldWrapper__mpint3 = np.ctypeslib.ndpointer(dtype=np.int32, ndim=3, flags="C")
+            self._MagFieldWrapper__mp64 = np.ctypeslib.ndpointer(dtype=np.uint64, ndim=1, flags="C")
+            self._MagFieldWrapper__mpstr = ctypes.POINTER(ctypes.c_char)
+            self._MagFieldWrapper__mvoid = ctypes.c_void_p
+            self._MagFieldWrapper__mint = ctypes.c_int32
+            self._MagFieldWrapper__mreal = ctypes.c_double
+            self._MagFieldWrapper__mdw = ctypes.c_uint32
+            self._MagFieldWrapper__m64 = ctypes.c_uint64
+
+            lib_mfw = ctypes.CDLL(lib_path)
+
+            create_func = lib_mfw.utilInitialize
+            create_func.argtypes = []
+            create_func.restype = self._MagFieldWrapper__mdw
+
+            set_int_func = lib_mfw.utilSetInt
+            set_int_func.argtypes = [self._MagFieldWrapper__mpstr, self._MagFieldWrapper__mint]
+            set_int_func.restype = self._MagFieldWrapper__mint
+
+            set_double_func = lib_mfw.utilSetDouble
+            set_double_func.argtypes = [self._MagFieldWrapper__mpstr, self._MagFieldWrapper__mreal]
+            set_double_func.restype = self._MagFieldWrapper__mint
+
+            get_double_func = lib_mfw.utilGetDouble
+            get_double_func.argtypes = [self._MagFieldWrapper__mpstr, self._MagFieldWrapper__mptr1]
+            get_double_func.restype = self._MagFieldWrapper__mint
+
+            set_setting_func = getattr(lib_mfw, "utilSetSetting", None)
+            if set_setting_func is not None:
+                set_setting_func.argtypes = [self._MagFieldWrapper__mpstr, self._MagFieldWrapper__mreal]
+                set_setting_func.restype = self._MagFieldWrapper__mint
+
+            get_version_func = lib_mfw.utilGetVersion
+            get_version_func.argtypes = [self._MagFieldWrapper__mpstr, self._MagFieldWrapper__mint]
+            get_version_func.restype = self._MagFieldWrapper__mint
+
+            nlfff_func = lib_mfw.mfoNLFFFCore
+            nlfff_func.argtypes = [self._MagFieldWrapper__mpint1, self._MagFieldWrapper__mptr3, self._MagFieldWrapper__mptr3, self._MagFieldWrapper__mptr3]
+            nlfff_func.restype = self._MagFieldWrapper__mint
+
+            lines_func = lib_mfw.mfoGetLines
+            lines_func.restype = self._MagFieldWrapper__mdw
+
+            self._MagFieldWrapper__lib_path = lib_path
+            self._MagFieldWrapper__func_set = {
+                "create_func": create_func,
+                "set_int_func": set_int_func,
+                "set_double_func": set_double_func,
+                "get_double_func": get_double_func,
+                "set_setting_func": set_setting_func,
+                "get_version_func": get_version_func,
+                "NLFFF_func": nlfff_func,
+                "lines_func": lines_func,
+            }
+            self._MagFieldWrapper__pointer = create_func()
+
+        def _compat_init(self, lib_path=""):
+            try:
+                original_init(self, lib_path)
+            except AttributeError as exc:
+                if "utilSetSetting" not in str(exc):
+                    raise
+                _fallback_init(self, lib_path)
+
+        def _compat_set_setting(self, prop, value):
+            func_set = self._MagFieldWrapper__func_set
+            set_setting_func = func_set.get("set_setting_func")
+            if set_setting_func is not None:
+                return original_set_setting(self, prop, value)
+            if isinstance(value, (bool, np.bool_, int, np.integer)) and not isinstance(value, (float, np.floating)):
+                return func_set["set_int_func"](prop.encode("utf-8"), np.int32(value))
+            return func_set["set_double_func"](prop.encode("utf-8"), np.float64(value))
+
+        wrapper_cls.__init__ = _compat_init
+        wrapper_cls.set_setting = _compat_set_setting
+        wrapper_cls._pyampp_legacy_nlfff_patch = True
+
+
+_patch_pyamafil_mag_field_wrapper_for_legacy_libraries()
 
 
 def _spherical_screen_context_for_observer(observer):
@@ -107,6 +213,52 @@ def _submap_with_fov_safe(smap: Map, fov_bottom_left: SkyCoord, fov_top_right: S
             return smap.submap(bl, top_right=tr)
 
 
+def _fill_nonfinite_2d(arr: Any, *, label: str) -> np.ndarray:
+    """Fill non-finite pixels in 2D maps with local 4-neighbor interpolation."""
+    a = np.asarray(arr, dtype=float)
+    if a.ndim != 2:
+        return a
+
+    invalid = ~np.isfinite(a)
+    if not np.any(invalid):
+        return a
+
+    n_invalid = int(np.count_nonzero(invalid))
+    if not np.any(np.isfinite(a)):
+        print(f"Warning: {label} has no finite pixels; using zeros.")
+        return np.zeros_like(a, dtype=float)
+
+    filled = a.copy()
+    finite_mean = float(np.nanmean(filled))
+    filled[invalid] = finite_mean
+    unresolved = invalid.copy()
+
+    max_iter = int(filled.shape[0] + filled.shape[1])
+    for _ in range(max_iter):
+        if not np.any(unresolved):
+            break
+        up = np.full_like(filled, np.nan, dtype=float)
+        down = np.full_like(filled, np.nan, dtype=float)
+        left = np.full_like(filled, np.nan, dtype=float)
+        right = np.full_like(filled, np.nan, dtype=float)
+        up[1:, :] = filled[:-1, :]
+        down[:-1, :] = filled[1:, :]
+        left[:, 1:] = filled[:, :-1]
+        right[:, :-1] = filled[:, 1:]
+        neighbor_mean = np.nanmean(np.stack([up, down, left, right], axis=0), axis=0)
+        updatable = unresolved & np.isfinite(neighbor_mean)
+        if not np.any(updatable):
+            break
+        filled[updatable] = neighbor_mean[updatable]
+        unresolved[updatable] = False
+
+    if np.any(unresolved):
+        filled[unresolved] = finite_mean
+
+    print(f"Info: inpainted {n_invalid} non-finite pixels in {label}.")
+    return filled
+
+
 @dataclass
 class Fov2BoxConfig:
     time: Optional[str]
@@ -121,6 +273,7 @@ class Fov2BoxConfig:
     pad_frac: float
     data_dir: str
     gxmodel_dir: str
+    nlfff_lib: Optional[str]
     download_backend: str
     drms_sequential: bool
     force_download: bool
@@ -156,8 +309,108 @@ class Fov2BoxConfig:
     jump2chromo: bool
     rebuild: bool
     rebuild_from_none: bool
-    clone_only: bool
     info: bool
+    reproject_algorithm: str
+    reproject_scan: Optional[str]
+
+
+@dataclass
+class TransitionPlan:
+    target_stage: str
+    jump_chain: Optional[Tuple[str, ...]]
+    active_jump: Optional[str]
+    goto_lines: bool
+    goto_chromo: bool
+
+
+@dataclass
+class ResumePreparedState:
+    base_group: Dict[str, Any]
+    refmaps: Dict[str, Any]
+    base_bz_arr: np.ndarray
+    base_ic_arr: np.ndarray
+    bottom_bz_data: np.ndarray
+    projection_tag: str
+    base: str
+    dr3: np.ndarray
+
+
+@dataclass
+class ObservationPreparedState:
+    obs_time: Time
+    maps: Dict[str, Any]
+    base_group: Dict[str, Any]
+    refmaps: Dict[str, Any]
+    base_bz_arr: np.ndarray
+    base_ic_arr: np.ndarray
+    bottom_bz_data: np.ndarray
+    vert_current_error: Optional[str]
+    projection_tag: str
+    base: str
+    dr3: np.ndarray
+    observer_metadata: Dict[str, Any]
+
+
+@dataclass
+class PreparedRunState:
+    obs_time: Time
+    maps: Optional[Dict[str, Any]]
+    base_group: Dict[str, Any]
+    refmaps: Dict[str, Any]
+    base_bz_arr: np.ndarray
+    base_ic_arr: np.ndarray
+    bottom_bz_data: np.ndarray
+    vert_current_error: Optional[str]
+    projection_tag: str
+    base: str
+    dr3: np.ndarray
+    observer_metadata: Optional[Dict[str, Any]]
+    lineage_root: str
+    lineage_marker: str
+    entry_stage_for_marker: str
+    entry_corona: Optional[Dict[str, Any]] = None
+    entry_model: Optional[str] = None
+    entry_lines: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class PreparedTransitionInputs:
+    active_jump: Optional[str]
+    goto_lines: bool
+    goto_chromo: bool
+    entry_lines: Optional[dict]
+    pot_box: Optional[dict]
+    bnd_box: Optional[dict]
+    nlfff_box: Optional[dict]
+
+
+@dataclass
+class NasStageResult:
+    nlfff_box: dict
+    finalized: bool
+
+
+@dataclass
+class GenChrStageResult:
+    finalized: bool
+
+
+@dataclass
+class GenStageResult:
+    stage_prefix: str
+    lines: Optional[dict]
+    finalized: bool
+
+
+@dataclass
+class StageSaveContext:
+    cfg: Fov2BoxConfig
+    prepared_run: PreparedRunState
+    execute_cmd: str
+    out_dir: Path
+    default_grid: dict
+    empty_grid: np.ndarray
+    produced: List[Path]
 
 
 def _infer_time_from_path(path: Path) -> Optional[str]:
@@ -305,6 +558,20 @@ def _stage_filename(out_dir: Path, base: str, stage_tag: str) -> Path:
     return out_dir / f"{base}.{stage_tag}.h5"
 
 
+def _effective_box_dims_from_base(
+    box_dims: Tuple[int, int, int],
+    base_group: Dict[str, Any],
+) -> Tuple[int, int, int]:
+    bx = base_group.get("bx") if isinstance(base_group, dict) else None
+    if bx is None:
+        return box_dims
+    arr = np.asarray(bx)
+    if arr.ndim != 2:
+        return box_dims
+    ny, nx = arr.shape
+    return int(nx), int(ny), int(box_dims[2])
+
+
 def _last_stage_tag(stop_after: Optional[str]) -> str:
     if stop_after:
         stop = stop_after.lower()
@@ -429,27 +696,1073 @@ def _detect_target_stage(cfg: Fov2BoxConfig, entry_stage: Optional[str]) -> str:
     return "NONE"
 
 
+_ALLOWED_JUMP_CHAINS: Dict[Tuple[str, str], Tuple[str, ...]] = {
+    ("NONE", "NONE"): ("NONE",),
+    ("NONE", "POT"): ("NONE", "POT"),
+    ("NONE", "BND"): ("NONE", "POT", "BND"),
+    ("POT", "NONE"): ("POT", "NONE"),
+    ("POT", "POT"): ("POT",),
+    ("POT", "BND"): ("POT", "BND"),
+    ("POT", "NAS"): ("POT", "BND", "NAS"),
+    ("POT", "GEN"): ("POT", "GEN"),
+    ("POT", "CHR"): ("POT", "CHR"),
+    ("BND", "NONE"): ("BND", "NONE"),
+    ("BND", "POT"): ("BND", "POT"),
+    ("BND", "BND"): ("BND",),
+    ("BND", "NAS"): ("BND", "NAS"),
+    ("NAS", "NONE"): ("NAS", "NONE"),
+    ("NAS", "POT"): ("NAS", "POT"),
+    ("NAS", "BND"): ("NAS", "BND"),
+    ("NAS", "NAS"): ("NAS",),
+    ("NAS", "GEN"): ("NAS", "GEN"),
+    ("NAS", "CHR"): ("NAS", "CHR"),
+    ("GEN", "NONE"): ("GEN", "NONE"),
+    ("GEN", "POT"): ("GEN", "POT"),
+    ("GEN", "BND"): ("GEN", "BND"),
+    ("GEN", "NAS"): ("GEN", "NAS"),
+    ("GEN", "GEN"): ("GEN",),
+    ("GEN", "CHR"): ("GEN", "CHR"),
+    ("CHR", "NONE"): ("CHR", "NONE"),
+    ("CHR", "POT"): ("CHR", "POT"),
+    ("CHR", "BND"): ("CHR", "BND"),
+    ("CHR", "NAS"): ("CHR", "NAS"),
+    ("CHR", "GEN"): ("CHR", "GEN"),
+    ("CHR", "CHR"): ("CHR",),
+}
+
+
+def _jump_chain(entry_stage: str, target_stage: str) -> Optional[Tuple[str, ...]]:
+    return _ALLOWED_JUMP_CHAINS.get((entry_stage, target_stage))
+
+
 def _jump_allowed(entry_stage: str, target_stage: str) -> bool:
-    order = {"NONE": 0, "POT": 1, "BND": 2, "NAS": 3, "GEN": 4, "CHR": 5}
-    if entry_stage not in order or target_stage not in order:
-        return False
-    e = order[entry_stage]
-    t = order[target_stage]
-    if t <= e:
-        return True  # same stage or backward jump
-    if t == e + 1:
-        return True  # forward by one stage
-    if entry_stage == "NONE" and target_stage == "BND":
-        return True  # convenience shortcut; POT is computed implicitly
-    if entry_stage == "POT" and target_stage == "NAS":
-        return True  # implicit POT->BND->NAS transition
-    if entry_stage == "POT" and target_stage == "GEN":
-        return True  # explicit pipeline exception
-    if entry_stage == "POT" and target_stage == "CHR":
-        return True  # allow direct POT->CHR (no lines group)
-    if entry_stage == "NAS" and target_stage == "CHR":
-        return True  # allow direct NAS->CHR (no lines group)
-    return False
+    return _jump_chain(entry_stage, target_stage) is not None
+
+
+def _active_jump_for_target(target_stage: str, use_entry_box: bool) -> Optional[str]:
+    if not use_entry_box:
+        return None
+    return {
+        "POT": "potential",
+        "BND": "bounds",
+        "NAS": "nlfff",
+        "GEN": "lines",
+        "CHR": "chromo",
+    }.get(target_stage)
+
+
+def _plan_transition(cfg: Fov2BoxConfig, entry_stage: Optional[str]) -> TransitionPlan:
+    target_stage = _detect_target_stage(cfg, entry_stage)
+    jump_chain = None
+    use_entry_resume = bool(cfg.entry_box and not cfg.rebuild and not cfg.rebuild_from_none)
+
+    if use_entry_resume:
+        assert entry_stage is not None
+        jump_chain = _jump_chain(entry_stage, target_stage)
+        if jump_chain is None:
+            raise ValueError(
+                f"Incompatible jump request: entry stage {entry_stage} cannot jump to {target_stage}. "
+                "Unsupported transitions are rejected explicitly."
+            )
+
+    active_jump = _active_jump_for_target(target_stage, use_entry_resume)
+    goto_lines = active_jump in ("lines", "chromo")
+    goto_chromo = active_jump == "chromo" or cfg.skip_lines
+    return TransitionPlan(
+        target_stage=target_stage,
+        jump_chain=jump_chain,
+        active_jump=active_jump,
+        goto_lines=goto_lines,
+        goto_chromo=goto_chromo,
+    )
+
+
+def _prepare_resume_state(entry_loaded: Dict[str, Any], cfg: Fov2BoxConfig, obs_time: Time) -> ResumePreparedState:
+    base_group = dict(entry_loaded.get("base", {}))
+    if not all(k in base_group for k in ("bx", "by", "bz")):
+        raise ValueError("Entry-box resume requires base/bx, base/by, and base/bz.")
+    if "ic" not in base_group:
+        base_group["ic"] = np.asarray(base_group["bz"], dtype=float).copy()
+    if "chromo_mask" not in base_group:
+        base_group["chromo_mask"] = decompose(
+            np.asarray(base_group["bz"], dtype=float).T,
+            np.asarray(base_group["ic"], dtype=float).T,
+        ).T
+
+    refmaps = dict(entry_loaded.get("refmaps", {}))
+    base_bz_arr = np.asarray(base_group["bz"], dtype=float)
+    base_ic_arr = np.asarray(base_group["ic"], dtype=float)
+    projection_tag = _decode_id_text(entry_loaded.get("metadata", {}).get("projection", "CEA")).upper()
+
+    axis_order = entry_loaded.get("metadata", {}).get("axis_order_3d")
+    entry_corona_for_dr = _h5_corona_to_internal_xyz(entry_loaded.get("corona"), axis_order)
+    if isinstance(entry_corona_for_dr, dict) and "dr" in entry_corona_for_dr:
+        d = np.asarray(entry_corona_for_dr["dr"], dtype=float).reshape(-1)
+        dr3 = np.array([d[0], d[min(1, d.size - 1)], d[min(2, d.size - 1)]], dtype=float)
+    else:
+        dr = float((cfg.dx_km * u.km / (IDL_HMI_RSUN_M * u.m).to(u.km)).value)
+        dr3 = np.array([dr, dr, dr], dtype=float)
+
+    src_id = _decode_id_text(entry_loaded.get("metadata", {}).get("id", "")).strip()
+    base = ""
+    if src_id:
+        base, _ = _split_stage_id(src_id)
+    if not base:
+        base = Path(cfg.entry_box).stem if cfg.entry_box else _stage_file_base(obs_time, "UNKNOWN", projection_tag=projection_tag)
+
+    return ResumePreparedState(
+        base_group=base_group,
+        refmaps=refmaps,
+        base_bz_arr=base_bz_arr,
+        base_ic_arr=base_ic_arr,
+        bottom_bz_data=base_bz_arr,
+        projection_tag=projection_tag,
+        base=base,
+        dr3=dr3,
+    )
+
+
+def _prepare_observation_state(
+    cfg: Fov2BoxConfig,
+    requested_obs_time: Time,
+    box_dims_resolved: Tuple[int, int, int],
+    run_logged_step: Callable[[str, Callable[[], Any]], Any],
+    t_start: float,
+) -> Optional[ObservationPreparedState]:
+    import time as time_mod
+
+    obs_time = requested_obs_time
+    data_dir_path = Path(cfg.data_dir).expanduser().resolve()
+    disambig_method = 0 if cfg.sfq else 2
+    print("Checking/downloading HMI/AIA data...")
+    dl_t0 = time_mod.perf_counter()
+    maps, download_info = _load_hmi_maps_from_downloader(
+        obs_time,
+        data_dir_path,
+        cfg.euv,
+        cfg.uv,
+        download_backend=cfg.download_backend,
+        drms_sequential=cfg.drms_sequential,
+        force_download=cfg.force_download,
+        disambig_method=disambig_method,
+        strict_required=(_last_stage_tag(cfg.stop_after) != "DL"),
+    )
+    dl_elapsed = time_mod.perf_counter() - dl_t0
+    print(f"Done in {dl_elapsed:.2f}s")
+    resolved_obs_time = download_info.get("resolved_obs_time")
+    if resolved_obs_time:
+        resolved_obs_time = Time(resolved_obs_time)
+        if abs((resolved_obs_time - requested_obs_time).to_value("sec")) > 1.0:
+            print(
+                "Resolved source bundle time: "
+                f"{resolved_obs_time.isot} "
+                f"(requested {requested_obs_time.isot})"
+            )
+        obs_time = resolved_obs_time
+    if _last_stage_tag(cfg.stop_after) == "DL":
+        print("Stopped after download stage by request.")
+        total = time_mod.perf_counter() - t_start
+        print(f"Total elapsed: {total:.2f}s")
+        return None
+
+    def _prepare_geometry():
+        rsun_local = (IDL_HMI_RSUN_M * u.m).to(u.km)
+        observer_local = _resolve_cli_observer(maps.get("field"), cfg.observer_name, obs_time)
+
+        if cfg.hpc:
+            box_origin_local = SkyCoord(cfg.coords[0] * u.arcsec, cfg.coords[1] * u.arcsec,
+                                        obstime=obs_time, observer=observer_local, rsun=rsun_local,
+                                        frame=Helioprojective)
+        elif cfg.hgc:
+            box_origin_local = SkyCoord(lon=cfg.coords[0] * u.deg, lat=cfg.coords[1] * u.deg,
+                                        radius=rsun_local, obstime=obs_time, observer=observer_local,
+                                        frame=HeliographicCarrington)
+        else:
+            box_origin_local = SkyCoord(lon=cfg.coords[0] * u.deg, lat=cfg.coords[1] * u.deg,
+                                        radius=rsun_local, obstime=obs_time, observer=observer_local,
+                                        frame=HeliographicStonyhurst)
+
+        box_dims_q_local = u.Quantity(list(box_dims_resolved)) * u.pix
+        box_res_local = (cfg.dx_km * u.km).to(u.Mm)
+
+        frame_obs_local = Helioprojective(observer=observer_local, obstime=obs_time, rsun=rsun_local)
+        frame_hcc_local = Heliocentric(observer=box_origin_local, obstime=obs_time)
+        box_center_local = box_origin_local.transform_to(frame_hcc_local)
+        center_z_local = box_center_local.z + (box_dims_q_local[2] / u.pix * box_res_local) / 2
+        box_center_local = SkyCoord(x=box_center_local.x, y=box_center_local.y, z=center_z_local,
+                                    frame=frame_hcc_local)
+
+        box_local = Box(frame_obs_local, box_origin_local, box_center_local, box_dims_q_local, box_res_local)
+        if cfg.top:
+            bottom_wcs_header_local = box_local.bottom_top_header(dsun_obs=maps["field"].dsun)
+            projection_tag_local = "TOP"
+        else:
+            bottom_wcs_header_local = box_local.bottom_cea_header
+            projection_tag_local = "CEA"
+        fov_coords_local = box_local.bounds_coords_bl_tr(pad_frac=cfg.pad_frac)
+        return (
+            rsun_local, observer_local, box_origin_local, bottom_wcs_header_local,
+            projection_tag_local, fov_coords_local,
+        )
+
+    (
+        rsun, observer, box_origin, bottom_wcs_header, projection_tag, fov_coords,
+    ) = run_logged_step("Preparing observer and box geometry", _prepare_geometry)
+
+    map_bp, map_bt, map_br = run_logged_step(
+        "Converting HMI vector field components",
+        lambda: hmi_b2ptr(maps["field"], maps["inclination"], maps["azimuth"]),
+    )
+
+    def submap_with_fov(_map: Map) -> Map:
+        return _submap_with_fov_safe(_map, fov_coords[0], fov_coords[1])
+
+    def _extract_cutouts():
+        return (
+            submap_with_fov(map_bp),
+            submap_with_fov(map_bt),
+            submap_with_fov(map_br),
+            submap_with_fov(maps["continuum"]),
+            submap_with_fov(maps["magnetogram"]),
+        )
+
+    map_bp, map_bt, map_br, map_cont, map_los = run_logged_step(
+        "Extracting FOV cutouts from source maps",
+        _extract_cutouts,
+    )
+
+    map_bx = map_bp
+    map_by = map_from_data_header_compat(-map_bt.data, map_bt.meta)
+    map_bz = map_br
+
+    def _reproject_cutouts():
+        _algo = cfg.reproject_algorithm
+        bottom_bx_local = map_bx.reproject_to(bottom_wcs_header, algorithm=_algo)
+        bottom_by_local = map_by.reproject_to(bottom_wcs_header, algorithm=_algo)
+        bottom_bz_local = map_bz.reproject_to(bottom_wcs_header, algorithm=_algo)
+        base_bz_local = map_los.reproject_to(bottom_wcs_header, algorithm=_algo)
+        base_ic_local = map_cont.reproject_to(bottom_wcs_header, algorithm=_algo)
+        return (
+            bottom_bx_local,
+            bottom_by_local,
+            bottom_bz_local,
+            base_bz_local,
+            base_ic_local,
+            np.asarray(base_bz_local.data, dtype=float),
+            np.asarray(base_ic_local.data, dtype=float),
+            np.asarray(bottom_bz_local.data, dtype=float),
+        )
+
+    (
+        bottom_bx, bottom_by, bottom_bz, base_bz, base_ic,
+        base_bz_arr, base_ic_arr, bottom_bz_data,
+    ) = run_logged_step("Reprojecting cutouts onto the model base grid", _reproject_cutouts)
+
+    def _build_base_products():
+        index_local = _build_index_header(
+            bottom_wcs_header,
+            bottom_bz,
+            observer_override=observer,
+            obs_time_override=obs_time,
+            rsun_override=rsun,
+        )
+        bx_local = _fill_nonfinite_2d(bottom_bx.data, label="bottom_bx (OBS reprojection)")
+        by_local = _fill_nonfinite_2d(bottom_by.data, label="bottom_by (OBS reprojection)")
+        bz_local = _fill_nonfinite_2d(bottom_bz.data, label="bottom_bz (OBS reprojection)")
+        ic_local = _fill_nonfinite_2d(base_ic.data, label="base_ic (OBS reprojection)")
+        chromo_mask_local = decompose(base_bz_arr.T, base_ic_arr.T).T
+        return {
+            "bx": bx_local,
+            "by": by_local,
+            "bz": bz_local,
+            "ic": ic_local,
+            "chromo_mask": chromo_mask_local,
+            "index": index_local,
+        }
+
+    base_group = run_logged_step("Building base-layer products", _build_base_products)
+
+    refmaps: Dict[str, Any] = {}
+
+    def add_refmap(ref_id: str, smap: Map) -> None:
+        smap = submap_with_fov(smap)
+        refmaps[ref_id] = {"data": smap.data, "wcs_header": _refmap_wcs_header(smap)}
+
+    def _collect_refmaps():
+        hmi_t0 = time_mod.perf_counter()
+        add_refmap("Bz_reference", maps["magnetogram"])
+        add_refmap("Ic_reference", maps["continuum"])
+        print(f"HMI references: 2/2 in {time_mod.perf_counter() - hmi_t0:.2f}s")
+
+        local_vert_current_error = None
+
+        def _compute_vert_current():
+            vc_bx_local, vc_by_local, vc_bz_local = remap_vertical_current_inputs(
+                map_bx, map_by, map_bz
+            )
+            vc_header_local = _refmap_wcs_header(vc_bx_local)
+            rsun_arcsec_local = vc_bx_local.rsun_obs.to_value(u.arcsec)
+            crpix1_local, crpix2_local = vc_bx_local.wcs.wcs.crpix
+            cdelt1_local = vc_bx_local.scale.axis1.to_value(u.arcsec / u.pix)
+            cdelt2_local = vc_bx_local.scale.axis2.to_value(u.arcsec / u.pix)
+            jz_local = compute_vertical_current(
+                vc_bz_local.data,
+                vc_bx_local.data,
+                vc_by_local.data,
+                vc_header_local,
+                rsun_arcsec_local,
+                crpix1=crpix1_local,
+                crpix2=crpix2_local,
+                cdelt1_arcsec=cdelt1_local,
+                cdelt2_arcsec=cdelt2_local,
+            )
+            refmaps["Vert_current"] = {"data": jz_local, "wcs_header": vc_header_local}
+
+        try:
+            run_logged_step("Vertical current", _compute_vert_current)
+        except Exception as exc:
+            local_vert_current_error = str(exc)
+            print(f"Vertical current: skipped ({local_vert_current_error})")
+
+        aia_passbands = [pb for pb in (AIA_EUV_PASSBANDS + AIA_UV_PASSBANDS) if f"AIA_{pb}" in maps]
+        total_aia = len(aia_passbands)
+        aia_t0 = time_mod.perf_counter()
+        for idx, pb in enumerate(aia_passbands, start=1):
+            key = f"AIA_{pb}"
+            add_refmap(key, maps[key])
+            elapsed = time_mod.perf_counter() - aia_t0
+            print(f"AIA references: {idx}/{total_aia} ({pb}) in {elapsed:.2f}s")
+        return local_vert_current_error
+
+    vert_current_error = run_logged_step("Collecting reference maps and derived products", _collect_refmaps)
+
+    obs_dr = (cfg.dx_km * u.km) / rsun
+    dr3 = np.array([obs_dr.value, obs_dr.value, obs_dr.value])
+    coord_tag = _format_coord_tag(
+        box_origin.transform_to(HeliographicCarrington(obstime=obs_time)).lon.to_value(u.deg),
+        box_origin.transform_to(HeliographicCarrington(obstime=obs_time)).lat.to_value(u.deg),
+    )
+    base = _stage_file_base(obs_time, coord_tag, projection_tag=projection_tag)
+    observer_metadata = _observer_metadata_from_source_map(maps["field"], cfg)
+
+    return ObservationPreparedState(
+        obs_time=obs_time,
+        maps=maps,
+        base_group=base_group,
+        refmaps=refmaps,
+        base_bz_arr=base_bz_arr,
+        base_ic_arr=base_ic_arr,
+        bottom_bz_data=bottom_bz_data,
+        vert_current_error=vert_current_error,
+        projection_tag=projection_tag,
+        base=base,
+        dr3=dr3,
+        observer_metadata=observer_metadata,
+    )
+
+
+def _prepare_run_state(
+    cfg: Fov2BoxConfig,
+    resume_mode: bool,
+    entry_loaded: Optional[Dict[str, Any]],
+    entry_stage: Optional[str],
+    target_stage: str,
+    requested_obs_time: Time,
+    box_dims_resolved: Tuple[int, int, int],
+    observer_metadata: Optional[Dict[str, Any]],
+    run_logged_step: Callable[[str, Callable[[], Any]], Any],
+    t_start: float,
+) -> Optional[PreparedRunState]:
+    if resume_mode:
+        assert entry_loaded is not None
+        prepared_resume = _prepare_resume_state(entry_loaded, cfg, requested_obs_time)
+        expected_shape_3d = _effective_box_dims_from_base(box_dims_resolved, prepared_resume.base_group)
+        entry_meta = dict(entry_loaded.get("metadata", {}))
+        entry_corona = _prepare_stage_corona_payload(
+            entry_loaded.get("corona"),
+            source="disk",
+            axis_order_3d=entry_meta.get("axis_order_3d"),
+            expected_shape_3d=expected_shape_3d,
+        )
+        entry_model = None
+        if isinstance(entry_corona, dict):
+            entry_model = _decode_id_text(entry_corona.get("attrs", {}).get("model_type", "")).strip().lower() or None
+        entry_lines = entry_loaded.get("lines")
+        if entry_lines is None:
+            # Backward compatibility with legacy GEN files that stored line keys under chromo.
+            entry_lines = entry_loaded.get("chromo")
+        lineage_root = _decode_id_text(entry_meta.get("lineage", "")).strip()
+        lineage_marker = ""
+        entry_stage_for_marker = ""
+        if not lineage_root:
+            entry_id = _decode_id_text(entry_meta.get("id", "")).strip()
+            _, entry_stage_tag = _split_stage_id(entry_id) if entry_id else ("", "")
+            entry_stage_for_marker = entry_stage_tag or _stage_tag_from_stage(entry_stage or target_stage)
+            lineage_marker = f"ENTRY.{entry_stage_for_marker}"
+            lineage_root = lineage_marker
+        return PreparedRunState(
+            obs_time=requested_obs_time,
+            maps=None,
+            base_group=prepared_resume.base_group,
+            refmaps=prepared_resume.refmaps,
+            base_bz_arr=prepared_resume.base_bz_arr,
+            base_ic_arr=prepared_resume.base_ic_arr,
+            bottom_bz_data=prepared_resume.bottom_bz_data,
+            vert_current_error=None,
+            projection_tag=prepared_resume.projection_tag,
+            base=prepared_resume.base,
+            dr3=prepared_resume.dr3,
+            observer_metadata=observer_metadata,
+            lineage_root=lineage_root,
+            lineage_marker=lineage_marker,
+            entry_stage_for_marker=entry_stage_for_marker,
+            entry_corona=entry_corona,
+            entry_model=entry_model,
+            entry_lines=entry_lines,
+        )
+
+    prepared_obs = _prepare_observation_state(
+        cfg,
+        requested_obs_time,
+        box_dims_resolved,
+        run_logged_step,
+        t_start,
+    )
+    if prepared_obs is None:
+        return None
+    return PreparedRunState(
+        obs_time=prepared_obs.obs_time,
+        maps=prepared_obs.maps,
+        base_group=prepared_obs.base_group,
+        refmaps=prepared_obs.refmaps,
+        base_bz_arr=prepared_obs.base_bz_arr,
+        base_ic_arr=prepared_obs.base_ic_arr,
+        bottom_bz_data=prepared_obs.bottom_bz_data,
+        vert_current_error=prepared_obs.vert_current_error,
+        projection_tag=prepared_obs.projection_tag,
+        base=prepared_obs.base,
+        dr3=prepared_obs.dr3,
+        observer_metadata=prepared_obs.observer_metadata,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+        entry_corona=None,
+        entry_model=None,
+        entry_lines=None,
+    )
+
+
+_CARRY_FORWARD_LINE_KEYS: Tuple[str, ...] = (
+    "start_idx", "end_idx",
+    "av_field", "phys_length", "voxel_status",
+)
+
+
+_REQUIRED_LINE_KEYS: Tuple[str, ...] = (
+    "codes", "apex_idx", "start_idx", "end_idx", "seed_idx",
+    "av_field", "phys_length", "voxel_status",
+)
+
+
+def _prepare_stage_corona_payload(
+    corona: Optional[Dict[str, Any]],
+    *,
+    source: str,
+    axis_order_3d: Optional[str] = None,
+    expected_shape_3d: Optional[Tuple[int, int, int]] = None,
+    allowed_model_types: Optional[Tuple[str, ...]] = None,
+) -> Optional[Dict[str, Any]]:
+    if corona is None:
+        return None
+    if not isinstance(corona, dict):
+        raise ValueError(f"Canonical corona payload must be a dict for {source} stage input.")
+
+    prepared = _h5_corona_to_internal_xyz(corona, axis_order_3d) if source == "disk" else corona
+    component_shapes = []
+    for key in ("bx", "by", "bz"):
+        if key not in prepared:
+            raise ValueError(f"Canonical corona payload is missing corona/{key} for {source} stage input.")
+        arr = np.asarray(prepared[key])
+        if arr.ndim != 3:
+            raise ValueError(f"Canonical corona payload must provide 3D corona/{key} for {source} stage input.")
+        component_shapes.append(tuple(int(v) for v in arr.shape))
+
+    if len(set(component_shapes)) != 1:
+        raise ValueError(
+            f"Canonical corona payload must use one shared 3D shape for bx/by/bz; got {component_shapes!r}."
+        )
+
+    if expected_shape_3d is not None and component_shapes[0] != tuple(int(v) for v in expected_shape_3d):
+        raise ValueError(
+            "Canonical corona payload shape does not match the prepared model volume. "
+            f"expected={tuple(int(v) for v in expected_shape_3d)!r}, got={component_shapes[0]!r}"
+        )
+
+    dr = prepared.get("dr")
+    if dr is None:
+        raise ValueError(f"Canonical corona payload is missing corona/dr for {source} stage input.")
+    dr_arr = np.asarray(dr, dtype=float).reshape(-1)
+    if dr_arr.size == 0:
+        raise ValueError(f"Canonical corona payload must provide non-empty corona/dr for {source} stage input.")
+
+    attrs = prepared.get("attrs")
+    model_type = ""
+    if isinstance(attrs, dict):
+        model_type = _decode_id_text(attrs.get("model_type", "")).strip().lower()
+    if allowed_model_types is not None and model_type not in allowed_model_types:
+        raise ValueError(
+            f"Canonical corona payload model_type must be one of {allowed_model_types!r}; got {model_type!r}."
+        )
+    return prepared
+
+
+def _prepare_stage_lines_payload(
+    lines: Optional[Dict[str, Any]],
+    *,
+    source: str,
+    require_complete: bool,
+) -> Optional[Dict[str, Any]]:
+    if lines is None:
+        if require_complete:
+            raise ValueError(f"Canonical line payload is required for {source} stage input.")
+        return None
+    if not isinstance(lines, dict):
+        raise ValueError(f"Canonical line payload must be a dict for {source} stage input.")
+    required_keys = _REQUIRED_LINE_KEYS if require_complete else _CARRY_FORWARD_LINE_KEYS
+    missing = [key for key in required_keys if key not in lines]
+    if missing:
+        if require_complete:
+            raise ValueError(
+                f"Canonical line payload is missing required keys for {source} stage input: {', '.join(missing)}"
+            )
+        return None
+    return lines
+
+
+def _compute_none_stage_box(
+    prepared_run: PreparedRunState,
+    box_dims_resolved: Tuple[int, int, int],
+) -> dict:
+    # Internal in-memory cube contract is (x, y, z). HDF5 canonical (z, y, x)
+    # conversion is applied only in the save path.
+    nx, ny, nz = (int(box_dims_resolved[0]), int(box_dims_resolved[1]), int(box_dims_resolved[2]))
+    bx_base = _fill_nonfinite_2d(prepared_run.base_group["bx"], label="base/bx (NONE boundary)")
+    by_base = _fill_nonfinite_2d(prepared_run.base_group["by"], label="base/by (NONE boundary)")
+    bz_base = _fill_nonfinite_2d(prepared_run.base_group["bz"], label="base/bz (NONE boundary)")
+    expected_base_shape = (ny, nx)
+    for label, arr in (("bx", bx_base), ("by", by_base), ("bz", bz_base)):
+        if arr.shape != expected_base_shape:
+            raise ValueError(
+                f"NONE stage expects base/{label} shape (ny,nx)={expected_base_shape!r}; got {arr.shape!r}."
+            )
+
+    corona_bx = np.zeros((nx, ny, nz), dtype=float)
+    corona_by = np.zeros((nx, ny, nz), dtype=float)
+    corona_bz = np.zeros((nx, ny, nz), dtype=float)
+    corona_bx[:, :, 0] = bx_base.T
+    corona_by[:, :, 0] = by_base.T
+    corona_bz[:, :, 0] = bz_base.T
+    return {
+        "corona": _prepare_stage_corona_payload(
+            {
+                "bx": corona_bx,
+                "by": corona_by,
+                "bz": corona_bz,
+                "dr": prepared_run.dr3,
+                "attrs": {"model_type": "none"},
+            },
+            source="memory",
+            expected_shape_3d=box_dims_resolved,
+            allowed_model_types=("none",),
+        )
+    }
+
+
+def _normalize_runtime_stage_box_for_pipeline(
+    stage_box: dict,
+    *,
+    prepared_run: PreparedRunState,
+    stage_tag: str,
+    source_axis_order_3d: str = "xyz",
+) -> dict:
+    working_box = dict(stage_box)
+
+    base_group = dict(prepared_run.base_group)
+    if "ic" not in base_group:
+        base_group["ic"] = np.asarray(prepared_run.base_ic_arr, dtype=float).copy()
+    working_box.setdefault("base", base_group)
+    working_box.setdefault("refmaps", prepared_run.refmaps)
+
+    if prepared_run.observer_metadata is not None and "observer" not in working_box:
+        working_box["observer"] = dict(prepared_run.observer_metadata)
+
+    metadata = dict(working_box.get("metadata", {})) if isinstance(working_box.get("metadata"), dict) else {}
+    metadata.setdefault("id", f"{prepared_run.base}.{stage_tag}")
+    metadata.setdefault("projection", _decode_id_text(prepared_run.projection_tag).upper())
+    metadata.setdefault("axis_order_2d", "yx")
+    metadata.setdefault("axis_order_3d", "zyx")
+    metadata.setdefault("vector_layout", "split_components")
+    working_box["metadata"] = metadata
+
+    normalized_h5_box = _normalize_stage_for_h5(
+        working_box,
+        source_axis_order_3d=source_axis_order_3d,
+    )
+    return _normalize_loaded_model_dict(
+        normalized_h5_box,
+        source_path=Path(f"{metadata['id']}.h5"),
+        source_kind="h5",
+        strict=False,
+        stored_contract=None,
+    )
+
+
+def _compute_pot_stage_box(
+    prepared_run: PreparedRunState,
+    box_dims_resolved: Tuple[int, int, int],
+) -> dict:
+    bnddata = np.asarray(prepared_run.bottom_bz_data, dtype=float).copy()
+    bnddata[np.isnan(bnddata)] = 0.0
+    maglib_lff = MagFieldLinFFF()
+    maglib_lff.set_field(bnddata)
+    pot_res = maglib_lff.LFFF_cube(nz=box_dims_resolved[2], alpha=0.0)
+    return {
+        "corona": _prepare_stage_corona_payload(
+            {
+                "bx": pot_res["by"].swapaxes(0, 1),
+                "by": pot_res["bx"].swapaxes(0, 1),
+                "bz": pot_res["bz"].swapaxes(0, 1),
+                "dr": prepared_run.dr3,
+                "attrs": {"model_type": "pot"},
+            },
+            source="memory",
+            expected_shape_3d=box_dims_resolved,
+            allowed_model_types=("pot",),
+        )
+    }
+
+
+def _compute_bnd_stage_box(
+    prepared_run: PreparedRunState,
+    pot_box: dict,
+    box_dims_resolved: Tuple[int, int, int],
+) -> dict:
+    corona = pot_box.get("corona", pot_box)
+    bnd = {
+        "bx": np.array(corona["bx"], copy=True),
+        "by": np.array(corona["by"], copy=True),
+        "bz": np.array(corona["bz"], copy=True),
+        "dr": prepared_run.dr3,
+        "attrs": {"model_type": "bnd"},
+    }
+    bnd["bx"][:, :, 0] = np.asarray(prepared_run.base_group["bx"], dtype=float).T
+    bnd["by"][:, :, 0] = np.asarray(prepared_run.base_group["by"], dtype=float).T
+    bnd["bz"][:, :, 0] = np.asarray(prepared_run.base_group["bz"], dtype=float).T
+    return {
+        "corona": _prepare_stage_corona_payload(
+            bnd,
+            source="memory",
+            expected_shape_3d=box_dims_resolved,
+            allowed_model_types=("bnd",),
+        )
+    }
+
+
+def _prepare_transition_stage_inputs(
+    prepared_run: PreparedRunState,
+    transition_plan: TransitionPlan,
+    *,
+    entry_stage: Optional[str],
+    box_dims_resolved: Tuple[int, int, int],
+) -> PreparedTransitionInputs:
+    active_jump = transition_plan.active_jump
+    entry_corona = prepared_run.entry_corona if active_jump else None
+    entry_lines = prepared_run.entry_lines if active_jump else None
+
+    goto_lines = transition_plan.goto_lines
+    goto_chromo = transition_plan.goto_chromo
+
+    if goto_lines:
+        if not entry_corona:
+            raise ValueError("--jump2lines/--jump2chromo requires --entry-box with corona model_type=pot|nlfff")
+        return PreparedTransitionInputs(
+            active_jump=active_jump,
+            goto_lines=goto_lines,
+            goto_chromo=goto_chromo,
+            entry_lines=entry_lines,
+            pot_box=None,
+            bnd_box=None,
+            nlfff_box=entry_corona,
+        )
+
+    pot_box = None
+    bnd_box = None
+    nlfff_box = None
+
+    if active_jump in ("potential", "bounds", "nlfff"):
+        pot_box, bnd_box, nlfff_box = _prepare_resume_jump_boxes(
+            active_jump,
+            entry_stage,
+            entry_corona,
+        )
+        if pot_box is not None:
+            pot_box = _prepare_stage_corona_payload(
+                pot_box,
+                source="memory",
+                expected_shape_3d=box_dims_resolved,
+                allowed_model_types=("pot",),
+            )
+        if bnd_box is not None:
+            bnd_box = _prepare_stage_corona_payload(
+                bnd_box,
+                source="memory",
+                expected_shape_3d=box_dims_resolved,
+                allowed_model_types=("bnd",),
+            )
+        if nlfff_box is not None:
+            nlfff_box = _prepare_stage_corona_payload(
+                nlfff_box,
+                source="memory",
+                expected_shape_3d=box_dims_resolved,
+                allowed_model_types=("nlfff",),
+            )
+        if active_jump == "nlfff" and entry_stage == "POT" and pot_box is not None:
+            bnd_box = _compute_bnd_stage_box(prepared_run, pot_box, box_dims_resolved)["corona"]
+
+    return PreparedTransitionInputs(
+        active_jump=active_jump,
+        goto_lines=goto_lines,
+        goto_chromo=goto_chromo,
+        entry_lines=entry_lines,
+        pot_box=pot_box,
+        bnd_box=bnd_box,
+        nlfff_box=nlfff_box,
+    )
+
+
+def _resolve_stage_prefix(
+    nlfff_box: dict,
+    *,
+    resume_mode: bool,
+    entry_stage: Optional[str],
+    target_stage: str,
+) -> str:
+    is_pot_skip_path = (
+        resume_mode
+        and entry_stage == "POT"
+        and target_stage in ("GEN", "CHR")
+    )
+    if str(nlfff_box.get("attrs", {}).get("model_type", "")).lower() == "pot" or is_pot_skip_path:
+        return "POT"
+    return "NAS"
+
+
+def _run_gen_stage(
+    cfg: Fov2BoxConfig,
+    prepared_run: PreparedRunState,
+    nlfff_box: dict,
+    *,
+    resume_mode: bool,
+    entry_stage: Optional[str],
+    target_stage: str,
+    goto_chromo: bool,
+    entry_lines: Optional[dict],
+    save_stage: Callable[..., None],
+    finalize: Callable[[], None],
+    stage_times: Dict[str, float],
+    stage_progress_cls: type,
+) -> GenStageResult:
+    stage_prefix = _resolve_stage_prefix(
+        nlfff_box,
+        resume_mode=resume_mode,
+        entry_stage=entry_stage,
+        target_stage=target_stage,
+    )
+    gen_stage_tag = f"{stage_prefix}.GEN"
+
+    if goto_chromo:
+        lines = _prepare_stage_lines_payload(
+            entry_lines,
+            source="disk",
+            require_complete=False,
+        )
+        if cfg.skip_lines:
+            print("Skipping GEN line computation by request...")
+        return GenStageResult(stage_prefix=stage_prefix, lines=lines, finalized=False)
+
+    with stage_progress_cls(f"Computing {gen_stage_tag} model") as progress:
+        gen_load_t0 = time_mod.perf_counter()
+        maglib = MagFieldProcessor(cfg.nlfff_lib or "")
+        _load_maglib_idl_cube(maglib, nlfff_box, prepared_run.dr3)
+        gen_load_elapsed = time_mod.perf_counter() - gen_load_t0
+        resolved_reduce_passed = cfg.reduce_passed if cfg.reduce_passed is not None else (0 if cfg.center_vox else 1)
+        resolved_chromo_level = (1000.0 / float(cfg.dx_km)) if cfg.dx_km else 1.0
+        trace_kwargs = {
+            "seeds": None,
+            "chromo_level": resolved_chromo_level,
+            "reduce_passed": resolved_reduce_passed,
+        }
+        gen_trace_t0 = time_mod.perf_counter()
+        lines = _lines_fast(maglib, **trace_kwargs)
+        gen_trace_elapsed = time_mod.perf_counter() - gen_trace_t0
+        print(
+            f"\n{gen_stage_tag} tracer load: {gen_load_elapsed:.2f}s | "
+            f"line trace: {gen_trace_elapsed:.2f}s | "
+            f"reduce_passed={resolved_reduce_passed!r} | "
+            f"chromo_level={resolved_chromo_level:.12g}"
+        )
+        lines = _prepare_stage_lines_payload(
+            lines,
+            source="memory",
+            require_complete=True,
+        )
+        compute_lines_time = progress.finish()
+
+    gen_save_t0 = time_mod.perf_counter()
+    lines_group = _make_lines_group(lines, prepared_run.dr3)
+    save_stage(gen_stage_tag, {"corona": nlfff_box, "lines": lines_group})
+    print(f"{gen_stage_tag} stage save: {time_mod.perf_counter() - gen_save_t0:.2f}s")
+    stage_times[gen_stage_tag] = compute_lines_time
+    if cfg.generic_only or _last_stage_tag(cfg.stop_after) == "GEN":
+        finalize()
+        return GenStageResult(stage_prefix=stage_prefix, lines=lines, finalized=True)
+    return GenStageResult(stage_prefix=stage_prefix, lines=lines, finalized=False)
+
+
+def _run_chr_stage(
+    prepared_run: PreparedRunState,
+    nlfff_box: dict,
+    *,
+    stage_prefix: str,
+    lines: Optional[dict],
+    save_stage: Callable[..., None],
+    stage_times: Dict[str, float],
+    stage_progress_cls: type,
+) -> None:
+    chr_stage_tag = f"{stage_prefix}.CHR"
+    if lines is not None:
+        chr_stage_tag = f"{stage_prefix}.GEN.CHR"
+
+    header = _make_header(prepared_run.maps["field"]) if prepared_run.maps is not None else {}
+    chromo_mask = None
+    if "chromo_mask" in prepared_run.base_group:
+        chromo_mask = np.asarray(prepared_run.base_group["chromo_mask"]).T
+    chromo_box = combo_model(
+        nlfff_box,
+        prepared_run.dr3,
+        prepared_run.base_bz_arr.T,
+        prepared_run.base_ic_arr.T,
+        chromo_mask=chromo_mask,
+    )
+    for k in ["codes", "apex_idx", "start_idx", "end_idx", "seed_idx",
+              "av_field", "phys_length", "voxel_status"]:
+        if lines is not None and k in lines:
+            chromo_box[k] = lines[k]
+    if "phys_length" in chromo_box:
+        chromo_box["phys_length"] *= prepared_run.dr3[0]
+    chromo_box["attrs"] = header
+
+    with stage_progress_cls(f"Computing {chr_stage_tag} model") as progress:
+        chr_stage = {"corona": nlfff_box, "chromo": _make_chromo_group(chromo_box)}
+        if lines is not None:
+            chr_stage["lines"] = _make_lines_group(lines, prepared_run.dr3)
+        save_stage(chr_stage_tag, chr_stage, chromo_source_axis_order_2d="xy")
+        stage_times[chr_stage_tag] = progress.finish()
+
+
+def _save_stage_passthrough(
+    stage_tag: str,
+    stage_box: dict,
+    *,
+    context: StageSaveContext,
+    source_axis_order_3d: str = "xyz",
+    chromo_source_axis_order_2d: str = "yx",
+) -> dict:
+    if not _should_save_stage(stage_tag, context.cfg):
+        return stage_box
+
+    prepared_run = context.prepared_run
+    working_box = dict(stage_box)
+    if "base" not in working_box:
+        working_box["base"] = prepared_run.base_group
+    if "refmaps" not in working_box:
+        working_box["refmaps"] = prepared_run.refmaps
+    if "corona" in working_box:
+        corona = working_box["corona"]
+        if "dr" not in corona:
+            corona["dr"] = prepared_run.dr3
+        corona_for_id = corona
+        if _decode_id_text(source_axis_order_3d).strip().lower() == "zyx":
+            corona_for_id = _h5_corona_to_internal_xyz(dict(corona), "zyx")
+        voxel_id, corona_base = gx_box2id(
+            {"corona": corona_for_id, "lines": working_box.get("lines"), "chromo": working_box.get("chromo")},
+            return_corona_base=True,
+        )
+        if corona_base is not None:
+            corona["corona_base"] = int(corona_base)
+        working_box["corona"] = corona
+        grid = dict(context.default_grid)
+        if voxel_id is not None:
+            grid["voxel_id"] = voxel_id
+        else:
+            grid["voxel_id"] = gx_box2id({
+                "corona": {"bx": context.empty_grid, "by": context.empty_grid, "bz": context.empty_grid, "dr": prepared_run.dr3}
+            })
+        if "chromo" in working_box and "dz" in working_box["chromo"]:
+            grid["dz"] = working_box["chromo"]["dz"]
+        working_box["grid"] = grid
+    elif "grid" not in working_box:
+        working_box["grid"] = context.default_grid
+
+    stage_id = f"{prepared_run.base}.{stage_tag}"
+    lineage_suffix = _canonical_lineage_suffix(stage_tag)
+    metadata = {
+        "execute": context.execute_cmd,
+        "id": stage_id,
+        "lineage": (
+            f"{prepared_run.lineage_marker}->{_lineage_delta_from_entry(prepared_run.entry_stage_for_marker or stage_tag, stage_tag)}.h5"
+            if prepared_run.lineage_marker
+            else _merge_lineage(prepared_run.lineage_root, lineage_suffix)
+        ),
+        "disambiguation": "SFQ" if context.cfg.sfq else "HMI",
+        "projection": _decode_id_text(prepared_run.projection_tag).upper(),
+        "axis_order_2d": "yx",
+        "axis_order_3d": "zyx",
+        "vector_layout": "split_components",
+    }
+    if prepared_run.vert_current_error:
+        metadata["vert_current_error"] = prepared_run.vert_current_error
+    working_box["metadata"] = metadata
+    merged_observer = _merge_observer_metadata(
+        prepared_run.observer_metadata,
+        working_box.get("observer") if isinstance(working_box.get("observer"), dict) else None,
+    )
+    if merged_observer is not None:
+        working_box["observer"] = merged_observer
+    working_box = _normalize_stage_for_h5(
+        working_box,
+        source_axis_order_3d=source_axis_order_3d,
+        chromo_source_axis_order_2d=chromo_source_axis_order_2d,
+    )
+    out_path = _stage_filename(context.out_dir, prepared_run.base, stage_tag)
+    write_b3d_h5(str(out_path), working_box)
+    print(f"Saved {stage_tag}: {out_path}")
+    context.produced.append(out_path)
+    return stage_box
+
+
+def _run_nas_stage(
+    cfg: Fov2BoxConfig,
+    prepared_run: PreparedRunState,
+    pot_box: Optional[dict],
+    bnd_box: Optional[dict],
+    nlfff_box: Optional[dict],
+    expected_shape_3d: Tuple[int, int, int],
+    save_stage: Callable[..., None],
+    finalize: Callable[[], None],
+    stage_times: Dict[str, float],
+    stage_progress_cls: type,
+) -> NasStageResult:
+    if nlfff_box is None:
+        if cfg.use_potential:
+            if pot_box is None:
+                raise ValueError("pot_box must be available when use_potential is enabled")
+            nlfff_box = {
+                "bx": np.array(pot_box["bx"], copy=True),
+                "by": np.array(pot_box["by"], copy=True),
+                "bz": np.array(pot_box["bz"], copy=True),
+                "dr": prepared_run.dr3,
+                "attrs": {"model_type": "pot"},
+            }
+            nlfff_box = _prepare_stage_corona_payload(
+                nlfff_box,
+                source="memory",
+                expected_shape_3d=expected_shape_3d,
+                allowed_model_types=("pot",),
+            )
+        else:
+            if bnd_box is None:
+                raise ValueError("bnd_box must be available before computing the NAS stage")
+            with stage_progress_cls("Computing NAS model") as progress:
+                nlfff_box = _solve_nlfff_from_bnd(
+                    bnd_box,
+                    prepared_run.dr3,
+                    nlfff_lib=cfg.nlfff_lib,
+                )
+                nlfff_box = _prepare_stage_corona_payload(
+                    nlfff_box,
+                    source="memory",
+                    expected_shape_3d=expected_shape_3d,
+                    allowed_model_types=("nlfff",),
+                )
+                save_stage("NAS", {"corona": nlfff_box})
+                stage_times["NAS"] = progress.finish()
+            if cfg.nlfff_only or _last_stage_tag(cfg.stop_after) == "NAS":
+                finalize()
+                return NasStageResult(nlfff_box=nlfff_box, finalized=True)
+    elif str(nlfff_box.get("attrs", {}).get("model_type", "")).lower() == "nlfff":
+        nlfff_box = _prepare_stage_corona_payload(
+            nlfff_box,
+            source="memory",
+            expected_shape_3d=expected_shape_3d,
+            allowed_model_types=("nlfff",),
+        )
+        # Jumped to NAS from an existing NAS/GEN/CHR entry box.
+        with stage_progress_cls("Preparing NAS model from entry data") as progress:
+            save_stage("NAS", {"corona": nlfff_box})
+            stage_times["NAS"] = progress.finish()
+        if cfg.nlfff_only or _last_stage_tag(cfg.stop_after) == "NAS":
+            finalize()
+            return NasStageResult(nlfff_box=nlfff_box, finalized=True)
+
+    if nlfff_box is None:
+        raise ValueError("NAS stage did not produce an nlfff_box")
+    return NasStageResult(nlfff_box=nlfff_box, finalized=False)
+
+
+def _run_gen_chr_stages(
+    cfg: Fov2BoxConfig,
+    prepared_run: PreparedRunState,
+    nlfff_box: dict,
+    *,
+    resume_mode: bool,
+    entry_stage: Optional[str],
+    target_stage: str,
+    goto_chromo: bool,
+    entry_lines: Optional[dict],
+    save_stage: Callable[..., None],
+    finalize: Callable[[], None],
+    stage_times: Dict[str, float],
+    stage_progress_cls: type,
+) -> GenChrStageResult:
+    gen_result = _run_gen_stage(
+        cfg,
+        prepared_run,
+        nlfff_box,
+        resume_mode=resume_mode,
+        entry_stage=entry_stage,
+        target_stage=target_stage,
+        goto_chromo=goto_chromo,
+        entry_lines=entry_lines,
+        save_stage=save_stage,
+        finalize=finalize,
+        stage_times=stage_times,
+        stage_progress_cls=stage_progress_cls,
+    )
+    if gen_result.finalized:
+        return GenChrStageResult(finalized=True)
+
+    _run_chr_stage(
+        prepared_run,
+        nlfff_box,
+        stage_prefix=gen_result.stage_prefix,
+        lines=gen_result.lines,
+        save_stage=save_stage,
+        stage_times=stage_times,
+        stage_progress_cls=stage_progress_cls,
+    )
+
+    return GenChrStageResult(finalized=False)
 
 
 def _warn_impossible_save_requests(cfg: Fov2BoxConfig, start_stage: str) -> None:
@@ -469,6 +1782,55 @@ def _warn_impossible_save_requests(cfg: Fov2BoxConfig, start_stage: str) -> None
             "Warning: impossible save request(s) before selected start stage "
             f"{start_stage}: {', '.join(impossible)} (ignored)."
         )
+
+
+def _clone_corona_with_model_type(corona: Dict[str, Any], model_type: str) -> Dict[str, Any]:
+    cloned = dict(corona)
+    attrs = cloned.get("attrs")
+    attrs_dict = dict(attrs) if isinstance(attrs, dict) else {}
+    attrs_dict["model_type"] = model_type
+    cloned["attrs"] = attrs_dict
+    return cloned
+
+
+def _prepare_resume_jump_boxes(
+    active_jump: Optional[str],
+    entry_stage: Optional[str],
+    entry_corona: Optional[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    pot_box = None
+    bnd_box = None
+    nlfff_box = None
+
+    if active_jump not in ("potential", "bounds", "nlfff"):
+        return pot_box, bnd_box, nlfff_box
+    if not entry_corona:
+        raise ValueError("--entry-box does not contain corona vectors required by selected jump/recompute action.")
+
+    if active_jump == "potential":
+        # NONE->POT must compute a fresh potential field from the base boundary.
+        if entry_stage != "NONE":
+            pot_box = _clone_corona_with_model_type(entry_corona, "pot")
+        return pot_box, bnd_box, nlfff_box
+
+    if active_jump == "bounds":
+        # NONE->BND and POT->BND need real forward-stage computation instead of
+        # relabeling the entry corona as a later stage.
+        if entry_stage == "POT":
+            pot_box = _clone_corona_with_model_type(entry_corona, "pot")
+        elif entry_stage not in (None, "NONE"):
+            bnd_box = _clone_corona_with_model_type(entry_corona, "bnd")
+        return pot_box, bnd_box, nlfff_box
+
+    if entry_stage == "POT":
+        pot_box = _clone_corona_with_model_type(entry_corona, "pot")
+    elif entry_stage == "BND":
+        bnd_box = _clone_corona_with_model_type(entry_corona, "bnd")
+    elif entry_stage in ("NAS", "GEN", "CHR"):
+        nlfff_box = _clone_corona_with_model_type(entry_corona, "nlfff")
+    else:
+        raise ValueError(f"Unsupported entry stage for --jump2nlfff path: {entry_stage}")
+    return pot_box, bnd_box, nlfff_box
 
 
 def _stage_tag_from_stage(stage: str) -> str:
@@ -607,9 +1969,9 @@ def _extract_execute_geometry(execute_text: str) -> Tuple[Optional[Tuple[float, 
     # Projection hint in IDL execute.
     if projection is None:
         up = text.upper()
-        if " /TOP" in up or ", TOP=1" in up:
+        if " /TOP" in up or re.search(r",\s*TOP\s*=\s*1\b", up):
             projection = "top"
-        elif " /CEA" in up or ", CEA=1" in up:
+        elif " /CEA" in up or re.search(r",\s*CEA\s*=\s*1\b", up):
             projection = "cea"
 
     return coords, frame, projection
@@ -618,6 +1980,35 @@ def _extract_execute_geometry(execute_text: str) -> Tuple[Optional[Tuple[float, 
 def _flag_explicit_on_cli(flag: str) -> bool:
     args = sys.argv[1:]
     return any(arg == flag or arg.startswith(f"{flag}=") for arg in args)
+
+
+def _normalize_reproject_algorithm(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _parse_reproject_scan(value: Optional[str]) -> Optional[Tuple[str, ...]]:
+    if value is None:
+        return None
+    raw = str(value).strip().lower()
+    if not raw:
+        return None
+    if raw == "all":
+        return _VALID_REPROJECT_ALGORITHMS
+    values = []
+    for item in raw.split(","):
+        alg = _normalize_reproject_algorithm(item)
+        if not alg:
+            continue
+        if alg not in _VALID_REPROJECT_ALGORITHMS:
+            raise ValueError(
+                f"Unsupported reprojection algorithm '{alg}' in --reproject-scan. "
+                f"Choose from: {', '.join(_VALID_REPROJECT_ALGORITHMS)}."
+            )
+        if alg not in values:
+            values.append(alg)
+    if not values:
+        raise ValueError("--reproject-scan did not include any valid reprojection algorithms.")
+    return tuple(values)
 
 
 def _warn_path_default(role: str, path_text: str) -> None:
@@ -706,6 +2097,34 @@ def _load_maglib_idl_cube(maglib: Any, box: Dict[str, Any], dr: Any = 0.001 * u.
     load_vars = getattr(maglib, "_MagFieldProcessor__load_vars")
     load_vars(bx, by, bz, dr)
     return bx, by, bz
+
+
+def _solve_nlfff_from_bnd(
+    bnd_box: Dict[str, Any],
+    dr: Any,
+    *,
+    nlfff_lib: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run the NLFFF solver from an internal ``(x, y, z)`` BND cube.
+
+    The solver-facing layout must match the IDL ``mfoLines`` path: load the
+    cube through the same component swap and ``(z, x, y)`` transpose used by
+    ``_load_maglib_idl_cube()``, then preserve the returned solver component
+    names and cube layout. Real BND->NAS parity shows the DLL already returns
+    ``bx``/``by`` under the canonical internal names expected by the stage
+    contract; swapping them again corrupts the horizontal field while leaving
+    ``bz`` and array shapes intact.
+    """
+    maglib = MagFieldProcessor(nlfff_lib or "")
+    _load_maglib_idl_cube(maglib, bnd_box, dr)
+    res_nlf = maglib.NLFFF()
+    return {
+        "bx": np.asarray(res_nlf["bx"]),
+        "by": np.asarray(res_nlf["by"]),
+        "bz": np.asarray(res_nlf["bz"]),
+        "dr": np.asarray(bnd_box["dr"], dtype=float).copy(),
+        "attrs": {"model_type": "nlfff"},
+    }
 
 
 def _decode_id_text(v: Any) -> str:
@@ -889,6 +2308,8 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
         cmd.append("--square-fov")
     if cfg.stop_after:
         cmd += ["--stop-after", cfg.stop_after]
+    if cfg.nlfff_lib:
+        cmd += ["--nlfff-lib", cfg.nlfff_lib]
     if cfg.jump2potential:
         cmd.append("--jump2potential")
     if cfg.jump2bounds:
@@ -903,8 +2324,8 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
         cmd.append("--rebuild")
     if cfg.rebuild_from_none:
         cmd.append("--rebuild-from-none")
-    if cfg.clone_only:
-        cmd.append("--clone-only")
+    if cfg.reproject_algorithm != "adaptive":
+        cmd += ["--reproject-algorithm", cfg.reproject_algorithm]
     return shlex.join(cmd)
 
 
@@ -1243,6 +2664,7 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("pad_frac", cfg.pad_frac, "Padding fraction used for context map FOV"),
         ("data_dir", cfg.data_dir, "SDO download/cache directory"),
         ("gxmodel_dir", cfg.gxmodel_dir, "Output gx_models directory"),
+        ("nlfff_lib", cfg.nlfff_lib, "Override WWNLFFFReconstruction library path for NAS and GEN"),
         ("download_backend", cfg.download_backend, "SDO downloader backend"),
         ("drms_sequential", cfg.drms_sequential, "Force single-worker DRMS downloads (HMI and AIA)"),
         ("force_download", cfg.force_download, "Bypass local cache hits and redownload requested SDO products"),
@@ -1274,7 +2696,6 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("jump2chromo", cfg.jump2chromo, "Start from entry box and jump to CHR"),
         ("rebuild", cfg.rebuild, "Ignore entry stage payload and rebuild from NONE"),
         ("rebuild_from_none", cfg.rebuild_from_none, "Strip entry to NONE-equivalent and continue forward"),
-        ("clone_only", cfg.clone_only, "Convert/copy entry-box to normalized H5 without recomputation"),
     ]
     print("gx-fov2box --info")
     for name, value, desc in runtime_rows + rows:
@@ -1601,207 +3022,8 @@ def _h5_corona_to_internal_xyz(corona: dict, axis_order_3d: Optional[str]) -> di
     return out
 
 
-def _sav_cube_to_internal_xyz(arr: np.ndarray, ny: int, nx: int) -> np.ndarray:
-    a = np.asarray(arr)
-    if a.ndim != 3:
-        return a
-    # SAV restores commonly as (z,y,x) or (x,y,z); normalize to internal (x,y,z).
-    if a.shape[1:] == (ny, nx):   # z,y,x
-        return a.transpose((2, 1, 0))
-    if a.shape[:2] == (nx, ny):   # x,y,z
-        return a
-    if a.shape[:2] == (ny, nx):   # y,x,z
-        return a.transpose((1, 0, 2))
-    if a.shape[1:] == (nx, ny):   # z,x,y
-        return a.transpose((1, 2, 0))
-    return a
-
-
-def _decode_sav_value(v) -> str:
-    if hasattr(v, "item"):
-        v = v.item()
-    if isinstance(v, bytes):
-        return v.decode("utf-8", errors="ignore")
-    return str(v)
-
-
-def _sav_scalar(v):
-    if hasattr(v, "item"):
-        try:
-            return v.item()
-        except Exception:
-            pass
-    return v
-
-
-def _sav_line_to_flat(arr: np.ndarray) -> np.ndarray:
-    a = np.asarray(arr)
-    if a.ndim <= 1:
-        return a.reshape(-1)
-    return a.T.reshape(-1, order="F")
-
-
 def _load_entry_box_any(entry_path: Path) -> Dict[str, Any]:
-    if entry_path.suffix.lower() == ".h5":
-        return load_model_from_h5(str(entry_path))
-    if entry_path.suffix.lower() != ".sav":
-        raise ValueError(f"--entry-box must be .h5 or .sav, got: {entry_path}")
-
-    data = readsav(str(entry_path), python_dict=True, verbose=False)
-    if "box" in data:
-        box = data["box"][0]
-    elif "pbox" in data:
-        box = data["pbox"][0]
-    else:
-        raise ValueError(f"SAV entry box missing box/pbox structure: {entry_path}")
-
-    out: Dict[str, Any] = {}
-    names = set(box.dtype.names or [])
-
-    base = None
-    index = box["INDEX"][0] if "INDEX" in names else None
-    dr = np.asarray(box["DR"], dtype=np.float64).reshape(-1) if "DR" in names else None
-    corona_base = int(_sav_scalar(box["CORONA_BASE"])) if "CORONA_BASE" in names else None
-    if "BASE" in names:
-        base_raw = box["BASE"][0]
-        bnames = set(base_raw.dtype.names or [])
-        if {"BX", "BY", "BZ"}.issubset(bnames):
-            base = {
-                "bx": np.asarray(base_raw["BX"]),
-                "by": np.asarray(base_raw["BY"]),
-                "bz": np.asarray(base_raw["BZ"]),
-            }
-            if "IC" in bnames:
-                base["ic"] = np.asarray(base_raw["IC"])
-            if "CHROMO_MASK" in bnames:
-                base["chromo_mask"] = np.asarray(base_raw["CHROMO_MASK"])
-            if index is not None:
-                base["index"] = serialize_sav_index_header(index)
-            out["base"] = base
-
-    ny = nx = None
-    if base is not None:
-        ny, nx = np.asarray(base["bx"]).shape
-
-    # Build corona from BX/BY/BZ or BCUBE.
-    if {"BX", "BY", "BZ"}.issubset(names) and ny is not None and nx is not None:
-        out["corona"] = {
-            "bx": _sav_cube_to_internal_xyz(np.asarray(box["BX"]), ny, nx),
-            "by": _sav_cube_to_internal_xyz(np.asarray(box["BY"]), ny, nx),
-            "bz": _sav_cube_to_internal_xyz(np.asarray(box["BZ"]), ny, nx),
-            "attrs": {"model_type": "unknown"},
-        }
-    elif "BCUBE" in names and ny is not None and nx is not None:
-        bc = np.asarray(box["BCUBE"])
-        # scipy commonly restores BCUBE as (comp, z, y, x)
-        if bc.ndim == 4 and bc.shape[0] == 3:
-            out["corona"] = {
-                "bx": _sav_cube_to_internal_xyz(bc[0], ny, nx),
-                "by": _sav_cube_to_internal_xyz(bc[1], ny, nx),
-                "bz": _sav_cube_to_internal_xyz(bc[2], ny, nx),
-                "attrs": {"model_type": "unknown"},
-            }
-    if "corona" in out and dr is not None and dr.size >= 3:
-        out["corona"]["dr"] = dr.astype(np.float64)
-    if "corona" in out and corona_base is not None:
-        out["corona"]["corona_base"] = int(corona_base)
-
-    # Lines metadata if present.
-    lines = {}
-    for k in ("STARTIDX", "ENDIDX", "SEED_IDX", "SEEDIDX", "APEX_IDX", "APEXIDX", "CODES",
-              "AVFIELD", "PHYSLENGTH", "STATUS", "VOXEL_STATUS"):
-        if k in names:
-            kk = (
-                k.lower()
-                .replace("startidx", "start_idx")
-                .replace("endidx", "end_idx")
-                .replace("seedidx", "seed_idx")
-                .replace("apexidx", "apex_idx")
-                .replace("avfield", "av_field")
-                .replace("physlength", "phys_length")
-                .replace("status", "voxel_status")
-            )
-            lines[kk] = _sav_line_to_flat(np.asarray(box[k]))
-    if dr is not None and dr.size >= 3:
-        lines["dr"] = dr.astype(np.float64)
-    if lines:
-        out["lines"] = lines
-
-    # CHR fields if present.
-    chromo = {}
-    for k in ("CHROMO_IDX", "CHROMO_N", "CHROMO_T", "N_P", "N_HI", "N_HTOT", "TR", "TR_H",
-              "CHROMO_LAYERS", "DZ", "CHROMO_MASK"):
-        if k in names:
-            kk = k.lower()
-            if k == "DZ" and ny is not None and nx is not None:
-                chromo[kk] = _sav_cube_to_internal_xyz(np.asarray(box[k]), ny, nx)
-            else:
-                chromo[kk] = np.asarray(box[k])
-    if "CHROMO_BCUBE" in names and ny is not None and nx is not None:
-        cbc = np.asarray(box["CHROMO_BCUBE"])
-        if cbc.ndim == 4 and cbc.shape[0] == 3:
-            chromo["bx"] = _sav_cube_to_internal_xyz(cbc[0], ny, nx)
-            chromo["by"] = _sav_cube_to_internal_xyz(cbc[1], ny, nx)
-            chromo["bz"] = _sav_cube_to_internal_xyz(cbc[2], ny, nx)
-    if base is not None and "chromo_mask" in base and "chromo_mask" not in chromo:
-        chromo["chromo_mask"] = np.asarray(base["chromo_mask"], dtype=np.int32)
-    if chromo:
-        out["chromo"] = chromo
-
-    grid = {}
-    if dr is not None and dr.size >= 2:
-        grid["dx"] = np.float64(dr[0])
-        grid["dy"] = np.float64(dr[1])
-    if "DZ" in names:
-        if ny is not None and nx is not None:
-            grid["dz"] = _sav_cube_to_internal_xyz(np.asarray(box["DZ"], dtype=np.float64), ny, nx)
-        else:
-            grid["dz"] = np.asarray(box["DZ"], dtype=np.float64)
-
-    voxel_id = None
-    if "corona" in out and dr is not None and dr.size >= 3:
-        voxel_id = gx_box2id(out)
-    if voxel_id is not None:
-        grid["voxel_id"] = np.asarray(voxel_id, dtype=np.uint32)
-    if grid:
-        out["grid"] = grid
-
-    refmaps = {}
-    for _order_index, map_id, map_data, map_header in extract_sav_refmaps(box):
-        refmaps[map_id] = {"data": map_data, "wcs_header": map_header}
-    if refmaps:
-        out["refmaps"] = refmaps
-
-    if index is not None:
-        observer_meta: Dict[str, Any] = {
-            "name": "earth",
-            "label": "Earth",
-        }
-        ephemeris: Dict[str, Any] = {}
-        inames = set(index.dtype.names or ())
-        if "DATE_OBS" in inames:
-            ephemeris["obs_date"] = _decode_sav_value(index["DATE_OBS"])
-        if "HGLN_OBS" in inames:
-            ephemeris["hgln_obs_deg"] = float(_sav_scalar(index["HGLN_OBS"]))
-        if "HGLT_OBS" in inames:
-            ephemeris["hglt_obs_deg"] = float(_sav_scalar(index["HGLT_OBS"]))
-        if "DSUN_OBS" in inames:
-            ephemeris["dsun_cm"] = float(u.Quantity(float(_sav_scalar(index["DSUN_OBS"])), u.m).to_value(u.cm))
-        ephemeris["rsun_cm"] = float(u.Quantity(IDL_HMI_RSUN_M, u.m).to_value(u.cm))
-        observer_meta["ephemeris"] = ephemeris
-        pb0r = build_pb0r_metadata_from_ephemeris(
-            ephemeris,
-            observer_key=observer_meta.get("name"),
-            obs_time=ephemeris.get("obs_date"),
-        )
-        if pb0r:
-            observer_meta["pb0r"] = pb0r
-        out["observer"] = observer_meta
-
-    sid = _decode_sav_value(box["ID"]) if "ID" in names else entry_path.stem
-    execute = _decode_sav_value(box["EXECUTE"]) if "EXECUTE" in names else ""
-    out["metadata"] = {"id": sid, "execute": execute}
-    return normalize_observer_metadata(out)
+    return load_model(entry_path)
 
 
 def _resolve_box_params(cfg: Fov2BoxConfig) -> Tuple[Time, Tuple[int, int, int], float]:
@@ -1810,7 +3032,7 @@ def _resolve_box_params(cfg: Fov2BoxConfig) -> Tuple[Time, Tuple[int, int, int],
     dx_km = cfg.dx_km
     if cfg.entry_box:
         entry_path = Path(cfg.entry_box)
-        if entry_path.exists() and entry_path.suffix.lower() in (".h5", ".sav"):
+        if entry_path.exists():
             box_b3d = _load_entry_box_any(entry_path)
             corona = box_b3d.get("corona")
             if corona is not None:
@@ -1853,6 +3075,7 @@ def main(
     pad_frac: float = typer.Option(0.10, "--pad-frac", help="Padding fraction for FOV"),
     data_dir: str = typer.Option(DOWNLOAD_DIR, "--data-dir", help="SDO data directory"),
     gxmodel_dir: str = typer.Option(GXMODEL_DIR, "--gxmodel-dir", help="GX model output directory"),
+    nlfff_lib: Optional[str] = typer.Option(None, "--nlfff-lib", help="Override the WWNLFFFReconstruction shared library path for NAS and GEN stages"),
     download_backend: Optional[str] = typer.Option(None, "--download-backend", help="Compatibility override: explicitly set downloader backend to fido or drms"),
     use_fido: bool = typer.Option(False, "--use-fido", help="Use the legacy SunPy/Fido downloader instead of the default DRMS backend"),
     drms_sequential: bool = typer.Option(False, "--drms-sequential", help="Force DRMS downloads to single-worker mode for maximum reliability"),
@@ -1895,8 +3118,17 @@ def main(
     jump2chromo: bool = typer.Option(False, "--jump2chromo", help="Jump to CHR"),
     rebuild: bool = typer.Option(False, "--rebuild", help="Recompute from NONE using entry-box parameters"),
     rebuild_from_none: bool = typer.Option(False, "--rebuild-from-none", help="Start from entry-box NONE-equivalent and run forward"),
-    clone_only: bool = typer.Option(False, "--clone-only", help="Normalize/copy entry-box to H5 without recomputation"),
     info: bool = typer.Option(False, "--info", help="Show resolved defaults and exit"),
+    reproject_algorithm: str = typer.Option(
+        "adaptive",
+        "--reproject-algorithm",
+        help="Reprojection algorithm for HMI cutouts onto model base grid: 'adaptive' (default, matches IDL wcs_remap/ssaa behaviour), 'exact' (flux-conserving, slower), or 'interpolation' (bilinear)",
+    ),
+    reproject_scan: Optional[str] = typer.Option(
+        None,
+        "--reproject-scan",
+        help="Batch-run OBS->NONE once per reprojection algorithm. Use 'all' or a comma-separated list such as 'adaptive,exact,interpolation'. Each run writes to a gxmodel-dir/reproject_<algorithm> subdirectory.",
+    ),
 ) -> None:
     cfg = Fov2BoxConfig(
         time=time,
@@ -1911,6 +3143,7 @@ def main(
         pad_frac=pad_frac,
         data_dir=data_dir,
         gxmodel_dir=gxmodel_dir,
+        nlfff_lib=nlfff_lib,
         download_backend=download_backend or "drms",
         drms_sequential=drms_sequential,
         force_download=force_download,
@@ -1946,8 +3179,9 @@ def main(
         jump2chromo=jump2chromo,
         rebuild=rebuild,
         rebuild_from_none=rebuild_from_none,
-        clone_only=clone_only,
         info=info,
+        reproject_algorithm=reproject_algorithm,
+        reproject_scan=reproject_scan,
     )
 
     cfg.download_backend = str(cfg.download_backend or "drms").strip().lower()
@@ -1957,6 +3191,14 @@ def main(
         if download_backend is not None and cfg.download_backend != "fido":
             raise ValueError("Conflicting downloader controls: --use-fido and --download-backend drms.")
         cfg.download_backend = "fido"
+
+    cfg.reproject_algorithm = _normalize_reproject_algorithm(cfg.reproject_algorithm)
+    if cfg.reproject_algorithm not in _VALID_REPROJECT_ALGORITHMS:
+        raise ValueError(
+            f"Unsupported --reproject-algorithm '{cfg.reproject_algorithm}'. "
+            f"Choose from: {', '.join(_VALID_REPROJECT_ALGORITHMS)}."
+        )
+    reproject_scan_algorithms = _parse_reproject_scan(cfg.reproject_scan)
 
     if not any([cfg.hpc, cfg.hgc, cfg.hgs]):
         cfg.hpc = True
@@ -1990,10 +3232,6 @@ def main(
         _print_info(cfg)
         return
 
-    if cfg.clone_only and not cfg.entry_box:
-        raise ValueError("--clone-only requires --entry-box")
-    if cfg.clone_only and (cfg.rebuild or cfg.rebuild_from_none):
-        raise ValueError("--clone-only cannot be combined with --rebuild or --rebuild-from-none")
     if cfg.rebuild_from_none and not cfg.entry_box:
         raise ValueError("--rebuild-from-none requires --entry-box")
     if cfg.rebuild and cfg.rebuild_from_none:
@@ -2048,72 +3286,49 @@ def main(
         if not proj_explicit and exec_projection in ("cea", "top"):
             cfg.cea = exec_projection == "cea"
             cfg.top = exec_projection == "top"
-    target_stage = _detect_target_stage(cfg, entry_stage)
+    transition_plan = _plan_transition(cfg, entry_stage)
+    target_stage = transition_plan.target_stage
 
-    if cfg.entry_box and not cfg.rebuild and not cfg.rebuild_from_none:
-        assert entry_stage is not None
-        if not _jump_allowed(entry_stage, target_stage):
+    if reproject_scan_algorithms is not None:
+        if target_stage != "NONE":
             raise ValueError(
-                f"Incompatible jump request: entry stage {entry_stage} cannot jump to {target_stage}. "
-                "Allowed: backward jumps, forward by one stage, NONE->BND (implicit POT), POT->NAS (implicit BND), and POT->GEN."
+                "--reproject-scan is limited to OBS->NONE generation. "
+                "Use --stop-after none (or equivalent) for reprojection sweeps."
             )
+        scan_root = Path(cfg.gxmodel_dir).expanduser().resolve()
+        script_path = Path(__file__).resolve()
+        print(
+            "Running reprojection sweep for NONE generation: "
+            + ", ".join(reproject_scan_algorithms)
+        )
+        for algorithm in reproject_scan_algorithms:
+            child_cfg = replace(
+                cfg,
+                gxmodel_dir=str(scan_root / f"reproject_{algorithm}"),
+                save_empty_box=True,
+                save_potential=False,
+                save_bounds=False,
+                save_nas=False,
+                save_gen=False,
+                save_chr=False,
+                stop_after="none",
+                empty_box_only=False,
+                potential_only=False,
+                nlfff_only=False,
+                generic_only=False,
+                use_potential=False,
+                skip_lines=False,
+                reproject_algorithm=algorithm,
+                reproject_scan=None,
+            )
+            child_args = shlex.split(_build_execute_cmd(child_cfg))[1:]
+            child_cmd = [sys.executable, str(script_path), *child_args]
+            print(f"\n[{algorithm}] writing NONE output under {child_cfg.gxmodel_dir}")
+            subprocess.run(child_cmd, check=True)
+        print("Reprojection sweep complete.")
+        return
 
     observer_metadata = _observer_metadata_from_entry(entry_loaded, cfg) if entry_loaded is not None else None
-
-    if cfg.clone_only:
-        assert entry_loaded is not None
-        assert entry_stage is not None
-        if jump_flags_set and target_stage != entry_stage:
-            raise ValueError(
-                f"--clone-only allows only no jump or jump-to-self; got entry {entry_stage} -> {target_stage}."
-            )
-        # Prefer inferred time from entry path/id for output folder naming.
-        obs_time = Time(cfg.time) if cfg.time else None
-        if obs_time is None and cfg.entry_box:
-            inferred = _infer_time_from_entry_loaded(entry_loaded, Path(cfg.entry_box))
-            if inferred:
-                obs_time = Time(inferred)
-        if obs_time is None:
-            raise ValueError("--clone-only requires --time or inferable time from --entry-box filename.")
-
-        out_dir = _stage_output_dir(cfg.gxmodel_dir, obs_time)
-        src_id = _decode_id_text(entry_loaded.get("metadata", {}).get("id", "")).strip()
-        _, inferred_tag = _split_stage_id(src_id) if src_id else ("", "")
-        stage_tag = inferred_tag or _stage_tag_from_stage(entry_stage)
-        if src_id:
-            out_path = out_dir / f"{src_id}.h5"
-        else:
-            base = _stage_file_base(obs_time, "CLONE", projection_tag="CEA")
-            out_path = _stage_filename(out_dir, base, stage_tag)
-
-        clone_box = dict(entry_loaded)
-        meta = dict(clone_box.get("metadata", {}))
-        meta.setdefault("execute", _build_execute_cmd(cfg))
-        meta.setdefault("id", out_path.stem)
-        entry_suffix = Path(cfg.entry_box).suffix.lower() if cfg.entry_box else ""
-        projection_tag = _decode_id_text(
-            meta.get("projection") or ("TOP" if cfg.top else "CEA")
-        ).upper()
-        meta.setdefault(
-            "lineage",
-            f"ENTRY.{stage_tag}.{entry_suffix.lstrip('.').upper() or 'H5'}->{stage_tag}.h5",
-        )
-        meta.setdefault("disambiguation", "IDL" if entry_suffix == ".sav" else "HMI")
-        meta.setdefault("projection", projection_tag)
-        meta.setdefault("axis_order_2d", "yx")
-        meta.setdefault("axis_order_3d", "zyx")
-        meta.setdefault("vector_layout", "split_components")
-        clone_box["metadata"] = meta
-        if observer_metadata is not None:
-            clone_box["observer"] = observer_metadata
-        clone_source_axis_order_3d = "xyz" if entry_suffix == ".sav" else _decode_id_text(
-            meta.get("axis_order_3d", "zyx")
-        ).lower()
-        clone_box = _normalize_stage_for_h5(clone_box, source_axis_order_3d=clone_source_axis_order_3d)
-        write_b3d_h5(str(out_path), clone_box)
-        print("\nCompleted gx-fov2box clone-only. Output file:")
-        print(f"- {out_path}")
-        return
 
     import time as time_mod
     import warnings
@@ -2229,270 +3444,32 @@ def main(
             print(f"{label} done in {elapsed:.2f}s")
         return result
 
-    if resume_mode:
-        assert entry_loaded is not None
-        base_group = dict(entry_loaded.get("base", {}))
-        if not all(k in base_group for k in ("bx", "by", "bz")):
-            raise ValueError("Entry-box resume requires base/bx, base/by, and base/bz.")
-        if "ic" not in base_group:
-            base_group["ic"] = np.asarray(base_group["bz"], dtype=float).copy()
-        if "chromo_mask" not in base_group:
-            base_group["chromo_mask"] = decompose(
-                np.asarray(base_group["bz"], dtype=float).T,
-                np.asarray(base_group["ic"], dtype=float).T,
-            ).T
-        refmaps = dict(entry_loaded.get("refmaps", {}))
-        base_bz_arr = np.asarray(base_group["bz"], dtype=float)
-        base_ic_arr = np.asarray(base_group["ic"], dtype=float)
-        bottom_bz_data = base_bz_arr
-        projection_tag = _decode_id_text(entry_loaded.get("metadata", {}).get("projection", "CEA")).upper()
+    prepared_run = _prepare_run_state(
+        cfg,
+        resume_mode,
+        entry_loaded,
+        entry_stage,
+        target_stage,
+        requested_obs_time,
+        box_dims_resolved,
+        observer_metadata,
+        _run_logged_step,
+        t_start,
+    )
+    if prepared_run is None:
+        return
 
-        axis_order = entry_loaded.get("metadata", {}).get("axis_order_3d")
-        entry_corona_for_dr = _h5_corona_to_internal_xyz(entry_loaded.get("corona"), axis_order)
-        if isinstance(entry_corona_for_dr, dict) and "dr" in entry_corona_for_dr:
-            d = np.asarray(entry_corona_for_dr["dr"], dtype=float).reshape(-1)
-            dr3 = np.array([d[0], d[min(1, d.size - 1)], d[min(2, d.size - 1)]], dtype=float)
-        else:
-            dr = float((cfg.dx_km * u.km / (IDL_HMI_RSUN_M * u.m).to(u.km)).value)
-            dr3 = np.array([dr, dr, dr], dtype=float)
-
-        src_id = _decode_id_text(entry_loaded.get("metadata", {}).get("id", "")).strip()
-        if src_id:
-            base, _ = _split_stage_id(src_id)
-        if not base:
-            base = Path(cfg.entry_box).stem if cfg.entry_box else _stage_file_base(obs_time, "UNKNOWN", projection_tag=projection_tag)
-    else:
-        data_dir_path = Path(cfg.data_dir).expanduser().resolve()
-        disambig_method = 0 if cfg.sfq else 2
-        print("Checking/downloading HMI/AIA data...")
-        dl_t0 = time_mod.perf_counter()
-        maps, download_info = _load_hmi_maps_from_downloader(
-            obs_time,
-            data_dir_path,
-            cfg.euv,
-            cfg.uv,
-            download_backend=cfg.download_backend,
-            drms_sequential=cfg.drms_sequential,
-            force_download=cfg.force_download,
-            disambig_method=disambig_method,
-            strict_required=(_last_stage_tag(cfg.stop_after) != "DL"),
-        )
-        dl_elapsed = time_mod.perf_counter() - dl_t0
-        print(f"Done in {dl_elapsed:.2f}s")
-        resolved_obs_time = download_info.get("resolved_obs_time")
-        if resolved_obs_time:
-            resolved_obs_time = Time(resolved_obs_time)
-            if abs((resolved_obs_time - requested_obs_time).to_value("sec")) > 1.0:
-                print(
-                    "Resolved source bundle time: "
-                    f"{resolved_obs_time.isot} "
-                    f"(requested {requested_obs_time.isot})"
-                )
-            obs_time = resolved_obs_time
-        if _last_stage_tag(cfg.stop_after) == "DL":
-            print("Stopped after download stage by request.")
-            total = time_mod.perf_counter() - t_start
-            print(f"Total elapsed: {total:.2f}s")
-            return
-
-        def _prepare_geometry():
-            rsun_local = (IDL_HMI_RSUN_M * u.m).to(u.km)
-            observer_local = _resolve_cli_observer(maps.get("field"), cfg.observer_name, obs_time)
-
-            if cfg.hpc:
-                box_origin_local = SkyCoord(cfg.coords[0] * u.arcsec, cfg.coords[1] * u.arcsec,
-                                            obstime=obs_time, observer=observer_local, rsun=rsun_local,
-                                            frame=Helioprojective)
-            elif cfg.hgc:
-                box_origin_local = SkyCoord(lon=cfg.coords[0] * u.deg, lat=cfg.coords[1] * u.deg,
-                                            radius=rsun_local, obstime=obs_time, observer=observer_local,
-                                            frame=HeliographicCarrington)
-            else:
-                box_origin_local = SkyCoord(lon=cfg.coords[0] * u.deg, lat=cfg.coords[1] * u.deg,
-                                            radius=rsun_local, obstime=obs_time, observer=observer_local,
-                                            frame=HeliographicStonyhurst)
-
-            box_dims_q_local = u.Quantity(list(box_dims_resolved)) * u.pix
-            box_res_local = (cfg.dx_km * u.km).to(u.Mm)
-
-            frame_obs_local = Helioprojective(observer=observer_local, obstime=obs_time, rsun=rsun_local)
-            frame_hcc_local = Heliocentric(observer=box_origin_local, obstime=obs_time)
-            box_center_local = box_origin_local.transform_to(frame_hcc_local)
-            center_z_local = box_center_local.z + (box_dims_q_local[2] / u.pix * box_res_local) / 2
-            box_center_local = SkyCoord(x=box_center_local.x, y=box_center_local.y, z=center_z_local,
-                                        frame=frame_hcc_local)
-
-            box_local = Box(frame_obs_local, box_origin_local, box_center_local, box_dims_q_local, box_res_local)
-            if cfg.top:
-                bottom_wcs_header_local = box_local.bottom_top_header(dsun_obs=maps["field"].dsun)
-                projection_tag_local = "TOP"
-            else:
-                bottom_wcs_header_local = box_local.bottom_cea_header
-                projection_tag_local = "CEA"
-            fov_coords_local = box_local.bounds_coords_bl_tr(pad_frac=cfg.pad_frac)
-            return (
-                rsun_local, observer_local, box_origin_local, box_dims_q_local, box_res_local,
-                frame_obs_local, frame_hcc_local, box_center_local, box_local,
-                bottom_wcs_header_local, projection_tag_local, fov_coords_local,
-            )
-
-        (
-            rsun, observer, box_origin, box_dims_q, box_res,
-            frame_obs, frame_hcc, box_center, box,
-            bottom_wcs_header, projection_tag, fov_coords,
-        ) = _run_logged_step("Preparing observer and box geometry", _prepare_geometry)
-
-        map_bp, map_bt, map_br = _run_logged_step(
-            "Converting HMI vector field components",
-            lambda: hmi_b2ptr(maps["field"], maps["inclination"], maps["azimuth"]),
-        )
-
-        def submap_with_fov(_map: Map) -> Map:
-            return _submap_with_fov_safe(_map, fov_coords[0], fov_coords[1])
-
-        def _extract_cutouts():
-            return (
-                submap_with_fov(map_bp),
-                submap_with_fov(map_bt),
-                submap_with_fov(map_br),
-                submap_with_fov(maps["continuum"]),
-                submap_with_fov(maps["magnetogram"]),
-            )
-
-        map_bp, map_bt, map_br, map_cont, map_los = _run_logged_step(
-            "Extracting FOV cutouts from source maps",
-            _extract_cutouts,
-        )
-
-        # Match GX/IDL base convention: bx := bp, by := -bt, bz := br.
-        map_bx = map_bp
-        map_by = map_from_data_header_compat(-map_bt.data, map_bt.meta)
-        map_bz = map_br
-
-        def _reproject_cutouts():
-            bottom_bx_local = map_bx.reproject_to(bottom_wcs_header, algorithm="exact")
-            bottom_by_local = map_by.reproject_to(bottom_wcs_header, algorithm="exact")
-            bottom_bz_local = map_bz.reproject_to(bottom_wcs_header, algorithm="exact")
-            base_bz_local = map_los.reproject_to(bottom_wcs_header, algorithm="exact")
-            base_ic_local = map_cont.reproject_to(bottom_wcs_header, algorithm="exact")
-            return (
-                bottom_bx_local,
-                bottom_by_local,
-                bottom_bz_local,
-                base_bz_local,
-                base_ic_local,
-                np.asarray(base_bz_local.data, dtype=float),
-                np.asarray(base_ic_local.data, dtype=float),
-                np.asarray(bottom_bz_local.data, dtype=float),
-            )
-
-        (
-            bottom_bx, bottom_by, bottom_bz, base_bz, base_ic,
-            base_bz_arr, base_ic_arr, bottom_bz_data,
-        ) = _run_logged_step("Reprojecting cutouts onto the model base grid", _reproject_cutouts)
-
-        def _build_base_products():
-            index_local = _build_index_header(
-                bottom_wcs_header,
-                bottom_bz,
-                observer_override=observer,
-                obs_time_override=obs_time,
-                rsun_override=rsun,
-            )
-            # Keep stored chromo_mask in the same ny/nx orientation as the 2D base products.
-            chromo_mask_local = decompose(base_bz_arr.T, base_ic_arr.T).T
-            return index_local, {
-                "bx": bottom_bx.data,
-                "by": bottom_by.data,
-                "bz": bottom_bz.data,
-                "ic": base_ic.data,
-                "chromo_mask": chromo_mask_local,
-                "index": index_local,
-            }
-
-        index, base_group = _run_logged_step("Building base-layer products", _build_base_products)
-
-        refmaps = {}
-        def add_refmap(ref_id: str, smap: Map) -> None:
-            smap = submap_with_fov(smap)
-            refmaps[ref_id] = {"data": smap.data, "wcs_header": _refmap_wcs_header(smap)}
-
-        def _collect_refmaps():
-            import time as time_mod
-
-            hmi_t0 = time_mod.perf_counter()
-            add_refmap("Bz_reference", maps["magnetogram"])
-            add_refmap("Ic_reference", maps["continuum"])
-            print(f"HMI references: 2/2 in {time_mod.perf_counter() - hmi_t0:.2f}s")
-
-            local_vert_current_error = None
-            def _compute_vert_current():
-                vc_bx_local, vc_by_local, vc_bz_local = remap_vertical_current_inputs(
-                    map_bx, map_by, map_bz
-                )
-                vc_header_local = _refmap_wcs_header(vc_bx_local)
-                rsun_arcsec_local = vc_bx_local.rsun_obs.to_value(u.arcsec)
-                crpix1_local, crpix2_local = vc_bx_local.wcs.wcs.crpix
-                cdelt1_local = vc_bx_local.scale.axis1.to_value(u.arcsec / u.pix)
-                cdelt2_local = vc_bx_local.scale.axis2.to_value(u.arcsec / u.pix)
-                jz_local = compute_vertical_current(
-                    vc_bz_local.data,
-                    vc_bx_local.data,
-                    vc_by_local.data,
-                    vc_header_local,
-                    rsun_arcsec_local,
-                    crpix1=crpix1_local,
-                    crpix2=crpix2_local,
-                    cdelt1_arcsec=cdelt1_local,
-                    cdelt2_arcsec=cdelt2_local,
-                )
-                refmaps["Vert_current"] = {"data": jz_local, "wcs_header": vc_header_local}
-            try:
-                _run_logged_step("Vertical current", _compute_vert_current)
-            except Exception as exc:
-                local_vert_current_error = str(exc)
-                print(f"Vertical current: skipped ({local_vert_current_error})")
-
-            aia_passbands = [pb for pb in (AIA_EUV_PASSBANDS + AIA_UV_PASSBANDS) if f"AIA_{pb}" in maps]
-            total_aia = len(aia_passbands)
-            aia_t0 = time_mod.perf_counter()
-            for idx, pb in enumerate(aia_passbands, start=1):
-                key = f"AIA_{pb}"
-                add_refmap(key, maps[key])
-                elapsed = time_mod.perf_counter() - aia_t0
-                print(f"AIA references: {idx}/{total_aia} ({pb}) in {elapsed:.2f}s")
-            return local_vert_current_error
-
-        vert_current_error = _run_logged_step("Collecting reference maps and derived products", _collect_refmaps)
-
-        obs_dr = (cfg.dx_km * u.km) / rsun
-        dr3 = np.array([obs_dr.value, obs_dr.value, obs_dr.value])
-        coord_tag = _format_coord_tag(
-            box_origin.transform_to(HeliographicCarrington(obstime=obs_time)).lon.to_value(u.deg),
-            box_origin.transform_to(HeliographicCarrington(obstime=obs_time)).lat.to_value(u.deg),
-        )
-        base = _stage_file_base(obs_time, coord_tag, projection_tag=projection_tag)
-        observer_metadata = _observer_metadata_from_source_map(maps["field"], cfg)
+    box_dims_resolved = _effective_box_dims_from_base(box_dims_resolved, prepared_run.base_group)
 
     empty_grid = np.zeros((box_dims_resolved[0], box_dims_resolved[1], box_dims_resolved[2]), dtype=float)
-    default_grid = {"dx": float(dr3[0]), "dy": float(dr3[1]), "dz": np.array([float(dr3[2])], dtype=float)}
+    default_grid = {
+        "dx": float(prepared_run.dr3[0]),
+        "dy": float(prepared_run.dr3[1]),
+        "dz": np.array([float(prepared_run.dr3[2])], dtype=float),
+    }
 
-    out_dir = _stage_output_dir(cfg.gxmodel_dir, obs_time)
+    out_dir = _stage_output_dir(cfg.gxmodel_dir, prepared_run.obs_time)
     execute_cmd = _build_execute_cmd(cfg)
-    lineage_marker = ""
-    entry_stage_for_marker = ""
-    if resume_mode and entry_loaded is not None:
-        entry_meta = dict(entry_loaded.get("metadata", {}))
-        lineage_root = _decode_id_text(entry_meta.get("lineage", "")).strip()
-        if not lineage_root:
-            entry_id = _decode_id_text(entry_meta.get("id", "")).strip()
-            _, entry_stage_tag = _split_stage_id(entry_id) if entry_id else ("", "")
-            entry_stage_for_marker = entry_stage_tag or _stage_tag_from_stage(entry_stage or target_stage)
-            entry_fmt = "SAV" if str(cfg.entry_box or "").lower().endswith(".sav") else "H5"
-            lineage_marker = f"ENTRY.{entry_stage_for_marker}.{entry_fmt}"
-            lineage_root = lineage_marker
-    else:
-        lineage_root = "OBS"
 
     produced = []
     stage_times = {}
@@ -2544,218 +3521,70 @@ def main(
         total = time_mod.perf_counter() - t_start
         print(f"Total elapsed: {total:.2f}s")
 
+    save_context = StageSaveContext(
+        cfg=cfg,
+        prepared_run=prepared_run,
+        execute_cmd=execute_cmd,
+        out_dir=out_dir,
+        default_grid=default_grid,
+        empty_grid=empty_grid,
+        produced=produced,
+    )
+
     def save_stage(
         stage_tag: str,
         stage_box: dict,
         *,
         source_axis_order_3d: str = "xyz",
         chromo_source_axis_order_2d: str = "yx",
-    ) -> None:
-        if not _should_save_stage(stage_tag, cfg):
-            return
-        stage_box = dict(stage_box)
-        if "base" not in stage_box:
-            stage_box["base"] = base_group
-        if "refmaps" not in stage_box:
-            stage_box["refmaps"] = refmaps
-        if "corona" in stage_box:
-            corona = stage_box["corona"]
-            if "dr" not in corona:
-                corona["dr"] = dr3
-            corona_for_id = corona
-            if _decode_id_text(source_axis_order_3d).strip().lower() == "zyx":
-                corona_for_id = _h5_corona_to_internal_xyz(dict(corona), "zyx")
-            voxel_id, corona_base = gx_box2id(
-                {"corona": corona_for_id, "lines": stage_box.get("lines"), "chromo": stage_box.get("chromo")},
-                return_corona_base=True,
-            )
-            if corona_base is not None:
-                corona["corona_base"] = int(corona_base)
-            stage_box["corona"] = corona
-            grid = dict(default_grid)
-            if voxel_id is not None:
-                grid["voxel_id"] = voxel_id
-            else:
-                grid["voxel_id"] = gx_box2id({"corona": {"bx": empty_grid, "by": empty_grid, "bz": empty_grid, "dr": dr3}})
-            if "chromo" in stage_box and "dz" in stage_box["chromo"]:
-                grid["dz"] = stage_box["chromo"]["dz"]
-            stage_box["grid"] = grid
-        elif "grid" not in stage_box:
-            stage_box["grid"] = default_grid
-        stage_id = f"{base}.{stage_tag}"
-        lineage_suffix = _canonical_lineage_suffix(stage_tag)
-        metadata = {
-            "execute": execute_cmd,
-            "id": stage_id,
-            "lineage": (
-                f"{lineage_marker}->{_lineage_delta_from_entry(entry_stage_for_marker or stage_tag, stage_tag)}.h5"
-                if lineage_marker
-                else _merge_lineage(lineage_root, lineage_suffix)
-            ),
-            "disambiguation": "SFQ" if cfg.sfq else "HMI",
-            "projection": _decode_id_text(projection_tag).upper(),
-            "axis_order_2d": "yx",
-            "axis_order_3d": "zyx",
-            "vector_layout": "split_components",
-        }
-        if vert_current_error:
-            metadata["vert_current_error"] = vert_current_error
-        stage_box["metadata"] = metadata
-        merged_observer = _merge_observer_metadata(
-            observer_metadata,
-            stage_box.get("observer") if isinstance(stage_box.get("observer"), dict) else None,
-        )
-        if merged_observer is not None:
-            stage_box["observer"] = merged_observer
-        stage_box = _normalize_stage_for_h5(
+    ) -> dict:
+        return _save_stage_passthrough(
+            stage_tag,
             stage_box,
+            context=save_context,
             source_axis_order_3d=source_axis_order_3d,
             chromo_source_axis_order_2d=chromo_source_axis_order_2d,
         )
-        out_path = _stage_filename(out_dir, base, stage_tag)
-        write_b3d_h5(str(out_path), stage_box)
-        print(f"Saved {stage_tag}: {out_path}")
-        produced.append(out_path)
 
     if start_rank <= 0 and (cfg.save_empty_box or cfg.empty_box_only or cfg.stop_after in ("none", "empty", "empty_box")):
         with _StageProgress("Computing NONE model") as progress:
             # NONE stage should preserve boundary conditions at z=0 and keep z>0 empty.
             # Canonical 3D order in H5 is (nz, ny, nx).
-            nz, ny, nx = box_dims_resolved[2], box_dims_resolved[1], box_dims_resolved[0]
-            corona_bx = np.zeros((nz, ny, nx), dtype=float)
-            corona_by = np.zeros((nz, ny, nx), dtype=float)
-            corona_bz = np.zeros((nz, ny, nx), dtype=float)
-            corona_bx[0, :, :] = np.asarray(base_group["bx"], dtype=float)
-            corona_by[0, :, :] = np.asarray(base_group["by"], dtype=float)
-            corona_bz[0, :, :] = np.asarray(base_group["bz"], dtype=float)
-            stage_box = {
-                "corona": {
-                    "bx": corona_bx,
-                    "by": corona_by,
-                    "bz": corona_bz,
-                    "dr": dr3,
-                    "attrs": {"model_type": "none"},
-                }
-            }
-            save_stage("NONE", stage_box, source_axis_order_3d="zyx")
+            stage_box = _compute_none_stage_box(prepared_run, box_dims_resolved)
+            stage_box = _normalize_runtime_stage_box_for_pipeline(
+                stage_box,
+                prepared_run=prepared_run,
+                stage_tag="NONE",
+                source_axis_order_3d="xyz",
+            )
+            from pyampp.io.model import ensure_geometry_contract_in_metadata
+            # Inject geometry_contract before writing NONE stage
+            ensure_geometry_contract_in_metadata(stage_box)
+            save_stage("NONE", stage_box, source_axis_order_3d="xyz")
             stage_times["NONE"] = progress.finish()
         if cfg.empty_box_only or _last_stage_tag(cfg.stop_after) == "NONE":
             finalize()
             return
 
-    def _make_pot_box() -> dict:
-        bnddata = np.asarray(bottom_bz_data, dtype=float).copy()
-        bnddata[np.isnan(bnddata)] = 0.0
-        maglib_lff = MagFieldLinFFF()
-        maglib_lff.set_field(bnddata)
-        pot_res = maglib_lff.LFFF_cube(nz=box_dims_resolved[2], alpha=0.0)
-        return {
-            "bx": pot_res["by"].swapaxes(0, 1),
-            "by": pot_res["bx"].swapaxes(0, 1),
-            "bz": pot_res["bz"].swapaxes(0, 1),
-            "dr": dr3,
-            "attrs": {"model_type": "pot"},
-        }
-
-    def _make_bnd_from_pot(pot_box: dict) -> dict:
-        bnd = {
-            "bx": np.array(pot_box["bx"], copy=True),
-            "by": np.array(pot_box["by"], copy=True),
-            "bz": np.array(pot_box["bz"], copy=True),
-            "dr": dr3,
-            "attrs": {"model_type": "bnd"},
-        }
-        # Internal cube layout is (x, y, z); overwrite the z=0 boundary with observed base vectors.
-        bnd["bx"][:, :, 0] = np.asarray(base_group["bx"], dtype=float).T
-        bnd["by"][:, :, 0] = np.asarray(base_group["by"], dtype=float).T
-        bnd["bz"][:, :, 0] = np.asarray(base_group["bz"], dtype=float).T
-        return bnd
-
-    def _run_nlfff_from_bnd(bnd_box: dict) -> dict:
-        maglib = MagFieldProcessor()
-        maglib.load_cube_vars({
-            "bx": bnd_box["by"].swapaxes(0, 1),
-            "by": bnd_box["bx"].swapaxes(0, 1),
-            "bz": bnd_box["bz"].swapaxes(0, 1),
-        })
-        res_nlf = maglib.NLFFF()
-        return {
-            "bx": res_nlf["by"].swapaxes(0, 1),
-            "by": res_nlf["bx"].swapaxes(0, 1),
-            "bz": res_nlf["bz"].swapaxes(0, 1),
-            "dr": dr3,
-            "attrs": {"model_type": "nlfff"},
-        }
-
-    active_jump = None
-    if cfg.entry_box and not cfg.rebuild:
-        if target_stage == "POT":
-            active_jump = "potential"
-        elif target_stage == "BND":
-            active_jump = "bounds"
-        elif target_stage == "NAS":
-            active_jump = "nlfff"
-        elif target_stage == "GEN":
-            active_jump = "lines"
-        elif target_stage == "CHR":
-            active_jump = "chromo"
-
-    entry_corona = None
-    entry_model = None
-    entry_lines = None
-    entry_axis_order = None
-    if active_jump and entry_loaded is not None:
-        entry_axis_order = entry_loaded.get("metadata", {}).get("axis_order_3d")
-        entry_corona = entry_loaded.get("corona")
-        if entry_corona:
-            entry_corona = _h5_corona_to_internal_xyz(entry_corona, entry_axis_order)
-        if entry_corona:
-            entry_model = entry_corona.get("attrs", {}).get("model_type")
-        entry_lines = entry_loaded.get("lines")
-        if entry_lines is None:
-            # Backward compatibility with legacy GEN files that stored line keys under chromo.
-            entry_lines = entry_loaded.get("chromo")
-
-    goto_lines = active_jump in ("lines", "chromo")
-    goto_chromo = active_jump == "chromo" or cfg.skip_lines
-
-    if goto_lines:
-        if not entry_corona:
-            raise ValueError("--jump2lines/--jump2chromo requires --entry-box with corona model_type=pot|nlfff")
-        nlfff_box = entry_corona
+    transition_inputs = _prepare_transition_stage_inputs(
+        prepared_run,
+        transition_plan,
+        entry_stage=entry_stage,
+        box_dims_resolved=box_dims_resolved,
+    )
+    active_jump = transition_inputs.active_jump
+    entry_lines = transition_inputs.entry_lines
+    goto_lines = transition_inputs.goto_lines
+    goto_chromo = transition_inputs.goto_chromo
+    pot_box = transition_inputs.pot_box
+    bnd_box = transition_inputs.bnd_box
+    nlfff_box = transition_inputs.nlfff_box
 
     if not goto_lines:
-        pot_box = None
-        bnd_box = None
 
-        if active_jump in ("potential", "bounds", "nlfff"):
-            if not entry_corona:
-                raise ValueError("--entry-box does not contain corona vectors required by selected jump/recompute action.")
-            if active_jump == "potential":
-                pot_box = entry_corona
-                if str(pot_box.get("attrs", {}).get("model_type", "")).lower() != "pot":
-                    pot_box["attrs"] = {"model_type": "pot"}
-            elif active_jump == "bounds":
-                bnd_box = entry_corona
-                if str(bnd_box.get("attrs", {}).get("model_type", "")).lower() not in ("bnd", "bounds"):
-                    bnd_box["attrs"] = {"model_type": "bnd"}
-            elif active_jump == "nlfff":
-                # Target NAS can start from POT/BND/NAS entry cubes.
-                if entry_stage == "POT":
-                    pot_box = entry_corona
-                    bnd_box = _make_bnd_from_pot(pot_box)
-                elif entry_stage == "BND":
-                    bnd_box = entry_corona
-                elif entry_stage in ("NAS", "GEN", "CHR"):
-                    nlfff_box = entry_corona
-                    if str(nlfff_box.get("attrs", {}).get("model_type", "")).lower() != "nlfff":
-                        nlfff_box["attrs"] = {"model_type": "nlfff"}
-                else:
-                    raise ValueError(f"Unsupported entry stage for --jump2nlfff path: {entry_stage}")
-
-        if pot_box is None and bnd_box is None and "nlfff_box" not in locals():
+        if pot_box is None and bnd_box is None and nlfff_box is None:
             with _StageProgress("Computing POT model") as progress:
-                pot_box = _make_pot_box()
+                pot_box = _compute_pot_stage_box(prepared_run, box_dims_resolved)["corona"]
                 save_stage("POT", {"corona": pot_box})
                 stage_times["POT"] = progress.finish()
             if cfg.potential_only or _last_stage_tag(cfg.stop_after) == "POT":
@@ -2771,7 +3600,7 @@ def main(
 
         if bnd_box is None and pot_box is not None and not cfg.use_potential:
             with _StageProgress("Computing BND model") as progress:
-                bnd_box = _make_bnd_from_pot(pot_box)
+                bnd_box = _compute_bnd_stage_box(prepared_run, pot_box, box_dims_resolved)["corona"]
                 save_stage("BND", {"corona": bnd_box})
                 stage_times["BND"] = progress.finish()
             if _last_stage_tag(cfg.stop_after) == "BND":
@@ -2785,118 +3614,50 @@ def main(
                 finalize()
                 return
 
-        if "nlfff_box" not in locals():
-            if cfg.use_potential:
-                if pot_box is None:
-                    pot_box = _make_pot_box()
-                nlfff_box = {
-                    "bx": np.array(pot_box["bx"], copy=True),
-                    "by": np.array(pot_box["by"], copy=True),
-                    "bz": np.array(pot_box["bz"], copy=True),
-                    "dr": dr3,
-                    "attrs": {"model_type": "pot"},
-                }
-            else:
-                if bnd_box is None:
-                    if pot_box is None:
-                        pot_box = _make_pot_box()
-                    bnd_box = _make_bnd_from_pot(pot_box)
-                with _StageProgress("Computing NAS model") as progress:
-                    nlfff_box = _run_nlfff_from_bnd(bnd_box)
-                    save_stage("NAS", {"corona": nlfff_box})
-                    stage_times["NAS"] = progress.finish()
-                if cfg.nlfff_only or _last_stage_tag(cfg.stop_after) == "NAS":
-                    finalize()
-                    return
-        elif str(nlfff_box.get("attrs", {}).get("model_type", "")).lower() == "nlfff":
-            # Jumped to NAS from an existing NAS/GEN/CHR entry box.
-            with _StageProgress("Preparing NAS model from entry data") as progress:
-                save_stage("NAS", {"corona": nlfff_box})
-                stage_times["NAS"] = progress.finish()
-            if cfg.nlfff_only or _last_stage_tag(cfg.stop_after) == "NAS":
-                finalize()
-                return
+        if nlfff_box is None and cfg.use_potential and pot_box is None:
+            pot_box = _compute_pot_stage_box(prepared_run, box_dims_resolved)["corona"]
+        if nlfff_box is None and not cfg.use_potential and bnd_box is None:
+            if pot_box is None:
+                pot_box = _compute_pot_stage_box(prepared_run, box_dims_resolved)["corona"]
+            bnd_box = _compute_bnd_stage_box(prepared_run, pot_box, box_dims_resolved)["corona"]
 
-    stage_prefix = "NAS"
-    is_pot_skip_path = (
-        resume_mode
-        and entry_stage == "POT"
-        and target_stage in ("GEN", "CHR")
-    )
-    if str(nlfff_box.get("attrs", {}).get("model_type", "")).lower() == "pot" or is_pot_skip_path:
-        stage_prefix = "POT"
-    gen_stage_tag = f"{stage_prefix}.GEN"
-    chr_stage_tag = f"{stage_prefix}.CHR"
-
-    if goto_chromo:
-        required_line_keys = [
-            "codes", "apex_idx", "start_idx", "end_idx", "seed_idx",
-            "av_field", "phys_length", "voxel_status",
-        ]
-        if entry_lines and all(k in entry_lines for k in required_line_keys):
-            lines = entry_lines
-        else:
-            # Direct CHR jump without GEN metadata: produce chromo-only augmentation.
-            lines = None
-        compute_lines_time = 0.0
-        if cfg.skip_lines:
-            print("Skipping GEN line computation by request...")
-    else:
-        with _StageProgress(f"Computing {gen_stage_tag} model") as progress:
-            gen_load_t0 = time_mod.perf_counter()
-            maglib = MagFieldProcessor()
-            _load_maglib_idl_cube(maglib, nlfff_box, dr3)
-            gen_load_elapsed = time_mod.perf_counter() - gen_load_t0
-            resolved_reduce_passed = cfg.reduce_passed if cfg.reduce_passed is not None else (0 if cfg.center_vox else 1)
-            resolved_chromo_level = (1000.0 / float(cfg.dx_km)) if cfg.dx_km else 1.0
-            trace_kwargs = {
-                "seeds": None,
-                "chromo_level": resolved_chromo_level,
-                "reduce_passed": resolved_reduce_passed,
-            }
-            gen_trace_t0 = time_mod.perf_counter()
-            lines = _lines_fast(maglib, **trace_kwargs)
-            gen_trace_elapsed = time_mod.perf_counter() - gen_trace_t0
-            print(
-                f"\n{gen_stage_tag} tracer load: {gen_load_elapsed:.2f}s | "
-                f"line trace: {gen_trace_elapsed:.2f}s | "
-                f"reduce_passed={resolved_reduce_passed!r} | "
-                f"chromo_level={resolved_chromo_level:.12g}"
-            )
-            compute_lines_time = progress.finish()
-
-    if lines is not None:
-        chr_stage_tag = f"{stage_prefix}.GEN.CHR"
-
-    header = _make_header(maps["field"]) if maps is not None else {}
-    chromo_mask = None
-    if "chromo_mask" in base_group:
-        chromo_mask = np.asarray(base_group["chromo_mask"]).T
-    chromo_box = combo_model(nlfff_box, dr3, base_bz_arr.T, base_ic_arr.T, chromo_mask=chromo_mask)
-    for k in ["codes", "apex_idx", "start_idx", "end_idx", "seed_idx",
-              "av_field", "phys_length", "voxel_status"]:
-        if lines is not None and k in lines:
-            chromo_box[k] = lines[k]
-    if "phys_length" in chromo_box:
-        chromo_box["phys_length"] *= dr3[0]
-    chromo_box["attrs"] = header
-
-    if not goto_chromo:
-        gen_save_t0 = time_mod.perf_counter()
-        lines_group = _make_lines_group(lines, dr3)
-        save_stage(gen_stage_tag, {"corona": nlfff_box, "lines": lines_group})
-        print(f"{gen_stage_tag} stage save: {time_mod.perf_counter() - gen_save_t0:.2f}s")
-        stage_times[gen_stage_tag] = compute_lines_time
-        if cfg.generic_only or _last_stage_tag(cfg.stop_after) == "GEN":
-            finalize()
+        nas_result = _run_nas_stage(
+            cfg,
+            prepared_run,
+            pot_box,
+            bnd_box,
+            nlfff_box,
+            box_dims_resolved,
+            save_stage,
+            finalize,
+            stage_times,
+            _StageProgress,
+        )
+        nlfff_box = _prepare_stage_corona_payload(
+            nas_result.nlfff_box,
+            source="memory",
+            expected_shape_3d=box_dims_resolved,
+            allowed_model_types=("pot", "nlfff"),
+        )
+        if nas_result.finalized:
             return
 
-    with _StageProgress(f"Computing {chr_stage_tag} model") as progress:
-        chr_stage = {"corona": nlfff_box, "chromo": _make_chromo_group(chromo_box)}
-        if lines is not None:
-            chr_stage["lines"] = _make_lines_group(lines, dr3)
-        save_stage(chr_stage_tag, chr_stage, chromo_source_axis_order_2d="xy")
-        stage_times[chr_stage_tag] = progress.finish()
+    gen_chr_result = _run_gen_chr_stages(
+        cfg,
+        prepared_run,
+        nlfff_box,
+        resume_mode=resume_mode,
+        entry_stage=entry_stage,
+        target_stage=target_stage,
+        goto_chromo=goto_chromo,
+        entry_lines=entry_lines,
+        save_stage=save_stage,
+        finalize=finalize,
+        stage_times=stage_times,
+        stage_progress_cls=_StageProgress,
+    )
+    if gen_chr_result.finalized:
+        return
 
     finalize()
 

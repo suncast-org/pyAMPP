@@ -1,5 +1,6 @@
 from os import PathLike
 from pathlib import Path
+import re
 from typing import Any
 
 import numpy as np
@@ -950,8 +951,10 @@ def observer_reference_details_from_file(path: str | bytes | PathLike[str]) -> d
     return details
 
 
+from astropy.constants import R_sun
 from astropy.coordinates import SkyCoord
 from sunpy.coordinates import HeliographicCarrington, HeliographicStonyhurst
+from sunpy.coordinates import get_earth
 from sunpy.map import all_coordinates_from_map
 from PyQt5.QtWidgets import  QMessageBox
 
@@ -983,6 +986,40 @@ def _header_from_text(header_text):
         return None
 
 
+def _normalized_obstime_text(value):
+    if value is None:
+        return None
+    text = _decode_meta_text(value).strip()
+    if not text:
+        return None
+    text = text.lstrip("=").strip().strip("'").strip('"')
+    if not text:
+        return None
+    try:
+        return Time(text).isot
+    except Exception:
+        return None
+
+
+def _header_value_from_text(header_text, *keys):
+    text = _decode_meta_text(header_text)
+    if not text:
+        return None
+    if "\\n" in text and "\n" not in text:
+        text = text.replace("\\n", "\n")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        normalized_key = key.strip().upper()
+        if normalized_key not in {candidate.upper() for candidate in keys}:
+            continue
+        value = value.strip().lstrip("=").strip().strip("'").strip('"')
+        return value or None
+    return None
+
+
 def _observer_ephemeris_from_header(header):
     if header is None:
         return {}
@@ -1006,7 +1043,66 @@ def _observer_ephemeris_from_header(header):
     return ephemeris
 
 
+def _earth_observer_ephemeris(obs_time, *, rsun_cm=None):
+    if obs_time is None:
+        return {}
+    try:
+        when = obs_time if isinstance(obs_time, Time) else Time(obs_time)
+        coord = get_earth(when).transform_to(HeliographicStonyhurst(obstime=when))
+    except Exception:
+        return {}
+
+    if rsun_cm is None:
+        rsun_cm = float(R_sun.cgs.value)
+
+    return {
+        "obs_date": when.isot,
+        "hgln_obs_deg": float(coord.lon.to_value(u.deg)),
+        "hglt_obs_deg": float(coord.lat.to_value(u.deg)),
+        "dsun_cm": float(coord.radius.to_value(u.cm)),
+        "rsun_cm": float(rsun_cm),
+    }
+
+
+def _model_base_header(box_b3d: dict):
+    base = box_b3d.get("base", {}) if isinstance(box_b3d, dict) else {}
+    if not isinstance(base, dict):
+        return None
+    for key in ("index", "index_header", "wcs_header"):
+        if base.get(key) is not None:
+            header = _header_from_text(base.get(key))
+            if header is not None:
+                return header
+    return None
+
+
+def _model_observer_obstime(box_b3d: dict):
+    base = box_b3d.get("base", {}) if isinstance(box_b3d, dict) else {}
+    if isinstance(base, dict):
+        for key in ("index", "index_header", "wcs_header"):
+            value = _normalized_obstime_text(_header_value_from_text(base.get(key), "DATE-OBS", "DATE_OBS"))
+            if value:
+                return value
+
+    refmaps = box_b3d.get("refmaps", {}) if isinstance(box_b3d, dict) else {}
+    if isinstance(refmaps, dict):
+        for ref_key in ("Bz_reference", "Ic_reference"):
+            payload = refmaps.get(ref_key)
+            if not isinstance(payload, dict):
+                continue
+            value = _normalized_obstime_text(_header_value_from_text(payload.get("wcs_header"), "DATE-OBS", "DATE_OBS"))
+            if value:
+                return value
+
+    metadata = box_b3d.get("metadata", {}) if isinstance(box_b3d, dict) else {}
+    contract = metadata.get("geometry_contract") if isinstance(metadata, dict) else None
+    return _normalized_obstime_text(getattr(contract, "obstime", None))
+
+
 def _model_observer_header(box_b3d: dict):
+    header = _model_base_header(box_b3d)
+    if header is not None:
+        return header
     refmaps = box_b3d.get("refmaps", {}) if isinstance(box_b3d, dict) else {}
     if isinstance(refmaps, dict):
         for key in ("Bz_reference", "Ic_reference"):
@@ -1026,9 +1122,22 @@ def normalize_observer_metadata(box_b3d: dict) -> dict:
     ephemeris = dict(observer.get("ephemeris", {})) if isinstance(observer.get("ephemeris"), dict) else {}
     required = {"obs_date", "hgln_obs_deg", "hglt_obs_deg", "dsun_cm", "rsun_cm"}
     incomplete = not required.issubset(ephemeris.keys())
+    header = None
     if incomplete:
         header = _model_observer_header(box_b3d)
         ephemeris.update({k: v for k, v in _observer_ephemeris_from_header(header).items() if k not in ephemeris})
+        incomplete = not required.issubset(ephemeris.keys())
+    if incomplete:
+        if header is None:
+            header = _model_observer_header(box_b3d)
+        header_obs_date = None if header is None else _normalized_obstime_text(header.get("DATE-OBS", header.get("DATE_OBS")))
+        obs_time = _normalized_obstime_text(ephemeris.get("obs_date"))
+        if obs_time is None:
+            obs_time = header_obs_date
+        if obs_time is None:
+            obs_time = _model_observer_obstime(box_b3d)
+        rsun_cm = ephemeris.get("rsun_cm")
+        ephemeris.update({k: v for k, v in _earth_observer_ephemeris(obs_time, rsun_cm=rsun_cm).items() if k not in ephemeris})
     if observer.get("name") is None:
         observer["name"] = "earth"
     if observer.get("label") is None:
@@ -1278,9 +1387,9 @@ def read_b3d_h5(filename):
         bz_cor = b3dbox['corona']['bz']
     """
     from pyampp.geometry.contract import GeometryContract
-    from pyampp.io import load_model_from_h5
+    from pyampp.io import load_model
 
-    model = load_model_from_h5(filename)
+    model = load_model(filename)
     metadata = model.get("metadata") if isinstance(model, dict) else None
     if isinstance(metadata, dict):
         contract = metadata.get("geometry_contract")
@@ -1301,9 +1410,9 @@ def write_b3d_h5(filename, box_b3d):
         A dictionary containing the B3D data to be written.
     """
 
-    from pyampp.io import save_model_to_h5
+    from pyampp.io import save_model
 
-    return save_model_to_h5(box_b3d, filename)
+    return save_model(box_b3d, filename)
 
 
 def update_line_seeds_h5(filename, line_seeds):

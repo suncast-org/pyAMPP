@@ -23,9 +23,9 @@ def _apply_geometry_contract_to_h5(h5_path: Path, *, strict: bool = False) -> bo
     When ``strict`` is True, incomplete contracts raise.
     """
     # Canonical path: delegate completion/persistence to io.model.
-    from pyampp.io.model import complete_and_persist_contract_in_h5
+    from pyampp.io.model import _complete_and_persist_contract_in_h5
 
-    return complete_and_persist_contract_in_h5(h5_path, strict=strict)
+    return _complete_and_persist_contract_in_h5(h5_path, strict=strict)
 
 
 def _decode_if_bytes(v: Any) -> Any:
@@ -62,9 +62,11 @@ def _field(box: Any, name: str, default=None):
 
 def _load_box(sav_path: Path):
     data = readsav(str(sav_path), verbose=False)
-    if "box" not in data:
-        raise ValueError(f"Input SAV does not contain 'box': {sav_path}")
-    return data["box"].flat[0]
+    if "box" in data:
+        return data["box"].flat[0]
+    if "pbox" in data:
+        return data["pbox"].flat[0]
+    raise ValueError(f"Input SAV does not contain 'box' or 'pbox': {sav_path}")
 
 
 def _ensure_group(f: h5py.File | h5py.Group, name: str):
@@ -158,16 +160,18 @@ def _to_line_flat(arr: Any, dtype) -> np.ndarray:
 
 def _normalize_czyx_from_components_or_bcube(box: Any) -> np.ndarray | None:
     if _has_field(box, "BCUBE"):
-        b = np.asarray(box["BCUBE"], dtype=np.float32)
+        b = np.asarray(box["BCUBE"], dtype=np.float64)
         if b.ndim == 4 and b.shape[0] == 3:
             return b
         if b.ndim == 4 and b.shape[-1] == 3:
             return np.moveaxis(b, -1, 0)
     if _has_field(box, "BX") and _has_field(box, "BY") and _has_field(box, "BZ"):
-        bx = np.asarray(box["BX"], dtype=np.float32)
-        by = np.asarray(box["BY"], dtype=np.float32)
-        bz = np.asarray(box["BZ"], dtype=np.float32)
+        bx = np.asarray(box["BX"], dtype=np.float64)
+        by = np.asarray(box["BY"], dtype=np.float64)
+        bz = np.asarray(box["BZ"], dtype=np.float64)
         if bx.ndim == 3 and by.shape == bx.shape and bz.shape == bx.shape:
+            # scipy.readsav restores GX BOX component cubes in (z, y, x), which
+            # already matches the canonical HDF5 3D axis order.
             return np.stack([bx, by, bz], axis=0)
     return None
 
@@ -358,8 +362,8 @@ def build_h5_from_sav(sav_path: Path, out_h5: Path, template_h5: Path | None = N
                 _replace_dataset(g_lines, "phys_length", _to_line_flat(box["PHYSLENGTH"], np.float64))
             if _has_field(box, "STATUS"):
                 _replace_dataset(g_lines, "voxel_status", _to_line_flat(box["STATUS"], np.uint8))
-            _replace_dataset(g_lines, "start_idx", _to_line_flat(box["STARTIDX"], np.int64))
-            _replace_dataset(g_lines, "end_idx", _to_line_flat(box["ENDIDX"], np.int64))
+            _replace_dataset(g_lines, "start_idx", _to_line_flat(box["STARTIDX"], np.int32))
+            _replace_dataset(g_lines, "end_idx", _to_line_flat(box["ENDIDX"], np.int32))
             _replace_dataset(g_lines, "dr", dr.astype(np.float64))
 
         if has_chromo:
@@ -430,7 +434,7 @@ def build_h5_from_sav(sav_path: Path, out_h5: Path, template_h5: Path | None = N
                 "corona_base": int(_field(box, "CORONA_BASE", 0)),
             }
             if _has_field(box, "STARTIDX"):
-                id_input["start_idx"] = _to_line_flat(box["STARTIDX"], np.int64)
+                id_input["start_idx"] = _to_line_flat(box["STARTIDX"], np.int32)
             if _has_field(box, "CHROMO_IDX"):
                 id_input["chromo_idx"] = np.asarray(box["CHROMO_IDX"], dtype=np.int64)
             if _has_field(box, "CHROMO_T"):
@@ -495,9 +499,6 @@ def main() -> None:
     args = _parse_args()
     out_h5 = build_h5_from_sav(args.sav_path, args.out_h5, template_h5=args.template_h5)
     print(f"Wrote: {out_h5}")
-
-
-__all__ = ["build_h5_from_sav", "main"]
 
 
 if __name__ == "__main__":

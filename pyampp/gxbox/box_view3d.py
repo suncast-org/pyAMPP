@@ -15,7 +15,7 @@ from sunpy.coordinates import Heliocentric, Helioprojective
 from pyampp.geometry import observer_fov_box_to_world_corners, world_to_local_cartesian_mm
 from pyampp.gxbox.boxutils import validate_number, read_b3d_h5, write_b3d_h5, update_line_seeds_h5
 from pyampp.gxbox.observer_restore import resolve_observer_with_info
-from pyampp.io import load_model_from_h5
+from pyampp.io import load_model
 import pickle
 import vtk
 
@@ -2056,7 +2056,7 @@ class MagFieldViewer(BackgroundPlotter):
         if current_params['fov_box_visible'] != self.previous_params.get('fov_box_visible') or init:
             self.update_fov_box(current_params['fov_box_visible'], do_render=False)
 
-        if not init:
+        if not init and self.current_sphere_id in self.spheres:
             if current_params['center_x'] != self.previous_params.get('center_x') or \
                     current_params['center_y'] != self.previous_params.get('center_y') or \
                     current_params['center_z'] != self.previous_params.get('center_z') or \
@@ -2500,6 +2500,13 @@ class MagFieldViewer(BackgroundPlotter):
             Whether the sphere widget is visible.
         """
 
+        if self.current_sphere_id not in self.spheres:
+            if self.viz_sphere_button.isChecked() != sphere_visible:
+                self.viz_sphere_button.disconnect()
+                self.viz_sphere_button.setChecked(sphere_visible)
+                self.viz_sphere_button.toggled.connect(self.toggle_sphere_visibility)
+            return
+
         if self.current_sphere_id in self.spheres:
             if 'sphere_actor' in self.spheres[self.current_sphere_id]:
                 sphere_actor = self.spheres[self.current_sphere_id]['sphere_actor']
@@ -2815,11 +2822,6 @@ class MagFieldViewer(BackgroundPlotter):
                 return
         
         write_b3d_h5(filename, self.box.b3d)
-        try:
-            from pyampp.util.build_h5_from_sav import _apply_geometry_contract_to_h5
-            _apply_geometry_contract_to_h5(Path(filename))
-        except Exception:
-            pass  # geometry contract application is best-effort
         self.model_path = Path(filename)
         if self.save_model_button is not None and not self.save_model_button.isEnabled():
             self.save_model_button.setEnabled(True)
@@ -2828,54 +2830,27 @@ class MagFieldViewer(BackgroundPlotter):
 
     def load_box(self):
         default_filename = "b3d_data.h5"
-        filename = QFileDialog.getOpenFileName(self, "Load Box", default_filename, "HDF5 Files (*.h5)")[0]
+        filename = QFileDialog.getOpenFileName(self, "Load Box", default_filename, "Model Files (*.h5 *.sav)")[0]
         if not filename:
             return
         try:
-            loaded = load_model_from_h5(filename)
+            from pyampp.gxbox.view_h5 import prepare_model_for_viewer
+
+            box, obs_time, b3dtype, temp_h5_path = prepare_model_for_viewer(filename)
         except Exception as exc:
             QMessageBox.critical(self.app_window, "Load Failed", f"Could not read model file:\n{exc}")
             return
 
-        if not _contains_viewer_field_payload(loaded):
-            QMessageBox.critical(
-                self.app_window,
-                "Incompatible Model",
-                "This file does not contain a 3D field payload (corona/chromo).\n\n"
-                "It appears to be a metadata-only thin HDF5 (e.g. h5thin-export output), "
-                "which cannot be rendered by gxbox-view3d.",
-            )
-            return
-
-        self.box.b3d = loaded
-
-        if "corona" in self.box.b3d:
-            self.b3dtype = "corona"
-        elif "nlfff" in self.box.b3d:
-            self.b3dtype = "corona"
-            self.box.b3d["corona"] = self.box.b3d.pop("nlfff")
-        elif "pot" in self.box.b3d:
-            self.b3dtype = "corona"
-            self.box.b3d["corona"] = self.box.b3d.pop("pot")
-        elif "chromo" in self.box.b3d:
-            self.b3dtype = "chromo"
-            chromo = self.box.b3d.get("chromo", {})
-            if "bx" not in chromo and "bcube" in chromo:
-                bcube = chromo["bcube"]
-                if bcube.ndim == 4 and bcube.shape[-1] == 3:
-                    chromo["bx"] = bcube[:, :, :, 0]
-                    chromo["by"] = bcube[:, :, :, 1]
-                    chromo["bz"] = bcube[:, :, :, 2]
-                    self.box.b3d["chromo"] = chromo
-        else:
-            QMessageBox.critical(
-                self.app_window,
-                "Incompatible Model",
-                "No known model types found in file (expected corona/chromo).",
-            )
-            return
+        model_path = Path(filename).expanduser().resolve()
+        self.box = box
+        self.b3dtype = b3dtype
+        self.model_path = model_path if temp_h5_path is None else None
+        self.source_model_path = model_path
+        self.timestr = obs_time.to_datetime().strftime("_%Y%m%dT%H%M%S") if obs_time is not None else ""
+        self._on_clear_spheres()
         self.init_grid()
         self._apply_streamline_control_state()
+        self._original_line_seeds = copy.deepcopy(self.box.b3d.get("line_seeds")) if isinstance(self.box.b3d.get("line_seeds"), dict) else None
+        self._restore_line_seeds_from_box()
         self.previous_params = {}
         self.update_plot()
-        self._restore_line_seeds_from_box()

@@ -141,10 +141,9 @@ Clone or normalize an entry box without recomputation
 
 .. code-block:: bash
 
-   gx-fov2box \
-     --entry-box /path/to/model.sav \
-     --gxmodel-dir /path/to/output_dir \
-     --clone-only
+   pyampp-export-model \
+     --model-path /path/to/model.sav \
+     --out-h5 /path/to/output_dir/model.h5
 
 This is the simplest way to convert a legacy SAV entry box into normalized HDF5.
 
@@ -167,10 +166,9 @@ Recommended patterns:
 
   .. code-block:: bash
 
-     gx-fov2box \
-       --entry-box /path/to/model.sav \
-       --gxmodel-dir /path/to/output_dir \
-       --clone-only
+     pyampp-export-model \
+       --model-path /path/to/model.sav \
+       --out-h5 /path/to/output_dir/model.h5
 
   Use this when you want the closest HDF5 equivalent of the original SAV entry.
   This path does not rerun ``POT``, ``NAS``, ``GEN``, or ``CHR``.
@@ -277,8 +275,6 @@ Important control flags:
 - ``--rebuild-from-none``:
   treat the entry as the authoritative ``NONE``-equivalent source and run
   forward from there
-- ``--clone-only``:
-  normalize/copy entry content without recomputing
 - ``--jump2potential``
 - ``--jump2bounds``
 - ``--jump2nlfff``
@@ -288,6 +284,19 @@ Important control flags:
 The jump flags are mainly for controlled resume/testing workflows. For ordinary
 use, start from the detected entry stage or use one of the explicit rebuild
 modes.
+
+Supported expert-only jump behavior:
+
+- The GUI does not expose the jump flags as general controls. They remain
+  CLI-level expert options for controlled resume/testing workflows.
+- Some allowed jump requests expand through implicit intermediate stages:
+  - ``NONE -> BND`` expands through ``POT``
+  - ``POT -> NAS`` expands through ``BND``
+- Direct expert shortcuts currently supported by the CLI include:
+  - ``--jump2lines`` from a ``POT`` entry, producing ``POT.GEN``
+  - ``--jump2chromo`` from a ``NAS`` entry, producing a fresh chromo
+    augmentation without requiring existing GEN metadata
+- Unsupported jump requests are rejected explicitly rather than guessed.
 
 Observer and Display Metadata
 -----------------------------
