@@ -3,11 +3,11 @@
 
 Output: multi-extension FITS (MEF).
   HDU 0  – empty primary with run metadata
-  HDU 1  – BX        (base/bx,  float32,  Gauss)
-  HDU 2  – BY        (base/by,  float32,  Gauss)
-  HDU 3  – BZ        (base/bz,  float32,  Gauss)
-  HDU 4  – IC        (base/ic,  float32,  continuum intensity, normalised)
-  HDU 5  – CHROMO_MASK  (base/chromo_mask, int16)
+  HDU 1  – BX        (base/bx,  float64,  Gauss)
+  HDU 2  – BY        (base/by,  float64,  Gauss)
+  HDU 3  – BZ        (base/bz,  float64,  Gauss)
+  HDU 4  – IC        (base/ic,  float64,  continuum intensity, normalised)
+  HDU 5  – CHROMO_MASK  (base/chromo_mask, int32)
 
 WCS is taken from the stored base/index header bytes when present;
 otherwise a minimal fallback WCS is written from the geometry contract.

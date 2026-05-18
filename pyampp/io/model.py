@@ -25,6 +25,11 @@ from pyampp.geometry.contract import (
     GeometryContract,
     complete_geometry_contract,
 )
+from pyampp.gxbox.boxutils import (
+    normalize_observer_metadata,
+)
+from pyampp.io._sav_convert import build_h5_from_sav
+
 
 def ensure_geometry_contract_in_metadata(model_dict: dict, strict: bool = False) -> None:
     """
@@ -53,10 +58,6 @@ def ensure_geometry_contract_in_metadata(model_dict: dict, strict: bool = False)
     if new_contract is not None:
         metadata["geometry_contract"] = new_contract
         model_dict["metadata"] = metadata
-from pyampp.gxbox.boxutils import (
-    normalize_observer_metadata,
-)
-from pyampp.io._sav_convert import build_h5_from_sav
 
 
 _CANONICAL_AXIS_ORDER_2D = "yx"

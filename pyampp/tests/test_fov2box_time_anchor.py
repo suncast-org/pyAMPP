@@ -253,6 +253,8 @@ def _make_transition_cfg(**overrides):
         rebuild=False,
         rebuild_from_none=False,
         info=False,
+        reproject_algorithm="adaptive",
+        reproject_scan=None,
     )
     params.update(overrides)
     return gx_fov2box.Fov2BoxConfig(**params)
