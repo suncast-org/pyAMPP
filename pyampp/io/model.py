@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Canonical pyAMPP Model I/O: Provenance-Agnostic Loader/Writer Contract
 
@@ -13,6 +11,8 @@ This module enforces the canonical, provenance-agnostic contract for all pyAMPP 
 
 This guarantees that pyAMPP model data is provenance-agnostic and round-trip idempotent, and that all downstream consumers see a single, canonical data structure.
 """
+
+from __future__ import annotations
 
 import tempfile
 from pathlib import Path
@@ -142,6 +142,7 @@ def load_model(
         return _load_model_sav(path, strict=strict, keep_temp_h5=keep_temp_h5)
     raise ValueError(f"Unsupported model format for {path}; expected a canonical pyAMPP .h5 or legacy .sav file")
 
+
 def _normalize_model_dict(obj):
     """
     Recursively decode textual byte payloads while preserving numeric ndarrays.
@@ -166,6 +167,7 @@ def _normalize_model_dict(obj):
             return obj.item()
         return obj
     return obj
+
 
 def _prepare_model_for_h5_write(model_dict: dict[str, Any]) -> dict[str, Any]:
     """Return a shallow-copied payload safe for generic HDF5 writers."""
