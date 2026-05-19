@@ -12,7 +12,10 @@ from typing import TYPE_CHECKING
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
 from sunpy.coordinates import Heliocentric, Helioprojective
+from sunpy.coordinates import HeliographicCarrington, HeliographicStonyhurst
+from sunpy.map.header_helper import make_fitswcs_header
 
 if TYPE_CHECKING:  # pragma: no cover
     from pyampp.gxbox.box import Box, BoxGeometryMixin
@@ -445,6 +448,70 @@ def world_to_local_cartesian_mm(world: SkyCoord, *, z_base_mm: float = 0.0) -> n
     return rows.astype(float)
 
 
+def make_observer_wcs_header(
+    *,
+    nx: int,
+    ny: int,
+    xc_arcsec: float,
+    yc_arcsec: float,
+    dx_arcsec: float,
+    dy_arcsec: float,
+    observer: SkyCoord,
+    obs_time,
+    bunit: str,
+    observer_name: str = "custom",
+    rsun_ref_m: float | None = None,
+    rsun_obs_arcsec: float | None = None,
+) -> fits.Header:
+    """Create a SunPy-compatible observer-aware WCS header."""
+    ref_coord = SkyCoord(
+        Tx=float(xc_arcsec) * u.arcsec,
+        Ty=float(yc_arcsec) * u.arcsec,
+        frame=Helioprojective(observer=observer, obstime=observer.obstime),
+    )
+    header = make_fitswcs_header(
+        np.empty((int(ny), int(nx)), dtype=np.float32),
+        ref_coord,
+        scale=u.Quantity([float(dx_arcsec), float(dy_arcsec)], u.arcsec / u.pix),
+    )
+
+    observer_hgs = observer.transform_to(HeliographicStonyhurst(obstime=observer.obstime))
+    l0_deg = float(observer_hgs.lon.to_value(u.deg))
+    b0_deg = float(observer_hgs.lat.to_value(u.deg))
+    dsun_cm = float(observer_hgs.radius.to_value(u.cm))
+
+    rsun_ref_m_value = float(rsun_ref_m) if rsun_ref_m is not None else 6.957e8
+    rsun_obs_arcsec_value = rsun_obs_arcsec
+    if rsun_obs_arcsec_value is None or not np.isfinite(float(rsun_obs_arcsec_value)) or float(rsun_obs_arcsec_value) <= 0:
+        ratio = min(1.0, rsun_ref_m_value / (dsun_cm / 100.0))
+        rsun_obs_arcsec_value = float(np.degrees(np.arcsin(ratio)) * 3600.0)
+    else:
+        rsun_obs_arcsec_value = float(rsun_obs_arcsec_value)
+
+    observer_label = str(observer_name or "custom").replace("-", " ").title()
+    header["DATE-OBS"] = str(obs_time)
+    header["BUNIT"] = str(bunit)
+    header["OBSERVER"] = observer_label
+    header["B0"] = b0_deg
+    header["L0"] = l0_deg
+    header["RSUN_ARC"] = float(rsun_obs_arcsec_value)
+    header["SOLAR_B0"] = b0_deg
+    header["SOLAR_L0"] = l0_deg
+    header["HGLN_OBS"] = l0_deg
+    header["HGLT_OBS"] = b0_deg
+    header["DSUN_OBS"] = dsun_cm / 100.0
+    header["RSUN_REF"] = rsun_ref_m_value
+    header["RSUN_OBS"] = float(rsun_obs_arcsec_value)
+
+    try:
+        observer_hgc = observer.transform_to(HeliographicCarrington(obstime=observer.obstime, observer="self"))
+        header["CRLN_OBS"] = float(observer_hgc.lon.to_value(u.deg))
+        header["CRLT_OBS"] = float(observer_hgc.lat.to_value(u.deg))
+    except Exception:
+        pass
+    return header
+
+
 def __getattr__(name: str):
     if name in {"Box", "BoxGeometryMixin"}:
         from pyampp.gxbox.box import Box, BoxGeometryMixin
@@ -472,6 +539,7 @@ __all__ = [
     "build_fov_box_from_red_box_world",
     "build_fov_box_from_user_hpc_and_red_box_world",
     "world_to_local_cartesian_mm",
+    "make_observer_wcs_header",
     "Box",
     "BoxGeometryMixin",
 ]

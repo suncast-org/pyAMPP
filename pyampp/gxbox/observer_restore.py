@@ -70,6 +70,7 @@ def normalize_observer_key(observer_key: str | None) -> str:
         "sdo/aia": "sdo",
         "sdo/hmi": "sdo",
         "earth": "earth",
+        "terra": "earth",
         "solo": "solar orbiter",
         "solar-orbiter": "solar orbiter",
         "solarorbiter": "solar orbiter",
@@ -77,11 +78,13 @@ def normalize_observer_key(observer_key: str | None) -> str:
         "stereo a": "stereo-a",
         "stereo-a": "stereo-a",
         "stereoa": "stereo-a",
+        "stereo ahead": "stereo-a",
         "stereo b": "stereo-b",
         "stereo-b": "stereo-b",
         "stereob": "stereo-b",
+        "stereo behind": "stereo-b",
     }
-    return aliases.get(key, "earth")
+    return aliases.get(key, key)
 
 
 def _observer_coord_from_ephemeris(ephemeris: dict, obs_time=None) -> SkyCoord | None:
