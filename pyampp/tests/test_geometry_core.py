@@ -13,6 +13,7 @@ from pyampp.geometry import (
     compute_inscribing_fov_box_from_world,
     compute_inscribing_fov_from_world,
     local_cartesian_to_world,
+    make_observer_wcs_header,
     observer_fov_box_to_world_corners,
     observer_rectangle_to_hpc_corners,
     project_box_front_face_to_observer_hpc,
@@ -97,6 +98,37 @@ def test_public_geometry_core_projects_vectorized_polyline_to_pixels() -> None:
     assert pixels[1].shape == (5,)
     assert np.all(np.isfinite(pixels[0]))
     assert np.all(np.isfinite(pixels[1]))
+
+
+def test_make_observer_wcs_header_uses_explicit_iso_obstime_and_observer_cards() -> None:
+    observer_time = Time("2024-05-12T16:00:00")
+    header_time = Time("2024-05-12T18:30:00")
+    observer = get_earth(observer_time)
+
+    header = make_observer_wcs_header(
+        nx=64,
+        ny=48,
+        xc_arcsec=12.5,
+        yc_arcsec=-8.5,
+        dx_arcsec=2.0,
+        dy_arcsec=3.0,
+        observer=observer,
+        obs_time=header_time,
+        bunit="DN s-1 pix-1",
+        observer_name="earth",
+    )
+
+    assert header["DATE-OBS"] == header_time.isot
+    assert header["DATE_OBS"] == header_time.isot
+    assert header["BUNIT"] == "DN s-1 pix-1"
+    assert header["OBSERVER"] == "Earth"
+    assert header["NAXIS1"] == 64
+    assert header["NAXIS2"] == 48
+    assert header["CTYPE1"].startswith("HPLN")
+    assert header["CTYPE2"].startswith("HPLT")
+    for key in ("HGLN_OBS", "HGLT_OBS", "DSUN_OBS", "RSUN_REF", "RSUN_OBS"):
+        assert key in header
+        assert np.isfinite(float(header[key]))
 
 
 def test_local_cartesian_to_world_rejects_nonfinite_rows() -> None:

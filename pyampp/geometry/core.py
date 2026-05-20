@@ -13,6 +13,7 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from astropy.time import Time
 from sunpy.coordinates import Heliocentric, Helioprojective
 from sunpy.coordinates import HeliographicCarrington, HeliographicStonyhurst
 from sunpy.map.header_helper import make_fitswcs_header
@@ -464,10 +465,16 @@ def make_observer_wcs_header(
     rsun_obs_arcsec: float | None = None,
 ) -> fits.Header:
     """Create a SunPy-compatible observer-aware WCS header."""
+    obstime_value = obs_time if obs_time is not None else getattr(observer, "obstime", None)
+    if obstime_value is None:
+        raise ValueError("obs_time is required when observer has no obstime.")
+    obstime = Time(obstime_value)
+    date_obs = obstime.isot
+
     ref_coord = SkyCoord(
         Tx=float(xc_arcsec) * u.arcsec,
         Ty=float(yc_arcsec) * u.arcsec,
-        frame=Helioprojective(observer=observer, obstime=observer.obstime),
+        frame=Helioprojective(observer=observer, obstime=obstime),
     )
     header = make_fitswcs_header(
         np.empty((int(ny), int(nx)), dtype=np.float32),
@@ -475,7 +482,7 @@ def make_observer_wcs_header(
         scale=u.Quantity([float(dx_arcsec), float(dy_arcsec)], u.arcsec / u.pix),
     )
 
-    observer_hgs = observer.transform_to(HeliographicStonyhurst(obstime=observer.obstime))
+    observer_hgs = observer.transform_to(HeliographicStonyhurst(obstime=obstime))
     l0_deg = float(observer_hgs.lon.to_value(u.deg))
     b0_deg = float(observer_hgs.lat.to_value(u.deg))
     dsun_cm = float(observer_hgs.radius.to_value(u.cm))
@@ -489,7 +496,8 @@ def make_observer_wcs_header(
         rsun_obs_arcsec_value = float(rsun_obs_arcsec_value)
 
     observer_label = str(observer_name or "custom").replace("-", " ").title()
-    header["DATE-OBS"] = str(obs_time)
+    header["DATE-OBS"] = date_obs
+    header["DATE_OBS"] = date_obs
     header["BUNIT"] = str(bunit)
     header["OBSERVER"] = observer_label
     header["B0"] = b0_deg
@@ -504,7 +512,7 @@ def make_observer_wcs_header(
     header["RSUN_OBS"] = float(rsun_obs_arcsec_value)
 
     try:
-        observer_hgc = observer.transform_to(HeliographicCarrington(obstime=observer.obstime, observer="self"))
+        observer_hgc = observer.transform_to(HeliographicCarrington(obstime=obstime, observer="self"))
         header["CRLN_OBS"] = float(observer_hgc.lon.to_value(u.deg))
         header["CRLT_OBS"] = float(observer_hgc.lat.to_value(u.deg))
     except Exception:
