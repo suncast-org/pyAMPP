@@ -27,7 +27,18 @@ def decompose(mag, cont):
 
     sub = np.abs(mag) < mag_qs
     count = np.count_nonzero(sub)
-    cutoff_qs = np.sum(cont[sub]) / count
+    if count > 0:
+        cutoff_qs = float(np.sum(cont[sub]) / count)
+    else:
+        finite_cont = np.asarray(cont, dtype=float)
+        finite_mask = np.isfinite(finite_cont)
+        if np.any(finite_mask):
+            cutoff_qs = float(np.nanmedian(finite_cont[finite_mask]))
+        else:
+            cutoff_qs = 1.0
+
+    if not np.isfinite(cutoff_qs):
+        cutoff_qs = 1.0
 
     nbins = cont.size
     data_range = (float(np.min(cont)), float(np.max(cont)))

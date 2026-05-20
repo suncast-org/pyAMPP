@@ -10,6 +10,7 @@ This is the documentation for pyAMPP.
    model_io
    model_hdf5_format
    geometry_api
+   observer_geometry_delegation_update
    gx_fov2box_usage
    gui_workflow
    viewers
