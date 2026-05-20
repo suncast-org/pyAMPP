@@ -38,7 +38,8 @@ Release focus:
 
 - SAV/HDF5 import parity fixes for CHR entry boxes,
 - corrected CHR magnetic-cube handling in the Python ``combo_model`` path,
-- documentation updates clarifying expected IDL-vs-Python POT-stage differences.
+- documentation updates clarifying expected IDL-vs-Python POT-stage differences,
+- observer geometry API delegation and WCS header time normalization.
 
 Highlights:
 
@@ -54,6 +55,11 @@ Highlights:
   - pyAMPP uses the Python extrapolation-library path
 - Removed raw SAV payload dumping from the normalized HDF5 conversion path by
   default.
+- Delegated observer/geometry resolution to the public ``pyampp.geometry`` API
+  in ``make_observer_wcs_header``; ``obs_time`` is now the authoritative time
+  source, normalized via ``Time(...).isot`` for consistent ``DATE-OBS`` /
+  ``DATE_OBS`` serialization (PR #44).
+- Added regression test coverage for observer WCS header time consistency.
 
 Packaging/versioning:
 
