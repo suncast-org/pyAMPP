@@ -48,6 +48,12 @@ from pyampp.gxbox.boxutils import (
     remap_vertical_current_inputs,
 )
 from pyampp.io import load_model
+from pyampp.io.refmaps import (
+    build_fits_refmaps_for_model,
+    build_refmap_payload_for_model,
+    discover_fits_refmap_map_ids,
+    model_obstime_from_base_index,
+)
 from pyampp.io.model import _normalize_loaded_model_dict
 from pyampp.gxbox.gx_box2id import gx_box2id
 from pyampp.gxbox.observer_restore import (
@@ -312,6 +318,7 @@ class Fov2BoxConfig:
     info: bool
     reproject_algorithm: str
     reproject_scan: Optional[str]
+    refmaps_path: Optional[Tuple[str, ...]] = None
 
 
 @dataclass
@@ -983,10 +990,15 @@ def _prepare_observation_state(
     base_group = run_logged_step("Building base-layer products", _build_base_products)
 
     refmaps: Dict[str, Any] = {}
+    refmap_model_time = model_obstime_from_base_index({"base": base_group}) or obs_time.isot
 
     def add_refmap(ref_id: str, smap: Map) -> None:
-        smap = submap_with_fov(smap)
-        refmaps[ref_id] = {"data": smap.data, "wcs_header": _refmap_wcs_header(smap)}
+        refmaps[ref_id] = build_refmap_payload_for_model(
+            smap,
+            model_obstime=refmap_model_time,
+            target_fov=(fov_coords[0], fov_coords[1]),
+            reproject_algorithm=cfg.reproject_algorithm,
+        )
 
     def _collect_refmaps():
         hmi_t0 = time_mod.perf_counter()
@@ -1032,6 +1044,45 @@ def _prepare_observation_state(
             add_refmap(key, maps[key])
             elapsed = time_mod.perf_counter() - aia_t0
             print(f"AIA references: {idx}/{total_aia} ({pb}) in {elapsed:.2f}s")
+        cache_dir = data_dir_path / obs_time.datetime.strftime("%Y-%m-%d")
+        cache_t0 = time_mod.perf_counter()
+        cache_map_ids = {
+            path: map_id
+            for path, map_id in discover_fits_refmap_map_ids([cache_dir], generic=False).items()
+            if map_id not in refmaps
+        }
+        if cache_map_ids:
+            missing_cache_refmaps = build_fits_refmaps_for_model(
+                list(cache_map_ids.keys()),
+                model_obstime=refmap_model_time,
+                target_fov=(fov_coords[0], fov_coords[1]),
+                reproject_algorithm=cfg.reproject_algorithm,
+                map_ids=cache_map_ids,
+                generic=False,
+            )
+            for key, payload in missing_cache_refmaps.items():
+                refmaps[key] = payload
+            print(
+                "Cached context references: "
+                f"{len(missing_cache_refmaps)} from {cache_dir} "
+                f"in {time_mod.perf_counter() - cache_t0:.2f}s"
+            )
+        if cfg.refmaps_path:
+            external_t0 = time_mod.perf_counter()
+            external_refmaps = build_fits_refmaps_for_model(
+                cfg.refmaps_path,
+                model_obstime=refmap_model_time,
+                target_fov=(fov_coords[0], fov_coords[1]),
+                reproject_algorithm=cfg.reproject_algorithm,
+                generic=True,
+            )
+            for key, payload in external_refmaps.items():
+                refmaps[key] = payload
+            print(
+                "External references: "
+                f"{len(external_refmaps)} from {len(cfg.refmaps_path)} path(s) "
+                f"in {time_mod.perf_counter() - external_t0:.2f}s"
+            )
         return local_vert_current_error
 
     vert_current_error = run_logged_step("Collecting reference maps and derived products", _collect_refmaps)
@@ -1308,13 +1359,18 @@ def _normalize_runtime_stage_box_for_pipeline(
         working_box,
         source_axis_order_3d=source_axis_order_3d,
     )
-    return _normalize_loaded_model_dict(
+    normalized_model = _normalize_loaded_model_dict(
         normalized_h5_box,
         source_path=Path(f"{metadata['id']}.h5"),
         source_kind="h5",
         strict=False,
         stored_contract=None,
     )
+    normalized_metadata = normalized_model.get("metadata")
+    if isinstance(normalized_metadata, dict) and "geometry_contract" in normalized_metadata:
+        metadata["geometry_contract"] = normalized_metadata["geometry_contract"]
+        working_box["metadata"] = metadata
+    return working_box
 
 
 def _compute_pot_stage_box(
@@ -2326,6 +2382,8 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
         cmd.append("--rebuild-from-none")
     if cfg.reproject_algorithm != "adaptive":
         cmd += ["--reproject-algorithm", cfg.reproject_algorithm]
+    for path in cfg.refmaps_path or ():
+        cmd += ["--refmaps-path", path]
     return shlex.join(cmd)
 
 
@@ -3129,6 +3187,12 @@ def main(
         "--reproject-scan",
         help="Batch-run OBS->NONE once per reprojection algorithm. Use 'all' or a comma-separated list such as 'adaptive,exact,interpolation'. Each run writes to a gxmodel-dir/reproject_<algorithm> subdirectory.",
     ),
+    refmaps_path: Optional[List[str]] = typer.Option(
+        None,
+        "--refmaps-path",
+        "--refmap-path",
+        help="External FITS file or directory of FITS reference maps to add to model refmaps. May be repeated.",
+    ),
 ) -> None:
     cfg = Fov2BoxConfig(
         time=time,
@@ -3182,6 +3246,7 @@ def main(
         info=info,
         reproject_algorithm=reproject_algorithm,
         reproject_scan=reproject_scan,
+        refmaps_path=tuple(refmaps_path or ()),
     )
 
     cfg.download_backend = str(cfg.download_backend or "drms").strip().lower()

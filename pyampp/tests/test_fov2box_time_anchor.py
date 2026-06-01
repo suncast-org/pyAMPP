@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import astropy.units as u
@@ -762,9 +763,10 @@ def test_normalize_runtime_stage_box_for_pipeline_uses_private_io_normalizer() -
     }
 
     captured = {}
+    contract = object()
     expected_loaded = {
         "corona": {"bx": np.ones((4, 3, 2), dtype=float)},
-        "metadata": {"axis_order_3d": "zyx"},
+        "metadata": {"axis_order_3d": "zyx", "geometry_contract": contract},
     }
 
     with patch.object(
@@ -778,7 +780,10 @@ def test_normalize_runtime_stage_box_for_pipeline_uses_private_io_normalizer() -
             stage_tag="NONE",
         )
 
-    assert normalized is expected_loaded
+    assert normalized is not expected_loaded
+    assert normalized["corona"]["bx"].shape == (2, 3, 4)
+    assert np.array_equal(normalized["corona"]["bx"], stage_box["corona"]["bx"])
+    assert normalized["metadata"]["geometry_contract"] is contract
     mocked_normalize.assert_called_once()
     payload = mocked_normalize.call_args.args[0]
     assert mocked_normalize.call_args.kwargs["source_kind"] == "h5"
@@ -1919,6 +1924,46 @@ def test_normalize_stage_for_h5_transposes_chr_2d_maps_from_xy_to_yx():
     assert np.array_equal(normalized["chromo"]["tr"], stage_box["chromo"]["tr"].T)
     assert np.array_equal(normalized["chromo"]["tr_h"], stage_box["chromo"]["tr_h"].T)
     assert np.array_equal(normalized["chromo"]["chromo_mask"], stage_box["chromo"]["chromo_mask"].T)
+
+
+def test_runtime_stage_normalization_preserves_internal_3d_order():
+    stage_box = {
+        "corona": {
+            "bx": np.zeros((4, 3, 2), dtype=float),
+            "by": np.zeros((4, 3, 2), dtype=float),
+            "bz": np.zeros((4, 3, 2), dtype=float),
+            "dr": np.ones(3, dtype=float),
+        }
+    }
+    prepared = SimpleNamespace(
+        base_group={
+            "bx": np.zeros((3, 4), dtype=float),
+            "by": np.zeros((3, 4), dtype=float),
+            "bz": np.zeros((3, 4), dtype=float),
+            "ic": np.zeros((3, 4), dtype=float),
+        },
+        base_ic_arr=np.zeros((3, 4), dtype=float),
+        refmaps={},
+        observer_metadata=None,
+        base="test",
+        projection_tag="CEA",
+    )
+    contract = object()
+
+    with patch.object(
+        gx_fov2box,
+        "_normalize_loaded_model_dict",
+        return_value={"metadata": {"geometry_contract": contract}},
+    ):
+        normalized = gx_fov2box._normalize_runtime_stage_box_for_pipeline(
+            stage_box,
+            prepared_run=prepared,
+            stage_tag="NONE",
+            source_axis_order_3d="xyz",
+        )
+
+    assert normalized["corona"]["bx"].shape == (4, 3, 2)
+    assert normalized["metadata"]["geometry_contract"] is contract
 
 
 def test_build_h5_from_sav_does_not_write_raw_sav_by_default(tmp_path):

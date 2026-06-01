@@ -142,6 +142,17 @@ Optional context maps, each in its own subgroup:
 - ``refmaps/<map_id>/data``
 - ``refmaps/<map_id>/wcs_header``
 
+External FITS reference maps imported by ``gx-fov2box`` or
+``pyampp.io.refmaps`` are stored in this same layout. Each imported map group
+may also carry:
+
+- ``refmaps/<map_id>.attrs["order_index"]`` for stable viewer ordering
+- ``refmaps/<map_id>.attrs["source_path"]`` for source-file provenance
+
+For generated boxes, reference-map alignment uses the model time inferred from
+``base/index``. Earth/SDO line-of-sight maps are reprojected to the model
+reference-map footprint; non-Earth maps keep their native WCS footprint.
+
 ``grid``
 ~~~~~~~~
 

@@ -35,6 +35,9 @@ gxbox-view2d
 Behavior:
 
 - loads geometry, stage metadata, and available embedded/base/refmap context from the selected box
+- when a box contains ``metadata/execute`` paths, discovers matching filesystem
+  context maps from ``--data-dir`` and additional FITS maps from
+  ``--refmaps-path``
 - persists updated observer/FOV metadata back to ``.h5`` boxes when the dialog is accepted
 - supports built-in, manual custom, and uploaded-reference observer workflows in the observer panel
 - exposes ``MODEL-DATE`` separately from the true observer ``OBS-DATE`` when the observer record comes from an external reference
@@ -51,6 +54,17 @@ Optional file picker mode:
 .. code-block:: bash
 
    gxbox-view2d --pick
+
+Additional filesystem reference-map paths:
+
+.. code-block:: bash
+
+   gxbox-view2d /path/to/model.h5 --ref-map-path /path/to/refmaps
+
+``--ref-map-path`` may be passed more than once. It accepts a FITS file or a
+directory of FITS files. The viewer uses the shared ``pyampp.io.refmaps``
+discovery policy, so recognized AIA maps appear with their wavelength labels
+and EOVSA maps appear with frequency labels such as ``EOVSA_f1.418GHz``.
 
 gxrefmap-view
 -------------

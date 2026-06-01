@@ -69,6 +69,50 @@ def test_download_images_drms_schedules_all_missing_products_with_worker_cap(mon
     assert result["94"] == "/fake/94.fits"
 
 
+def test_download_images_drms_keeps_returned_context_paths_when_final_scan_rejects_them(monkeypatch, tmp_path: Path) -> None:
+    when = Time("2026-04-03T19:46:37.800")
+    downloader = SDOImageDownloader(
+        when,
+        data_dir=str(tmp_path),
+        backend="drms",
+        hmi=False,
+        euv=True,
+        uv=False,
+        force_download=False,
+    )
+
+    def fake_check_files_exist(_datadir, returnfilelist=False):
+        if not returnfilelist:
+            return {}
+        return {pb: None for pb in downloader_mod.AIA_EUV_PASSBANDS}
+
+    def fake_drms_get_fits(series, segment, wave=None, time_window=12):
+        return f"/cache/aia.{wave}.fits"
+
+    class _ImmediateExecutor:
+        def __init__(self, max_workers):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            fut = concurrent.futures.Future()
+            fut.set_result(fn(*args, **kwargs))
+            return fut
+
+    monkeypatch.setattr(downloader, "_check_files_exist", fake_check_files_exist)
+    monkeypatch.setattr(downloader, "_drms_get_fits", fake_drms_get_fits)
+    monkeypatch.setattr(downloader_mod, "ThreadPoolExecutor", _ImmediateExecutor)
+
+    result = downloader._download_images_drms()
+
+    assert result["171"] == "/cache/aia.171.fits"
+
+
 def test_cache_store_concurrent_updates_preserve_all_entries(monkeypatch, tmp_path: Path) -> None:
     downloader = SDOImageDownloader(Time("2025-11-26T15:47:52"), data_dir=str(tmp_path), backend="drms")
     original_load_cache_index = downloader._load_cache_index

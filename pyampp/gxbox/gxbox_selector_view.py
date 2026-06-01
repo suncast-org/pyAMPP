@@ -5,7 +5,7 @@ import argparse
 import re
 import shlex
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import astropy.units as u
 import numpy as np
@@ -23,7 +23,7 @@ from pyampp.gxbox.gx_fov2box import (
     _infer_time_from_entry_loaded,
     _load_entry_box_any,
 )
-from pyampp.io import load_model, save_model
+from pyampp.io import discover_fits_refmap_map_ids, load_model, save_model
 from pyampp.gxbox.selector_api import (
     BoxGeometrySelection,
     CoordMode,
@@ -190,6 +190,36 @@ def _parse_execute_box_dims_and_dx(execute_text: str) -> tuple[Optional[tuple[in
     return dims, dx_km
 
 
+def _parse_execute_refmap_paths(execute_text: str) -> tuple[str, ...]:
+    if not execute_text:
+        return ()
+    try:
+        parts = shlex.split(str(execute_text))
+    except Exception:
+        parts = []
+    paths: list[str] = []
+    flags = {"--refmaps-path", "--refmap-path"}
+    for i, token in enumerate(parts):
+        if token in flags and i + 1 < len(parts):
+            paths.append(parts[i + 1])
+        elif token.startswith("--refmaps-path=") or token.startswith("--refmap-path="):
+            paths.append(token.split("=", 1)[1])
+    return tuple(path for path in paths if str(path).strip())
+
+
+def _merge_ref_map_paths(*path_groups: Optional[Sequence[str]]) -> tuple[str, ...]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for paths in path_groups:
+        for path in paths or ():
+            text = str(path).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            merged.append(text)
+    return tuple(merged)
+
+
 def _infer_dims_from_entry(entry_loaded: dict[str, Any]) -> tuple[int, int, int]:
     meta = entry_loaded.get("metadata", {}) if isinstance(entry_loaded, dict) else {}
     axis_order = _decode_id_text(meta.get("axis_order_3d", "")).strip().lower() if isinstance(meta, dict) else ""
@@ -313,9 +343,36 @@ def _discover_filesystem_maps(time_iso: str, data_dir: Optional[str]) -> dict[st
         return {}
     try:
         downloader = SDOImageDownloader(Time(time_iso), data_dir=str(base), euv=True, uv=True, hmi=True)
-        return {k: v for k, v in downloader._check_files_exist(downloader.path, returnfilelist=True).items() if v}
+        files = {k: v for k, v in downloader._check_files_exist(downloader.path, returnfilelist=True).items() if v}
+        files.update(
+            {
+                key: value
+                for key, value in _discover_external_ref_map_files(
+                    [downloader.path],
+                    generic=False,
+                ).items()
+                if key not in files
+            }
+        )
+        return files
     except Exception:
         return {}
+
+
+def _discover_external_ref_map_files(ref_map_paths: Optional[Sequence[str]], *, generic: bool = True) -> dict[str, str]:
+    if not ref_map_paths:
+        return {}
+    out: dict[str, str] = {}
+    for path, refmap_id in discover_fits_refmap_map_ids(ref_map_paths, generic=generic).items():
+        out[_viewer_context_id_from_refmap_id(refmap_id)] = str(path)
+    return out
+
+
+def _viewer_context_id_from_refmap_id(refmap_id: str) -> str:
+    match = re.fullmatch(r"AIA_(\d+)", str(refmap_id))
+    if match:
+        return match.group(1)
+    return str(refmap_id)
 
 
 def _available_map_ids_from_sources(map_files: dict[str, str], refmaps: dict[str, dict], base_maps: dict[str, Any]) -> list[str]:
@@ -369,10 +426,37 @@ def _available_map_ids_from_sources(map_files: dict[str, str], refmaps: dict[str
             out.append(display_id)
     if "Vert_current" in refmaps and "Vert_current" not in out:
         out.append("Vert_current")
+    aliased_refmaps = {
+        "Bz_reference",
+        "Ic_reference",
+        "Vert_current",
+        "AIA_94",
+        "AIA_131",
+        "AIA_1600",
+        "AIA_1700",
+        "AIA_171",
+        "AIA_193",
+        "AIA_211",
+        "AIA_304",
+        "AIA_335",
+    }
+    for ref_key in sorted(refmaps.keys()):
+        if ref_key not in aliased_refmaps and ref_key not in out:
+            out.append(ref_key)
+    for map_id in sorted(map_files.keys()):
+        if map_id not in {
+            "magnetogram",
+            "continuum",
+            "field",
+            "inclination",
+            "azimuth",
+            "disambig",
+        } and map_id not in out:
+            out.append(map_id)
     return out or list(_DEFAULT_MAP_IDS)
 
 
-def _build_session_input(entry_path: Path) -> SelectorSessionInput:
+def _build_session_input(entry_path: Path, ref_map_paths: Optional[Sequence[str]] = None) -> SelectorSessionInput:
     entry_loaded = _load_entry_box_any(entry_path)
     if not _contains_viewer_field_payload(entry_loaded):
         raise ValueError(
@@ -385,6 +469,8 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
     meta = entry_loaded.get("metadata", {}) if isinstance(entry_loaded, dict) else {}
     execute_text = _decode_id_text(meta.get("execute", "")) if isinstance(meta, dict) else ""
     data_dir, _gxmodel_dir = _extract_execute_paths(execute_text)
+    execute_ref_map_paths = _parse_execute_refmap_paths(execute_text)
+    all_ref_map_paths = _merge_ref_map_paths(execute_ref_map_paths, ref_map_paths)
     explicit_fov, square_fov, explicit_fov_box = _observer_fov_from_entry(entry_loaded)
     observer_meta = entry_loaded.get("observer") if isinstance(entry_loaded, dict) else None
     observer_name = observer_meta.get("name", "earth") if isinstance(observer_meta, dict) else "earth"
@@ -414,6 +500,7 @@ def _build_session_input(entry_path: Path) -> SelectorSessionInput:
             custom_observer_source = raw_source
 
     map_files = _discover_filesystem_maps(time_iso, data_dir)
+    map_files.update(_discover_external_ref_map_files(all_ref_map_paths))
     refmaps = {}
     raw_refmaps = entry_loaded.get("refmaps")
     if isinstance(raw_refmaps, dict):
@@ -652,6 +739,15 @@ def main() -> int:
     parser.add_argument("entry_box", nargs="?", help="Path to the saved .h5 or .sav box file.")
     parser.add_argument("--pick", action="store_true", help="Open a file picker even if a path is provided.")
     parser.add_argument("--dir", dest="start_dir", help="Initial directory for the file picker.")
+    parser.add_argument(
+        "--ref-map-path",
+        action="append",
+        default=[],
+        help=(
+            "Additional FITS file or directory of FITS files to expose as "
+            "filesystem context maps. May be passed more than once."
+        ),
+    )
     args = parser.parse_args()
 
     app = QApplication.instance()
@@ -669,7 +765,7 @@ def main() -> int:
 
     entry_path = Path(entry_arg).expanduser().resolve()
     try:
-        session_input = _build_session_input(entry_path)
+        session_input = _build_session_input(entry_path, ref_map_paths=args.ref_map_path)
     except Exception as exc:
         QMessageBox.critical(
             None,

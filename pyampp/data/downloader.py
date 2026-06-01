@@ -308,7 +308,11 @@ class SDOImageDownloader:
                 self._drms_throttle_seen = False
                 _run_jobs(retry_jobs, 1, "AIA retry")
 
-        return self._check_files_exist(self.path, returnfilelist=True)
+        verified_files = self._check_files_exist(self.path, returnfilelist=True)
+        for key, path in files.items():
+            if path and not verified_files.get(key):
+                verified_files[key] = path
+        return verified_files
 
     def _handle_euv(self, all_files):
         if self.force_download:
