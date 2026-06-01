@@ -1012,7 +1012,7 @@ def _prepare_observation_state(
             vc_bx_local, vc_by_local, vc_bz_local = remap_vertical_current_inputs(
                 map_bx, map_by, map_bz
             )
-            vc_header_local = _refmap_wcs_header(vc_bx_local)
+            vc_header_local = vc_bx_local.wcs.to_header().tostring(sep="\n", endcard=True)
             rsun_arcsec_local = vc_bx_local.rsun_obs.to_value(u.arcsec)
             crpix1_local, crpix2_local = vc_bx_local.wcs.wcs.crpix
             cdelt1_local = vc_bx_local.scale.axis1.to_value(u.arcsec / u.pix)
@@ -1028,7 +1028,13 @@ def _prepare_observation_state(
                 cdelt1_arcsec=cdelt1_local,
                 cdelt2_arcsec=cdelt2_local,
             )
-            refmaps["Vert_current"] = {"data": jz_local, "wcs_header": vc_header_local}
+            jz_map = map_from_data_header_compat(jz_local, vc_bx_local.wcs.to_header())
+            refmaps["Vert_current"] = build_refmap_payload_for_model(
+                jz_map,
+                model_obstime=refmap_model_time,
+                target_fov=(fov_coords[0], fov_coords[1]),
+                reproject_algorithm=cfg.reproject_algorithm,
+            )
 
         try:
             run_logged_step("Vertical current", _compute_vert_current)
@@ -2663,41 +2669,6 @@ def _build_index_header(
     return header.tostring(sep="\n", endcard=True)
 
 
-def _refmap_wcs_header(smap: Map) -> str:
-    """
-    Persist enough FITS-WCS metadata to preserve the map timestamp and basic
-    solar observer context across HDF5 save/load cycles.
-    """
-    header = smap.wcs.to_header()
-    try:
-        date_obs = Time(smap.date).isot if getattr(smap, "date", None) is not None else None
-        if date_obs:
-            header["DATE-OBS"] = date_obs
-            header["DATE_OBS"] = date_obs
-    except Exception:
-        pass
-    try:
-        if getattr(smap, "rsun_obs", None) is not None:
-            header["RSUN_OBS"] = float(u.Quantity(smap.rsun_obs).to_value(u.arcsec))
-    except Exception:
-        pass
-    try:
-        if getattr(smap, "rsun_meters", None) is not None:
-            header["RSUN_REF"] = float(u.Quantity(smap.rsun_meters).to_value(u.m))
-    except Exception:
-        pass
-    try:
-        obs = getattr(smap, "observer_coordinate", None)
-        obs_time = getattr(smap, "date", None)
-        if obs is not None and obs_time is not None:
-            obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=obs_time))
-            header["HGLN_OBS"] = float(obs_hgs.lon.to_value(u.deg))
-            header["HGLT_OBS"] = float(obs_hgs.lat.to_value(u.deg))
-    except Exception:
-        pass
-    return header.tostring(sep="\n", endcard=True)
-
-
 def _print_info(cfg: Fov2BoxConfig) -> None:
     resolved_reduce_passed = cfg.reduce_passed if cfg.reduce_passed is not None else (0 if cfg.center_vox else 1)
     resolved_chromo_level = (1000.0 / float(cfg.dx_km)) if cfg.dx_km else 1.0
@@ -3191,7 +3162,7 @@ def main(
         None,
         "--refmaps-path",
         "--refmap-path",
-        help="External FITS file or directory of FITS reference maps to add to model refmaps. May be repeated.",
+        help="Directory of external FITS reference maps to add to model refmaps. May be repeated.",
     ),
 ) -> None:
     cfg = Fov2BoxConfig(

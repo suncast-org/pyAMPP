@@ -23,8 +23,8 @@ Typical repository paths:
 
 - ``--data-dir`` for downloaded SDO source data
 - ``--gxmodel-dir`` for generated model stages
-- optional ``--refmaps-path`` for additional FITS reference-map files or
-  directories to embed in the saved box
+- optional ``--refmaps-path`` for a directory of external FITS reference maps to
+  embed in the saved box
 
 Projection choice:
 
@@ -247,8 +247,8 @@ Useful flags:
 - ``--force-download`` to bypass cache reuse
 - ``--euv`` to include AIA EUV context maps
 - ``--uv`` to include AIA UV context maps
-- ``--refmaps-path PATH`` to include additional FITS reference maps from a file
-  or directory. This option may be passed more than once.
+- ``--refmaps-path PATH`` to include additional FITS reference maps from a
+  directory. This option may be passed more than once.
 
 Reference-map import policy:
 

@@ -13,7 +13,7 @@ from astropy.io import fits
 from astropy.time import Time
 import astropy.units as u
 from astropy.coordinates import SkyCoord
-from sunpy.coordinates import Helioprojective, propagate_with_solar_surface
+from sunpy.coordinates import HeliographicStonyhurst, Helioprojective, propagate_with_solar_surface
 from sunpy.map import Map, make_fitswcs_header
 
 from pyampp.geometry.contract import infer_obstime
@@ -475,6 +475,15 @@ def _refmap_wcs_header(
     try:
         if getattr(smap, "rsun_meters", None) is not None:
             header["RSUN_REF"] = float(u.Quantity(smap.rsun_meters).to_value(u.m))
+    except Exception:
+        pass
+    try:
+        obs = getattr(smap, "observer_coordinate", None)
+        obs_time = getattr(smap, "date", None)
+        if obs is not None and obs_time is not None:
+            obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=obs_time))
+            header["HGLN_OBS"] = float(obs_hgs.lon.to_value(u.deg))
+            header["HGLT_OBS"] = float(obs_hgs.lat.to_value(u.deg))
     except Exception:
         pass
     if source_path is not None:

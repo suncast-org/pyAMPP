@@ -521,7 +521,7 @@ class PyAmppGUI(QMainWindow):
         self.refmaps_path_edit = QLineEdit()
         self.refmaps_path_edit.setText(self._settings.value("paths/refmaps_path", "", type=str))
         self.refmaps_path_edit.setMinimumWidth(520)
-        self.refmaps_path_edit.setToolTip("Optional FITS file or directory of external reference maps")
+        self.refmaps_path_edit.setToolTip("Optional directory of external FITS reference maps")
         self.refmaps_path_edit.returnPressed.connect(self.update_refmaps_path)
         self.refmaps_path_edit.textChanged.connect(self._persist_refmaps_path)
         self.refmaps_browse_button = QPushButton()

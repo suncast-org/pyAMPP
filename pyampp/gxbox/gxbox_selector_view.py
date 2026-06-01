@@ -740,8 +740,10 @@ def main() -> int:
     parser.add_argument("--pick", action="store_true", help="Open a file picker even if a path is provided.")
     parser.add_argument("--dir", dest="start_dir", help="Initial directory for the file picker.")
     parser.add_argument(
+        "--refmaps-path",
         "--ref-map-path",
         action="append",
+        dest="refmaps_path",
         default=[],
         help=(
             "Additional FITS file or directory of FITS files to expose as "
@@ -765,7 +767,7 @@ def main() -> int:
 
     entry_path = Path(entry_arg).expanduser().resolve()
     try:
-        session_input = _build_session_input(entry_path, ref_map_paths=args.ref_map_path)
+        session_input = _build_session_input(entry_path, ref_map_paths=args.refmaps_path)
     except Exception as exc:
         QMessageBox.critical(
             None,

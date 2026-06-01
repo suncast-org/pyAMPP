@@ -59,10 +59,11 @@ Additional filesystem reference-map paths:
 
 .. code-block:: bash
 
-   gxbox-view2d /path/to/model.h5 --ref-map-path /path/to/refmaps
+   gxbox-view2d /path/to/model.h5 --refmaps-path /path/to/refmaps
 
-``--ref-map-path`` may be passed more than once. It accepts a FITS file or a
-directory of FITS files. The viewer uses the shared ``pyampp.io.refmaps``
+``--refmaps-path`` may be passed more than once. It accepts a FITS file or a
+directory of FITS files (unlike ``gx-fov2box``, which expects directories for
+embedding). The viewer uses the shared ``pyampp.io.refmaps``
 discovery policy, so recognized AIA maps appear with their wavelength labels
 and EOVSA maps appear with frequency labels such as ``EOVSA_f1.418GHz``.
 

@@ -131,8 +131,8 @@ Context-map toggles:
 
 - EUV checkbox -> ``--euv``
 - UV checkbox -> ``--uv``
-- Reference Map Path -> ``--refmaps-path``. The path may point to a FITS file
-  or a directory of FITS files. These maps are imported through the shared
+- Reference Map Path -> ``--refmaps-path``. The GUI expects a directory of FITS
+  reference maps. These maps are imported through the shared
   ``pyampp.io.refmaps`` policy and are available to ``gxbox-view2d`` after
   download-stage stops.
 
