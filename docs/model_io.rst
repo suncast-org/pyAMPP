@@ -32,6 +32,10 @@ Use these functions from ``pyampp.io``:
 - ``load_model_metadata(path, strict=False)``
 - ``save_thin_model(thin_model, path)``
 - ``export_thin_model(source_model, output_h5=None, strict=False)``
+- ``add_fits_refmaps_to_h5(h5_path, fits_paths, ...)``
+- ``add_fits_refmaps_from_dir_to_h5(h5_path, fits_dir, ...)``
+- ``build_fits_refmaps_for_model(paths, model_obstime=..., target_fov=..., ...)``
+- ``discover_fits_refmap_map_ids(paths, ...)``
 
 The package-level import surface is:
 
@@ -83,6 +87,42 @@ Recommended for application and downstream code:
 
 This separation removes duplicated fallback logic in downstream consumers and
 keeps one authoritative contract-completion path in pyAMPP.
+
+Reference-Map Import API
+------------------------
+
+External FITS context maps should be imported through ``pyampp.io.refmaps``.
+This keeps instrument identification, model-time alignment, and HDF5 layout in
+one public API used by both ``gx-fov2box`` and the viewer tools.
+
+Typical in-place HDF5 import:
+
+.. code-block:: python
+
+   from pyampp.io import add_fits_refmaps_from_dir_to_h5
+
+   added = add_fits_refmaps_from_dir_to_h5(
+       "/path/to/model.h5",
+       "/path/to/refmap_dir",
+       overwrite=True,
+   )
+
+Policy:
+
+- AIA maps are identified from FITS telescope/instrument metadata plus
+  ``WAVELNTH`` and are stored as ``AIA_<wavelength>``.
+- EOVSA maps are identified from EOVSA telescope/instrument metadata plus
+  ``CRVAL3``/``CUNIT3='Hz'`` and are stored as frequency-labelled maps such as
+  ``EOVSA_f1.418GHz``.
+- Known-map scans of the JSOC cache use ``generic=False`` so unrelated HMI
+  source products are not imported as context maps.
+- Explicit user paths use ``generic=True`` by default, so unknown FITS files
+  receive sanitized filename-based ids.
+- The model time is inferred from ``base/index`` via
+  ``model_obstime_from_base_index``.
+- Earth/SDO line-of-sight maps are time-aligned and reprojected to the selected
+  model reference-map footprint. Non-Earth maps are stored with their native
+  WCS footprint.
 
 Runtime Enforcement Policy
 --------------------------

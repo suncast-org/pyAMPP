@@ -23,6 +23,8 @@ Typical repository paths:
 
 - ``--data-dir`` for downloaded SDO source data
 - ``--gxmodel-dir`` for generated model stages
+- optional ``--refmaps-path`` for a directory of external FITS reference maps to
+  embed in the saved box
 
 Projection choice:
 
@@ -245,6 +247,24 @@ Useful flags:
 - ``--force-download`` to bypass cache reuse
 - ``--euv`` to include AIA EUV context maps
 - ``--uv`` to include AIA UV context maps
+- ``--refmaps-path PATH`` to include additional FITS reference maps from a
+  directory. This option may be passed more than once.
+
+Reference-map import policy:
+
+- ``gx-fov2box`` uses the shared ``pyampp.io.refmaps`` API to identify,
+  align, and embed FITS reference maps.
+- Known AIA and EOVSA FITS files found in the dated ``--data-dir`` cache are
+  eligible reference maps after the download stage. Unknown FITS files in the
+  JSOC cache are ignored so HMI source products are not imported accidentally.
+- FITS files supplied with ``--refmaps-path`` are user-requested and are
+  imported with generic fallback ids when they are not recognized as known
+  instrument products.
+- The model time used for reference-map alignment is read from ``base/index``,
+  matching the model geometry contract.
+- Earth/SDO line-of-sight maps are aligned to the model time and reprojected
+  to the model reference-map footprint. Non-Earth maps are stored in their
+  native WCS footprint.
 
 The download stage can be exercised by itself with:
 
@@ -259,9 +279,15 @@ The download stage can be exercised by itself with:
      --dx-km 1400 \
      --data-dir /path/to/jsoc_cache \
      --gxmodel-dir /path/to/gx_models \
+     --refmaps-path /path/to/external/refmaps \
      --euv \
      --uv \
      --stop-after dl
+
+When the download-stage box is opened in ``gxbox-view2d``, filesystem AIA maps
+from ``--data-dir`` and recognized maps from ``--refmaps-path`` are exposed in
+the context-map menu to support interactive FOV selection before the magnetic
+model is built.
 
 Entry-Box Workflow Flags
 ------------------------

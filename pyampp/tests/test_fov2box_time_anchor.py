@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import astropy.units as u
@@ -41,10 +42,12 @@ class _FakeWCS:
 class _FakeRefMap:
     def __init__(self, date: str):
         self.date = Time(date)
+        self.data = np.zeros((2, 2), dtype=float)
         self.wcs = _FakeWCS()
         self.rsun_obs = 972.3 * u.arcsec
         self.rsun_meters = 6.96e8 * u.m
         self.observer_coordinate = None
+        self.meta = {}
 
 
 class _FakeDownloader:
@@ -133,8 +136,14 @@ def test_load_hmi_maps_anchors_context_downloads_to_resolved_hmi_time():
 
 
 def test_refmap_wcs_header_preserves_date_obs():
-    header_text = gx_fov2box._refmap_wcs_header(_FakeRefMap("2025-11-26T15:34:31.400"))
-    header = fits.Header.fromstring(header_text, sep="\n")
+    from pyampp.io.refmaps import build_refmap_payload_for_model
+
+    payload = build_refmap_payload_for_model(
+        _FakeRefMap("2025-11-26T15:34:31.400"),
+        model_obstime=None,
+        target_fov=None,
+    )
+    header = fits.Header.fromstring(payload["wcs_header"], sep="\n")
     assert header["DATE-OBS"] == "2025-11-26T15:34:31.400"
     assert header["DATE_OBS"] == "2025-11-26T15:34:31.400"
     assert header["RSUN_OBS"] == 972.3
@@ -255,6 +264,7 @@ def _make_transition_cfg(**overrides):
         info=False,
         reproject_algorithm="adaptive",
         reproject_scan=None,
+        refmaps_path=None,
     )
     params.update(overrides)
     return gx_fov2box.Fov2BoxConfig(**params)
@@ -332,11 +342,25 @@ def test_prepare_observation_state_builds_expected_prepared_payload() -> None:
     class _WCSWrap:
         wcs = _WCSW()
 
+        def to_header(self):
+            header = fits.Header()
+            header["CTYPE1"] = "HPLN-TAN"
+            header["CTYPE2"] = "HPLT-TAN"
+            header["CDELT1"] = 1.0
+            header["CDELT2"] = 1.0
+            header["CRPIX1"] = 1.0
+            header["CRPIX2"] = 1.0
+            header["CUNIT1"] = "arcsec"
+            header["CUNIT2"] = "arcsec"
+            return header
+
     class _MiniMap:
         def __init__(self, data):
             self.data = np.asarray(data, dtype=float)
             self.meta = {"dummy": True}
+            self.date = Time("2025-11-26T15:34:31.400")
             self.rsun_obs = 972.3 * u.arcsec
+            self.rsun_meters = 6.96e8 * u.m
             self.scale = _Scale()
             self.wcs = _WCSWrap()
             self.dsun = 1.0 * u.m
@@ -377,8 +401,6 @@ def test_prepare_observation_state_builds_expected_prepared_payload() -> None:
     ), patch.object(
         gx_fov2box, "_build_index_header", return_value="INDEXHDR"
     ), patch.object(
-        gx_fov2box, "_refmap_wcs_header", return_value="REFHDR"
-    ), patch.object(
         gx_fov2box, "remap_vertical_current_inputs", side_effect=lambda a, b, c: (a, b, c)
     ), patch.object(
         gx_fov2box, "compute_vertical_current", return_value=np.ones((2, 2), dtype=float)
@@ -405,6 +427,164 @@ def test_prepare_observation_state_builds_expected_prepared_payload() -> None:
     assert prepared.base.endswith(".TAG.CEA")
     assert prepared.observer_metadata == {"observer": "earth"}
     assert prepared.vert_current_error is None
+
+
+def test_refmaps_path_external_refmaps_saved_in_none_stage_h5(tmp_path) -> None:
+    class _ScaleAxis:
+        def __init__(self, value):
+            self._value = value
+
+        def to_value(self, unit):
+            return self._value
+
+    class _Scale:
+        axis1 = _ScaleAxis(1.0)
+        axis2 = _ScaleAxis(1.0)
+
+    class _WCSW:
+        crpix = [1.0, 1.0]
+
+    class _WCSWrap:
+        wcs = _WCSW()
+
+        def to_header(self):
+            header = fits.Header()
+            header["CTYPE1"] = "HPLN-TAN"
+            header["CTYPE2"] = "HPLT-TAN"
+            header["CDELT1"] = 1.0
+            header["CDELT2"] = 1.0
+            header["CRPIX1"] = 1.0
+            header["CRPIX2"] = 1.0
+            header["CUNIT1"] = "arcsec"
+            header["CUNIT2"] = "arcsec"
+            return header
+
+    class _MiniMap:
+        def __init__(self, data):
+            self.data = np.asarray(data, dtype=float)
+            self.meta = {"dummy": True}
+            self.date = Time("2025-11-26T15:34:31.400")
+            self.rsun_obs = 972.3 * u.arcsec
+            self.rsun_meters = 6.96e8 * u.m
+            self.scale = _Scale()
+            self.wcs = _WCSWrap()
+
+        def reproject_to(self, header, algorithm="exact"):
+            return self
+
+    class _FakeBox:
+        def __init__(self, *args, **kwargs):
+            header = fits.Header()
+            header["CTYPE1"] = "HPLN-TAN"
+            header["CTYPE2"] = "HPLT-TAN"
+            self.bottom_cea_header = header
+
+        def bottom_top_header(self, dsun_obs=None):
+            return self.bottom_cea_header
+
+        def bounds_coords_bl_tr(self, pad_frac=0.1):
+            return (None, None)
+
+    maps = {
+        "field": _MiniMap([[1, 2], [3, 4]]),
+        "inclination": _MiniMap([[0, 0], [0, 0]]),
+        "azimuth": _MiniMap([[0, 0], [0, 0]]),
+        "continuum": _MiniMap([[10, 11], [12, 13]]),
+        "magnetogram": _MiniMap([[20, 21], [22, 23]]),
+    }
+    external_refmaps = {
+        "EOVSA_f1.418GHz": {
+            "data": np.ones((2, 2), dtype=np.float32),
+            "wcs_header": fits.Header().tostring(sep="\n", endcard=True),
+        }
+    }
+    cfg = _make_transition_cfg(
+        entry_box=None,
+        coords=(10.0, 20.0),
+        box_dims=(2, 2, 2),
+        dx_km=1400.0,
+        save_empty_box=True,
+        gxmodel_dir=str(tmp_path),
+        data_dir=str(tmp_path),
+        refmaps_path=("/tmp/external_refmaps",),
+    )
+
+    with patch.object(gx_fov2box, "_load_hmi_maps_from_downloader", return_value=(maps, {"resolved_obs_time": None})), patch.object(
+        gx_fov2box, "_resolve_cli_observer", return_value=gx_fov2box.get_earth(Time("2025-11-26T15:34:31"))
+    ), patch.object(gx_fov2box, "Box", _FakeBox), patch.object(
+        gx_fov2box, "hmi_b2ptr", return_value=(maps["field"], maps["field"], maps["field"])
+    ), patch.object(
+        gx_fov2box, "_submap_with_fov_safe", side_effect=lambda smap, bl, tr: smap
+    ), patch.object(
+        gx_fov2box, "map_from_data_header_compat", side_effect=lambda data, meta: _MiniMap(data)
+    ), patch.object(
+        gx_fov2box, "_build_index_header", return_value="INDEXHDR"
+    ), patch.object(
+        gx_fov2box, "remap_vertical_current_inputs", side_effect=lambda a, b, c: (a, b, c)
+    ), patch.object(
+        gx_fov2box, "compute_vertical_current", return_value=np.ones((2, 2), dtype=float)
+    ), patch.object(
+        gx_fov2box, "_format_coord_tag", return_value="TAG"
+    ), patch.object(
+        gx_fov2box, "_observer_metadata_from_source_map", return_value={"observer": "earth"}
+    ), patch.object(
+        gx_fov2box,
+        "build_fits_refmaps_for_model",
+        return_value=external_refmaps,
+    ) as build_external:
+        prepared = gx_fov2box._prepare_observation_state(
+            cfg,
+            Time("2025-11-26T15:34:31"),
+            (2, 2, 2),
+            lambda label, func: func(),
+            0.0,
+        )
+
+    assert prepared is not None
+    assert "EOVSA_f1.418GHz" in prepared.refmaps
+    build_external.assert_called_once()
+    assert build_external.call_args.args[0] == ("/tmp/external_refmaps",)
+
+    stage_box = {
+        "corona": {
+            "bx": np.zeros((2, 2, 2), dtype=float),
+            "by": np.zeros((2, 2, 2), dtype=float),
+            "bz": np.zeros((2, 2, 2), dtype=float),
+            "dr": prepared.dr3,
+            "attrs": {"model_type": "none"},
+        }
+    }
+    prepared_run = gx_fov2box.PreparedRunState(
+        obs_time=prepared.obs_time,
+        maps=prepared.maps,
+        base_group=prepared.base_group,
+        refmaps=prepared.refmaps,
+        base_bz_arr=prepared.base_bz_arr,
+        base_ic_arr=prepared.base_ic_arr,
+        bottom_bz_data=prepared.bottom_bz_data,
+        vert_current_error=prepared.vert_current_error,
+        projection_tag=prepared.projection_tag,
+        base=prepared.base,
+        dr3=prepared.dr3,
+        observer_metadata=prepared.observer_metadata,
+        lineage_root="OBS",
+        lineage_marker="",
+        entry_stage_for_marker="",
+    )
+    context = gx_fov2box.StageSaveContext(
+        cfg=cfg,
+        prepared_run=prepared_run,
+        execute_cmd="gx-fov2box --refmaps-path /tmp/external_refmaps",
+        out_dir=tmp_path,
+        default_grid={"voxel_id": np.zeros((2, 2, 2), dtype=np.int32)},
+        empty_grid=np.zeros((2, 2, 2), dtype=float),
+        produced=[],
+    )
+    gx_fov2box._save_stage_passthrough("NONE", stage_box, context=context)
+    out_path = tmp_path / f"{prepared.base}.NONE.h5"
+    loaded = read_b3d_h5(str(out_path))
+    assert "EOVSA_f1.418GHz" in loaded["refmaps"]
+    assert np.array_equal(loaded["refmaps"]["EOVSA_f1.418GHz"]["data"], external_refmaps["EOVSA_f1.418GHz"]["data"])
 
 
 def test_prepare_run_state_unifies_resume_and_lineage_metadata() -> None:
@@ -762,9 +942,10 @@ def test_normalize_runtime_stage_box_for_pipeline_uses_private_io_normalizer() -
     }
 
     captured = {}
+    contract = object()
     expected_loaded = {
         "corona": {"bx": np.ones((4, 3, 2), dtype=float)},
-        "metadata": {"axis_order_3d": "zyx"},
+        "metadata": {"axis_order_3d": "zyx", "geometry_contract": contract},
     }
 
     with patch.object(
@@ -778,7 +959,10 @@ def test_normalize_runtime_stage_box_for_pipeline_uses_private_io_normalizer() -
             stage_tag="NONE",
         )
 
-    assert normalized is expected_loaded
+    assert normalized is not expected_loaded
+    assert normalized["corona"]["bx"].shape == (2, 3, 4)
+    assert np.array_equal(normalized["corona"]["bx"], stage_box["corona"]["bx"])
+    assert normalized["metadata"]["geometry_contract"] is contract
     mocked_normalize.assert_called_once()
     payload = mocked_normalize.call_args.args[0]
     assert mocked_normalize.call_args.kwargs["source_kind"] == "h5"
@@ -1919,6 +2103,46 @@ def test_normalize_stage_for_h5_transposes_chr_2d_maps_from_xy_to_yx():
     assert np.array_equal(normalized["chromo"]["tr"], stage_box["chromo"]["tr"].T)
     assert np.array_equal(normalized["chromo"]["tr_h"], stage_box["chromo"]["tr_h"].T)
     assert np.array_equal(normalized["chromo"]["chromo_mask"], stage_box["chromo"]["chromo_mask"].T)
+
+
+def test_runtime_stage_normalization_preserves_internal_3d_order():
+    stage_box = {
+        "corona": {
+            "bx": np.zeros((4, 3, 2), dtype=float),
+            "by": np.zeros((4, 3, 2), dtype=float),
+            "bz": np.zeros((4, 3, 2), dtype=float),
+            "dr": np.ones(3, dtype=float),
+        }
+    }
+    prepared = SimpleNamespace(
+        base_group={
+            "bx": np.zeros((3, 4), dtype=float),
+            "by": np.zeros((3, 4), dtype=float),
+            "bz": np.zeros((3, 4), dtype=float),
+            "ic": np.zeros((3, 4), dtype=float),
+        },
+        base_ic_arr=np.zeros((3, 4), dtype=float),
+        refmaps={},
+        observer_metadata=None,
+        base="test",
+        projection_tag="CEA",
+    )
+    contract = object()
+
+    with patch.object(
+        gx_fov2box,
+        "_normalize_loaded_model_dict",
+        return_value={"metadata": {"geometry_contract": contract}},
+    ):
+        normalized = gx_fov2box._normalize_runtime_stage_box_for_pipeline(
+            stage_box,
+            prepared_run=prepared,
+            stage_tag="NONE",
+            source_axis_order_3d="xyz",
+        )
+
+    assert normalized["corona"]["bx"].shape == (4, 3, 2)
+    assert normalized["metadata"]["geometry_contract"] is contract
 
 
 def test_build_h5_from_sav_does_not_write_raw_sav_by_default(tmp_path):

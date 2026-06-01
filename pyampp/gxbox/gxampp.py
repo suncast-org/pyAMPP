@@ -23,6 +23,7 @@ from pyampp.gxbox.gx_fov2box import (
     _entry_stage_from_loaded,
     _extract_execute_paths,
 )
+from pyampp.gxbox.gxbox_selector_view import _discover_external_ref_map_files, _discover_filesystem_maps
 from pyampp.gxbox.fov_selector_gui import run_fov_box_selector
 from pyampp.gxbox.selector_api import (
     BoxGeometrySelection,
@@ -31,7 +32,6 @@ from pyampp.gxbox.selector_api import (
     SelectorDialogResult,
     SelectorSessionInput,
 )
-from pyampp.data.downloader import SDOImageDownloader
 from pyampp.util.idl_execute_to_gxfov2box import _parse_idl_call, _build_gx_fov2box_command
 from astropy.coordinates import SkyCoord
 import astropy.units as u
@@ -402,6 +402,7 @@ class PyAmppGUI(QMainWindow):
             self._settings.setValue("session/use_cached_downloads", self._use_cached_downloads())
             self._settings.setValue("session/entry_mode", self._get_jump_action())
             self._settings.setValue("session/entry_box_path", self.external_box_edit.text().strip())
+            self._settings.setValue("paths/refmaps_path", self.refmaps_path_edit.text().strip())
             self._settings.setValue("session/entry_is_template_only", self._entry_is_template_only)
 
             bool_widgets = {
@@ -473,6 +474,9 @@ class PyAmppGUI(QMainWindow):
             layout.setColumnStretch(0, 0)
             layout.setColumnStretch(1, 1)
             layout.setColumnStretch(2, 0)
+            spacer = layout.itemAtPosition(3, 2)
+            if spacer is not None and spacer.widget() is None:
+                layout.removeItem(spacer)
         self.sdo_data_edit.setText(self._settings.value("paths/data_dir", DOWNLOAD_DIR, type=str))
         self.sdo_data_edit.setMinimumWidth(520)
         self.sdo_data_edit.returnPressed.connect(self.update_sdo_data_dir)
@@ -504,6 +508,33 @@ class PyAmppGUI(QMainWindow):
         self.external_browse_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
         self.external_browse_button.setToolTip("Select entry model file (.h5/.sav)")
         self.external_browse_button.setFixedWidth(28)
+        if layout is not None:
+            layout.addWidget(self.label_external_box, 3, 0)
+            layout.addWidget(self.external_box_edit, 3, 1)
+            layout.addWidget(self.external_browse_button, 3, 2)
+
+        if layout is not None:
+            layout.addWidget(self.label_jsoc_notify_email, 4, 0)
+            layout.addWidget(self.jsoc_notify_email_edit, 4, 1)
+
+        self.refmaps_path_label = QLabel("Reference Map Path:")
+        self.refmaps_path_edit = QLineEdit()
+        self.refmaps_path_edit.setText(self._settings.value("paths/refmaps_path", "", type=str))
+        self.refmaps_path_edit.setMinimumWidth(520)
+        self.refmaps_path_edit.setToolTip("Optional directory of external FITS reference maps")
+        self.refmaps_path_edit.returnPressed.connect(self.update_refmaps_path)
+        self.refmaps_path_edit.textChanged.connect(self._persist_refmaps_path)
+        self.refmaps_browse_button = QPushButton()
+        self.refmaps_browse_button.clicked.connect(self.open_refmaps_path_dialog)
+        self.refmaps_browse_button.setText("")
+        self.refmaps_browse_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.refmaps_browse_button.setToolTip("Select external reference-map FITS directory")
+        self.refmaps_browse_button.setFixedWidth(28)
+        if layout is not None:
+            layout.addWidget(self.refmaps_path_label, 2, 0)
+            layout.addWidget(self.refmaps_path_edit, 2, 1)
+            layout.addWidget(self.refmaps_browse_button, 2, 2)
+
         self.entry_stage_label = QLabel("Detected Entry Type:")
         self.entry_stage_edit = QLineEdit("N/A")
         self.entry_stage_edit.setReadOnly(True)
@@ -529,8 +560,8 @@ class PyAmppGUI(QMainWindow):
         mode_layout.addWidget(self.modify_radio)
         mode_layout.addStretch()
         if layout is not None:
-            layout.addWidget(self.entry_stage_label, 4, 0)
-            layout.addWidget(self.entry_mode_widget, 4, 1, 1, 2)
+            layout.addWidget(self.entry_stage_label, 5, 0)
+            layout.addWidget(self.entry_mode_widget, 5, 1, 1, 2)
 
     def update_sdo_data_dir(self):
         """
@@ -555,6 +586,13 @@ class PyAmppGUI(QMainWindow):
 
     def _persist_gxmodel_dir(self, text):
         self._settings.setValue("paths/gxmodel_dir", (text or "").strip())
+
+    def update_refmaps_path(self):
+        self._persist_refmaps_path(self.refmaps_path_edit.text())
+        self.update_command_display()
+
+    def _persist_refmaps_path(self, text):
+        self._settings.setValue("paths/refmaps_path", (text or "").strip())
 
     def update_jsoc_notify_email(self):
         """
@@ -756,6 +794,8 @@ class PyAmppGUI(QMainWindow):
             "--pad-frac": 1,
             "--data-dir": 1,
             "--gxmodel-dir": 1,
+            "--refmaps-path": 1,
+            "--refmap-path": 1,
         }
         opts = {}
         i = 0
@@ -881,6 +921,9 @@ class PyAmppGUI(QMainWindow):
         # Context map toggles
         self.download_aia_euv.setChecked("--euv" in opts and "--no-euv" not in opts)
         self.download_aia_uv.setChecked("--uv" in opts and "--no-uv" not in opts)
+        refmaps_opt = opts.get("--refmaps-path") or opts.get("--refmap-path")
+        if refmaps_opt and hasattr(self, "refmaps_path_edit"):
+            self.refmaps_path_edit.setText(str(refmaps_opt[0]))
 
         # Disambiguation
         disambig = self._decode_meta_value(boxdata.get("metadata", {}).get("disambiguation", "")).strip().upper()
@@ -995,6 +1038,15 @@ class PyAmppGUI(QMainWindow):
         if file_name:
             self.external_box_edit.setText(file_name)
             self.update_external_box_dir()
+
+    def open_refmaps_path_dialog(self):
+        options = QFileDialog.Options()
+        options |= QFileDialog.DontUseNativeDialog
+        start_dir = self.refmaps_path_edit.text().strip() or os.getcwd()
+        file_name = QFileDialog.getExistingDirectory(self, "Select Reference Map Directory", start_dir)
+        if file_name:
+            self.refmaps_path_edit.setText(file_name)
+            self.update_refmaps_path()
 
     def add_model_configuration_section(self):
         # Hide legacy jump controls; workflow is linear with optional rebuild.
@@ -1916,18 +1968,15 @@ class PyAmppGUI(QMainWindow):
             pad_frac = None
         map_files = {}
         try:
-            dl = SDOImageDownloader(
-                Time(self.model_time_edit.dateTime().toPyDateTime()),
-                data_dir=self.sdo_data_edit.text(),
-                euv=self.download_aia_euv.isChecked(),
-                uv=self.download_aia_uv.isChecked(),
-                hmi=True,
-                backend=self._selected_download_backend(),
-            )
-            # Local file discovery only; do not trigger network fetch here.
-            map_files = dl._check_files_exist(dl.path, returnfilelist=True)
+            map_files = _discover_filesystem_maps(time_iso, self.sdo_data_edit.text())
         except Exception as exc:
             self.status_log_edit.append(f"Selector map-file discovery warning: {exc}")
+        refmaps_path = self.refmaps_path_edit.text().strip() if hasattr(self, "refmaps_path_edit") else ""
+        if refmaps_path:
+            try:
+                map_files.update(_discover_external_ref_map_files([refmaps_path]))
+            except Exception as exc:
+                self.status_log_edit.append(f"Selector reference-map discovery warning: {exc}")
         requested_map_ids = self._selector_map_ids_from_gui()
         map_ids = []
         availability = {
@@ -1943,6 +1992,10 @@ class PyAmppGUI(QMainWindow):
                     map_ids.append(map_id)
                 continue
             if map_id in map_files:
+                map_ids.append(map_id)
+        internal_source_keys = {"field", "inclination", "azimuth", "disambig", "magnetogram", "continuum"}
+        for map_id in map_files:
+            if map_id not in internal_source_keys and map_id not in map_ids:
                 map_ids.append(map_id)
         if not map_ids:
             map_ids = list(requested_map_ids)
@@ -2010,6 +2063,9 @@ class PyAmppGUI(QMainWindow):
             command += ['--use-fido']
         if not self._use_cached_downloads():
             command += ['--force-download']
+        refmaps_path = self.refmaps_path_edit.text().strip() if hasattr(self, "refmaps_path_edit") else ""
+        if refmaps_path:
+            command += ['--refmaps-path', refmaps_path]
 
         if self.save_empty_box.isChecked():
             command += ['--save-empty-box']

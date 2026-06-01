@@ -43,6 +43,7 @@ _AIA_REF_CMAPS = {
 }
 _BW_SIGNED_REFMAPS = {"bx", "by", "bz", "Bz_reference"}
 _BW_SCALAR_REFMAPS = {"ic", "Ic_reference"}
+_EOVSA_REFMAP_PREFIX = "EOVSA_"
 
 
 def _decode_h5_string(value) -> str:
@@ -222,6 +223,8 @@ class RefmapViewer(QtWidgets.QMainWindow):
         norm = None
         if spec.name in _AIA_REF_CMAPS:
             cmap = sunpy_colormaps.cm.cmlist.get(_AIA_REF_CMAPS[spec.name], None)
+        elif spec.name.startswith(_EOVSA_REFMAP_PREFIX):
+            cmap = "hot"
         elif spec.name in _BW_SIGNED_REFMAPS:
             cmap = "gray"
         elif spec.name in _BW_SCALAR_REFMAPS:

@@ -16,10 +16,11 @@ The GUI is a thin command constructor for reproducible CLI runs. It:
 Data Repositories
 -----------------
 
-The GUI has three path fields:
+The GUI has four repository/path fields:
 
 - ``SDO Data Dir`` (mapped to ``--data-dir``)
 - ``GX Models Dir`` (mapped to ``--gxmodel-dir``)
+- ``Reference Map Path`` (mapped to ``--refmaps-path`` when set)
 - ``Entry Box`` (mapped to ``--entry-box`` when set)
 
 Current behavior:
@@ -130,6 +131,10 @@ Context-map toggles:
 
 - EUV checkbox -> ``--euv``
 - UV checkbox -> ``--uv``
+- Reference Map Path -> ``--refmaps-path``. The GUI expects a directory of FITS
+  reference maps. These maps are imported through the shared
+  ``pyampp.io.refmaps`` policy and are available to ``gxbox-view2d`` after
+  download-stage stops.
 
 Command Display and Execution
 -----------------------------

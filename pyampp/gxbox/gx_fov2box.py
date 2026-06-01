@@ -48,6 +48,12 @@ from pyampp.gxbox.boxutils import (
     remap_vertical_current_inputs,
 )
 from pyampp.io import load_model
+from pyampp.io.refmaps import (
+    build_fits_refmaps_for_model,
+    build_refmap_payload_for_model,
+    discover_fits_refmap_map_ids,
+    model_obstime_from_base_index,
+)
 from pyampp.io.model import _normalize_loaded_model_dict
 from pyampp.gxbox.gx_box2id import gx_box2id
 from pyampp.gxbox.observer_restore import (
@@ -312,6 +318,7 @@ class Fov2BoxConfig:
     info: bool
     reproject_algorithm: str
     reproject_scan: Optional[str]
+    refmaps_path: Optional[Tuple[str, ...]] = None
 
 
 @dataclass
@@ -983,10 +990,15 @@ def _prepare_observation_state(
     base_group = run_logged_step("Building base-layer products", _build_base_products)
 
     refmaps: Dict[str, Any] = {}
+    refmap_model_time = model_obstime_from_base_index({"base": base_group}) or obs_time.isot
 
     def add_refmap(ref_id: str, smap: Map) -> None:
-        smap = submap_with_fov(smap)
-        refmaps[ref_id] = {"data": smap.data, "wcs_header": _refmap_wcs_header(smap)}
+        refmaps[ref_id] = build_refmap_payload_for_model(
+            smap,
+            model_obstime=refmap_model_time,
+            target_fov=(fov_coords[0], fov_coords[1]),
+            reproject_algorithm=cfg.reproject_algorithm,
+        )
 
     def _collect_refmaps():
         hmi_t0 = time_mod.perf_counter()
@@ -1000,7 +1012,7 @@ def _prepare_observation_state(
             vc_bx_local, vc_by_local, vc_bz_local = remap_vertical_current_inputs(
                 map_bx, map_by, map_bz
             )
-            vc_header_local = _refmap_wcs_header(vc_bx_local)
+            vc_header_local = vc_bx_local.wcs.to_header().tostring(sep="\n", endcard=True)
             rsun_arcsec_local = vc_bx_local.rsun_obs.to_value(u.arcsec)
             crpix1_local, crpix2_local = vc_bx_local.wcs.wcs.crpix
             cdelt1_local = vc_bx_local.scale.axis1.to_value(u.arcsec / u.pix)
@@ -1016,7 +1028,13 @@ def _prepare_observation_state(
                 cdelt1_arcsec=cdelt1_local,
                 cdelt2_arcsec=cdelt2_local,
             )
-            refmaps["Vert_current"] = {"data": jz_local, "wcs_header": vc_header_local}
+            jz_map = map_from_data_header_compat(jz_local, vc_bx_local.wcs.to_header())
+            refmaps["Vert_current"] = build_refmap_payload_for_model(
+                jz_map,
+                model_obstime=refmap_model_time,
+                target_fov=(fov_coords[0], fov_coords[1]),
+                reproject_algorithm=cfg.reproject_algorithm,
+            )
 
         try:
             run_logged_step("Vertical current", _compute_vert_current)
@@ -1032,6 +1050,45 @@ def _prepare_observation_state(
             add_refmap(key, maps[key])
             elapsed = time_mod.perf_counter() - aia_t0
             print(f"AIA references: {idx}/{total_aia} ({pb}) in {elapsed:.2f}s")
+        cache_dir = data_dir_path / obs_time.datetime.strftime("%Y-%m-%d")
+        cache_t0 = time_mod.perf_counter()
+        cache_map_ids = {
+            path: map_id
+            for path, map_id in discover_fits_refmap_map_ids([cache_dir], generic=False).items()
+            if map_id not in refmaps
+        }
+        if cache_map_ids:
+            missing_cache_refmaps = build_fits_refmaps_for_model(
+                list(cache_map_ids.keys()),
+                model_obstime=refmap_model_time,
+                target_fov=(fov_coords[0], fov_coords[1]),
+                reproject_algorithm=cfg.reproject_algorithm,
+                map_ids=cache_map_ids,
+                generic=False,
+            )
+            for key, payload in missing_cache_refmaps.items():
+                refmaps[key] = payload
+            print(
+                "Cached context references: "
+                f"{len(missing_cache_refmaps)} from {cache_dir} "
+                f"in {time_mod.perf_counter() - cache_t0:.2f}s"
+            )
+        if cfg.refmaps_path:
+            external_t0 = time_mod.perf_counter()
+            external_refmaps = build_fits_refmaps_for_model(
+                cfg.refmaps_path,
+                model_obstime=refmap_model_time,
+                target_fov=(fov_coords[0], fov_coords[1]),
+                reproject_algorithm=cfg.reproject_algorithm,
+                generic=True,
+            )
+            for key, payload in external_refmaps.items():
+                refmaps[key] = payload
+            print(
+                "External references: "
+                f"{len(external_refmaps)} from {len(cfg.refmaps_path)} path(s) "
+                f"in {time_mod.perf_counter() - external_t0:.2f}s"
+            )
         return local_vert_current_error
 
     vert_current_error = run_logged_step("Collecting reference maps and derived products", _collect_refmaps)
@@ -1308,13 +1365,18 @@ def _normalize_runtime_stage_box_for_pipeline(
         working_box,
         source_axis_order_3d=source_axis_order_3d,
     )
-    return _normalize_loaded_model_dict(
+    normalized_model = _normalize_loaded_model_dict(
         normalized_h5_box,
         source_path=Path(f"{metadata['id']}.h5"),
         source_kind="h5",
         strict=False,
         stored_contract=None,
     )
+    normalized_metadata = normalized_model.get("metadata")
+    if isinstance(normalized_metadata, dict) and "geometry_contract" in normalized_metadata:
+        metadata["geometry_contract"] = normalized_metadata["geometry_contract"]
+        working_box["metadata"] = metadata
+    return working_box
 
 
 def _compute_pot_stage_box(
@@ -2326,6 +2388,8 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
         cmd.append("--rebuild-from-none")
     if cfg.reproject_algorithm != "adaptive":
         cmd += ["--reproject-algorithm", cfg.reproject_algorithm]
+    for path in cfg.refmaps_path or ():
+        cmd += ["--refmaps-path", path]
     return shlex.join(cmd)
 
 
@@ -2602,41 +2666,6 @@ def _build_index_header(
         if "WCSNAME" not in header:
             header["WCSNAME"] = "Carrington-Heliographic"
 
-    return header.tostring(sep="\n", endcard=True)
-
-
-def _refmap_wcs_header(smap: Map) -> str:
-    """
-    Persist enough FITS-WCS metadata to preserve the map timestamp and basic
-    solar observer context across HDF5 save/load cycles.
-    """
-    header = smap.wcs.to_header()
-    try:
-        date_obs = Time(smap.date).isot if getattr(smap, "date", None) is not None else None
-        if date_obs:
-            header["DATE-OBS"] = date_obs
-            header["DATE_OBS"] = date_obs
-    except Exception:
-        pass
-    try:
-        if getattr(smap, "rsun_obs", None) is not None:
-            header["RSUN_OBS"] = float(u.Quantity(smap.rsun_obs).to_value(u.arcsec))
-    except Exception:
-        pass
-    try:
-        if getattr(smap, "rsun_meters", None) is not None:
-            header["RSUN_REF"] = float(u.Quantity(smap.rsun_meters).to_value(u.m))
-    except Exception:
-        pass
-    try:
-        obs = getattr(smap, "observer_coordinate", None)
-        obs_time = getattr(smap, "date", None)
-        if obs is not None and obs_time is not None:
-            obs_hgs = obs.transform_to(HeliographicStonyhurst(obstime=obs_time))
-            header["HGLN_OBS"] = float(obs_hgs.lon.to_value(u.deg))
-            header["HGLT_OBS"] = float(obs_hgs.lat.to_value(u.deg))
-    except Exception:
-        pass
     return header.tostring(sep="\n", endcard=True)
 
 
@@ -3129,6 +3158,12 @@ def main(
         "--reproject-scan",
         help="Batch-run OBS->NONE once per reprojection algorithm. Use 'all' or a comma-separated list such as 'adaptive,exact,interpolation'. Each run writes to a gxmodel-dir/reproject_<algorithm> subdirectory.",
     ),
+    refmaps_path: Optional[List[str]] = typer.Option(
+        None,
+        "--refmaps-path",
+        "--refmap-path",
+        help="Directory of external FITS reference maps to add to model refmaps. May be repeated.",
+    ),
 ) -> None:
     cfg = Fov2BoxConfig(
         time=time,
@@ -3182,6 +3217,7 @@ def main(
         info=info,
         reproject_algorithm=reproject_algorithm,
         reproject_scan=reproject_scan,
+        refmaps_path=tuple(refmaps_path or ()),
     )
 
     cfg.download_backend = str(cfg.download_backend or "drms").strip().lower()

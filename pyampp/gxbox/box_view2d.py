@@ -97,6 +97,7 @@ _CHROMO_MASK_KEYS = {"chromo_mask"}
 _AIA_REFERENCE_IDS = ("171", "193", "211", "304", "335", "1600", "1700", "131", "94")
 _HMI_VECTOR_DISPLAY_KEYS = {"field", "inclination", "azimuth", "disambig"}
 _AIA_COLOR_KEYS = {"94", "131", "1600", "1700", "171", "193", "211", "304", "335"}
+_EOVSA_REFMAP_PREFIX = "EOVSA_"
 _BOTTOM_OVERLAY_CONTEXT_KEYS = _AIA_COLOR_KEYS | _HMI_VECTOR_DISPLAY_KEYS
 _EMBEDDED_REFMAP_FLAG = "PYEMBED"
 _BOX_EDGE_INDEX_PAIRS = (
@@ -1039,7 +1040,7 @@ class MapBoxDisplayWidget(QWidget):
         self._state.selected_context_id = map_id
         self._refresh_status_text()
         self._refresh_map_info()
-        self._refresh_plot(preserve_current_view=self._should_preserve_pixel_view())
+        self._refresh_plot(preserve_current_view=False)
 
     def set_bottom_map_id(self, map_id: Optional[str]) -> None:
         if self._state is None:
@@ -2274,7 +2275,7 @@ class MapBoxDisplayWidget(QWidget):
             return "Vert_current"
         if key.isdigit():
             return f"AIA_{key}"
-        return None
+        return key
 
     def _load_embedded_refmap(self, ref_key: str, purpose: str = "context"):
         if self._state is None:
@@ -2686,6 +2687,12 @@ class MapBoxDisplayWidget(QWidget):
                 if hi > 0:
                     smap.plot_settings["cmap"] = "RdBu_r"
                     smap.plot_settings["norm"] = mcolors.TwoSlopeNorm(vmin=-hi, vcenter=0.0, vmax=hi)
+            elif str(map_key).startswith(_EOVSA_REFMAP_PREFIX):
+                lo = float(np.nanpercentile(vals, 0.5))
+                hi = float(np.nanpercentile(vals, 99.5))
+                if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                    smap.plot_settings["cmap"] = "hot"
+                    smap.plot_settings["norm"] = mcolors.Normalize(vmin=lo, vmax=hi)
             elif map_key in _CHROMO_MASK_KEYS:
                 cmap = mcolors.ListedColormap([
                     "#000000", "#1f77b4", "#ff7f0e", "#2ca02c",
@@ -2950,8 +2957,9 @@ class MapBoxDisplayWidget(QWidget):
             return False
         # Bottom overlay is useful for image-like context maps, but it obscures
         # signed diagnostic maps such as Vert_current almost completely.
+        if context_key.startswith(_EOVSA_REFMAP_PREFIX):
+            return True
         return context_key in _BOTTOM_OVERLAY_CONTEXT_KEYS
-        self._set_runtime_status("Cleared over-plotted field lines.")
 
     def plot_fieldlines(self, streamlines, z_base=0.0) -> None:
         self._fieldline_streamlines = list(streamlines or [])

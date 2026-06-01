@@ -31,6 +31,35 @@ Unreleased
 - Added redundant derived ``observer/pb0r`` metadata alongside canonical
   ``observer/ephemeris`` for SSW-style ``B0 / L0 / Rsun`` interoperability.
 
+1.0.2
+-----
+
+Release focus:
+
+- shared FITS reference-map import for ``gx-fov2box`` and viewer tools,
+- external AIA/EOVSA context maps via ``--refmaps-path``,
+- DRMS downloader and runtime stage-normalization fixes.
+
+Highlights:
+
+- Added ``pyampp.io.refmaps`` for FITS discovery, model-time alignment from
+  ``base/index``, and HDF5 ``refmaps/`` embedding (AIA, EOVSA, and generic
+  user-supplied maps).
+- Wired ``--refmaps-path`` through ``gx-fov2box``, the GUI (directory picker),
+  and ``gxbox-view2d`` (file or directory for interactive selector context).
+- JSOC cache scans import only recognized context products (``generic=False``);
+  explicit ``--refmaps-path`` directories use generic fallback ids.
+- ``Vert_current`` reference maps now use ``build_refmap_payload_for_model`` for
+  WCS serialization and model-FOV alignment like other Earth line-of-sight maps.
+- Fixed DRMS downloads to retain returned AIA context FITS paths when the final
+  cache verification pass does not list them yet.
+- Fixed runtime stage normalization to preserve internal 3D axis order while
+  still injecting ``geometry_contract`` metadata.
+
+Packaging/versioning:
+
+- Bumped package version to ``1.0.2`` in packaging metadata.
+
 1.0.1
 -----
 
