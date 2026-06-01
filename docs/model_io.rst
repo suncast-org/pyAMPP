@@ -34,7 +34,7 @@ Use these functions from ``pyampp.io``:
 - ``export_thin_model(source_model, output_h5=None, strict=False)``
 - ``add_fits_refmaps_to_h5(h5_path, fits_paths, ...)``
 - ``add_fits_refmaps_from_dir_to_h5(h5_path, fits_dir, ...)``
-- ``build_fits_refmaps_for_model(paths, model_box, ...)``
+- ``build_fits_refmaps_for_model(paths, model_obstime=..., target_fov=..., ...)``
 - ``discover_fits_refmap_map_ids(paths, ...)``
 
 The package-level import surface is:

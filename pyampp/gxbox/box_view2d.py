@@ -2960,7 +2960,6 @@ class MapBoxDisplayWidget(QWidget):
         if context_key.startswith(_EOVSA_REFMAP_PREFIX):
             return True
         return context_key in _BOTTOM_OVERLAY_CONTEXT_KEYS
-        self._set_runtime_status("Cleared over-plotted field lines.")
 
     def plot_fieldlines(self, streamlines, z_base=0.0) -> None:
         self._fieldline_streamlines = list(streamlines or [])
