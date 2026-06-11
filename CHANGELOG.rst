@@ -31,6 +31,24 @@ Unreleased
 - Added redundant derived ``observer/pb0r`` metadata alongside canonical
   ``observer/ephemeris`` for SSW-style ``B0 / L0 / Rsun`` interoperability.
 
+1.0.3
+-----
+
+Release focus:
+
+- pin ``pyAMaFiL`` to the June 2026 AMaFiL core until PyPI catches up.
+
+Highlights:
+
+- Pinned ``pyAMaFiL`` to Alexey Stupishin's GitHub repository at commit
+  ``3b3d141`` (AMaFiL ``4.4.26.601``). PyPI ``1.1.5`` still ships the older
+  WWNLFFF core ``4.2.25.326``, which ``pip install -U`` does not refresh when
+  the wrapper version is unchanged.
+
+Packaging/versioning:
+
+- Bumped package version to ``1.0.3`` in packaging metadata.
+
 1.0.2
 -----
 
