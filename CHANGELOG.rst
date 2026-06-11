@@ -31,6 +31,28 @@ Unreleased
 - Added redundant derived ``observer/pb0r`` metadata alongside canonical
   ``observer/ephemeris`` for SSW-style ``B0 / L0 / Rsun`` interoperability.
 
+1.0.4
+-----
+
+Release focus:
+
+- align SDO cache/download behavior with IDL ``gx_box_jsoc_get_fits`` / ``gx_fov2box``.
+
+Highlights:
+
+- Resolve cached HMI/AIA FITS by **nearest** timestamp within the search window
+  (not first sorted glob match), matching IDL nearest-record selection.
+- Use ``index.json`` query-key cache for both DRMS and Fido backends.
+- Unify DRMS and Fido download orchestration through a shared local-resolve path.
+- Anchor AIA context downloads to HMI **continuum** ``DATE-OBS`` (IDL ``gx_fov2box``),
+  not the field-map timestamp.
+- Added ``--hmi-time-window`` and ``--aia-time-window`` CLI options (IDL
+  ``HMI_time_window`` / ``AIA_time_window``).
+
+Packaging/versioning:
+
+- Bumped package version to ``1.0.4`` in packaging metadata.
+
 1.0.3
 -----
 
