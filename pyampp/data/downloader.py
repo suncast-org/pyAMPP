@@ -288,7 +288,7 @@ class SDOImageDownloader:
             self.existence_report = self._download_images_fido()
         return self.existence_report
 
-    def _fetch_product(self, backend, job):
+    def _fetch_drms_product(self, job):
         return self._drms_get_fits(
             job["series"],
             job["segment"],
@@ -296,9 +296,9 @@ class SDOImageDownloader:
             time_window=job["time_window"],
         )
 
-    def _download_images_resolved(self, backend):
+    def _download_images_resolved(self):
         self._drms_throttle_seen = False
-        if backend == "drms" and self.drms_sequential:
+        if self.drms_sequential:
             print("DRMS sequential mode enabled: forcing single-worker downloads")
 
         specs = self._iter_product_specs()
@@ -322,12 +322,12 @@ class SDOImageDownloader:
             failed = []
             max_workers = max(1, min(workers, len(jobs)))
             if len(jobs) > 1:
-                print(f"{backend.upper()}: downloading {len(jobs)} {label} products with up to {max_workers} workers")
+                print(f"DRMS: downloading {len(jobs)} {label} products with up to {max_workers} workers")
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 future_to_job = {}
                 for job in jobs:
                     print(job["label"])
-                    future_to_job[pool.submit(self._fetch_product, backend, job)] = job
+                    future_to_job[pool.submit(self._fetch_drms_product, job)] = job
                 for future in as_completed(future_to_job):
                     job = future_to_job[future]
                     try:
@@ -336,30 +336,26 @@ class SDOImageDownloader:
                             failed.append(job)
                     except Exception as exc:
                         print(
-                            f"{backend.upper()} task failed for "
+                            f"DRMS task failed for "
                             f"{job['series']}{{{job['segment']}}}: {exc}"
                         )
                         files[job["key"]] = ""
                         failed.append(job)
             return failed
 
-        if backend == "drms":
-            hmi_workers = 1 if self.drms_sequential else self.DRMS_HMI_MAX_WORKERS
-            _run_jobs(hmi_jobs, hmi_workers, "HMI")
-            context_workers = 1 if self.drms_sequential else self.DRMS_MAX_WORKERS
-            failed_context = _run_jobs(aia_jobs, context_workers, "AIA")
-            if failed_context and context_workers > 1 and self._drms_throttle_seen:
-                retry_jobs = [job for job in failed_context if not files.get(job["key"])]
-                if retry_jobs:
-                    print(
-                        "DRMS throttling detected during AIA parallel fetch; "
-                        "retrying missing AIA products sequentially"
-                    )
-                    self._drms_throttle_seen = False
-                    _run_jobs(retry_jobs, 1, "AIA retry")
-        else:
-            _run_jobs(hmi_jobs, 1, "HMI")
-            _run_jobs(aia_jobs, 1, "AIA")
+        hmi_workers = 1 if self.drms_sequential else self.DRMS_HMI_MAX_WORKERS
+        _run_jobs(hmi_jobs, hmi_workers, "HMI")
+        context_workers = 1 if self.drms_sequential else self.DRMS_MAX_WORKERS
+        failed_context = _run_jobs(aia_jobs, context_workers, "AIA")
+        if failed_context and context_workers > 1 and self._drms_throttle_seen:
+            retry_jobs = [job for job in failed_context if not files.get(job["key"])]
+            if retry_jobs:
+                print(
+                    "DRMS throttling detected during AIA parallel fetch; "
+                    "retrying missing AIA products sequentially"
+                )
+                self._drms_throttle_seen = False
+                _run_jobs(retry_jobs, 1, "AIA retry")
 
         return {key: (path or "") for key, path in files.items()}
 
@@ -430,7 +426,7 @@ class SDOImageDownloader:
         return {key: (path or "") for key, path in files.items()}
 
     def _download_images_drms(self):
-        return self._download_images_resolved("drms")
+        return self._download_images_resolved()
 
     def _fido_search(self, series, segment, time_window, wavelength=None, segments=None):
         t1, t2 = self._make_query_bounds(series, time_window)
