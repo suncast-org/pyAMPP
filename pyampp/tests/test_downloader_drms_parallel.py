@@ -17,15 +17,8 @@ def test_download_images_drms_schedules_all_missing_products_with_worker_cap(mon
     hmi_keys = ["field", "inclination", "azimuth", "disambig", "magnetogram", "continuum"]
     expected_count = len(hmi_keys) + len(downloader_mod.AIA_EUV_PASSBANDS) + len(downloader_mod.AIA_UV_PASSBANDS)
 
-    check_calls = {"count": 0}
-
-    def fake_check_files_exist(_datadir, returnfilelist=False):
-        if not returnfilelist:
-            return {}
-        check_calls["count"] += 1
-        if check_calls["count"] == 1:
-            return {k: None for k in hmi_keys + downloader_mod.AIA_EUV_PASSBANDS + downloader_mod.AIA_UV_PASSBANDS}
-        return {k: f"/fake/{k}.fits" for k in hmi_keys + downloader_mod.AIA_EUV_PASSBANDS + downloader_mod.AIA_UV_PASSBANDS}
+    def fake_try_resolve_local(*_args, **_kwargs):
+        return ""
 
     drms_calls = []
 
@@ -54,7 +47,7 @@ def test_download_images_drms_schedules_all_missing_products_with_worker_cap(mon
                 fut.set_exception(exc)
             return fut
 
-    monkeypatch.setattr(downloader, "_check_files_exist", fake_check_files_exist)
+    monkeypatch.setattr(downloader, "_try_resolve_local", fake_try_resolve_local)
     monkeypatch.setattr(downloader, "_drms_get_fits", fake_drms_get_fits)
     monkeypatch.setattr(downloader_mod, "ThreadPoolExecutor", _ImmediateExecutor)
 
@@ -65,8 +58,8 @@ def test_download_images_drms_schedules_all_missing_products_with_worker_cap(mon
     assert captured_workers[1] == downloader.DRMS_MAX_WORKERS
     assert any(series == "aia.lev1_euv_12s" and segment == "image" and wave == "94" for series, segment, wave, _ in drms_calls)
     assert any(series == "hmi.B_720s" and segment == "field" and wave is None for series, segment, wave, _ in drms_calls)
-    assert result["field"] == "/fake/field.fits"
-    assert result["94"] == "/fake/94.fits"
+    assert result["field"] == "/fake/hmi.B_720s.field.fits"
+    assert result["94"] == "/fake/aia.lev1_euv_12s.94.fits"
 
 
 def test_download_images_drms_keeps_returned_context_paths_when_final_scan_rejects_them(monkeypatch, tmp_path: Path) -> None:
@@ -81,10 +74,8 @@ def test_download_images_drms_keeps_returned_context_paths_when_final_scan_rejec
         force_download=False,
     )
 
-    def fake_check_files_exist(_datadir, returnfilelist=False):
-        if not returnfilelist:
-            return {}
-        return {pb: None for pb in downloader_mod.AIA_EUV_PASSBANDS}
+    def fake_try_resolve_local(*_args, **_kwargs):
+        return ""
 
     def fake_drms_get_fits(series, segment, wave=None, time_window=12):
         return f"/cache/aia.{wave}.fits"
@@ -104,7 +95,7 @@ def test_download_images_drms_keeps_returned_context_paths_when_final_scan_rejec
             fut.set_result(fn(*args, **kwargs))
             return fut
 
-    monkeypatch.setattr(downloader, "_check_files_exist", fake_check_files_exist)
+    monkeypatch.setattr(downloader, "_try_resolve_local", fake_try_resolve_local)
     monkeypatch.setattr(downloader, "_drms_get_fits", fake_drms_get_fits)
     monkeypatch.setattr(downloader_mod, "ThreadPoolExecutor", _ImmediateExecutor)
 
@@ -205,15 +196,8 @@ def test_download_images_drms_degrades_context_to_sequential_on_throttle(monkeyp
     hmi_keys = ["field", "inclination", "azimuth", "disambig", "magnetogram", "continuum"]
     all_keys = hmi_keys + downloader_mod.AIA_EUV_PASSBANDS + downloader_mod.AIA_UV_PASSBANDS
 
-    check_calls = {"count": 0}
-
-    def fake_check_files_exist(_datadir, returnfilelist=False):
-        if not returnfilelist:
-            return {}
-        check_calls["count"] += 1
-        if check_calls["count"] == 1:
-            return {k: None for k in all_keys}
-        return {k: f"/fake/{k}.fits" for k in all_keys}
+    def fake_try_resolve_local(*_args, **_kwargs):
+        return ""
 
     attempts = {}
 
@@ -246,7 +230,7 @@ def test_download_images_drms_degrades_context_to_sequential_on_throttle(monkeyp
                 fut.set_exception(exc)
             return fut
 
-    monkeypatch.setattr(downloader, "_check_files_exist", fake_check_files_exist)
+    monkeypatch.setattr(downloader, "_try_resolve_local", fake_try_resolve_local)
     monkeypatch.setattr(downloader, "_drms_get_fits", fake_drms_get_fits)
     monkeypatch.setattr(downloader_mod, "ThreadPoolExecutor", _ImmediateExecutor)
 
@@ -269,15 +253,8 @@ def test_download_images_drms_sequential_flag_forces_single_worker(monkeypatch, 
     hmi_keys = ["field", "inclination", "azimuth", "disambig", "magnetogram", "continuum"]
     all_keys = hmi_keys + downloader_mod.AIA_EUV_PASSBANDS + downloader_mod.AIA_UV_PASSBANDS
 
-    check_calls = {"count": 0}
-
-    def fake_check_files_exist(_datadir, returnfilelist=False):
-        if not returnfilelist:
-            return {}
-        check_calls["count"] += 1
-        if check_calls["count"] == 1:
-            return {k: None for k in all_keys}
-        return {k: f"/fake/{k}.fits" for k in all_keys}
+    def fake_try_resolve_local(*_args, **_kwargs):
+        return ""
 
     def fake_drms_get_fits(series, segment, wave=None, time_window=12):
         suffix = wave if wave is not None else segment
@@ -300,7 +277,7 @@ def test_download_images_drms_sequential_flag_forces_single_worker(monkeypatch, 
             fut.set_result(fn(*args, **kwargs))
             return fut
 
-    monkeypatch.setattr(downloader, "_check_files_exist", fake_check_files_exist)
+    monkeypatch.setattr(downloader, "_try_resolve_local", fake_try_resolve_local)
     monkeypatch.setattr(downloader, "_drms_get_fits", fake_drms_get_fits)
     monkeypatch.setattr(downloader_mod, "ThreadPoolExecutor", _ImmediateExecutor)
 

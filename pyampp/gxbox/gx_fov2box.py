@@ -283,6 +283,8 @@ class Fov2BoxConfig:
     download_backend: str
     drms_sequential: bool
     force_download: bool
+    hmi_time_window: float
+    aia_time_window: float
     entry_box: Optional[str]
     save_empty_box: bool
     save_potential: bool
@@ -851,6 +853,8 @@ def _prepare_observation_state(
         download_backend=cfg.download_backend,
         drms_sequential=cfg.drms_sequential,
         force_download=cfg.force_download,
+        hmi_time_window=cfg.hmi_time_window,
+        aia_time_window=cfg.aia_time_window,
         disambig_method=disambig_method,
         strict_required=(_last_stage_tag(cfg.stop_after) != "DL"),
     )
@@ -2320,6 +2324,10 @@ def _build_execute_cmd(cfg: Fov2BoxConfig) -> str:
         cmd.append("--use-fido")
     if cfg.force_download:
         cmd.append("--force-download")
+    if cfg.hmi_time_window != 720:
+        cmd += ["--hmi-time-window", f"{cfg.hmi_time_window:.6g}"]
+    if cfg.aia_time_window != 12:
+        cmd += ["--aia-time-window", f"{cfg.aia_time_window:.6g}"]
     if cfg.euv:
         cmd.append("--euv")
     if cfg.uv:
@@ -2697,6 +2705,8 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("download_backend", cfg.download_backend, "SDO downloader backend"),
         ("drms_sequential", cfg.drms_sequential, "Force single-worker DRMS downloads (HMI and AIA)"),
         ("force_download", cfg.force_download, "Bypass local cache hits and redownload requested SDO products"),
+        ("hmi_time_window", cfg.hmi_time_window, "HMI JSOC search window in seconds (IDL HMI_time_window)"),
+        ("aia_time_window", cfg.aia_time_window, "AIA JSOC search window in seconds (IDL AIA_time_window)"),
         ("entry_box", cfg.entry_box, "Path to precomputed HDF5 box"),
         ("save_empty_box", cfg.save_empty_box, "Save NONE stage"),
         ("save_potential", cfg.save_potential, "Save POT stage"),
@@ -2752,6 +2762,8 @@ def _load_hmi_maps_from_downloader(
     download_backend: str = "drms",
     drms_sequential: bool = False,
     force_download: bool = False,
+    hmi_time_window: float = 720,
+    aia_time_window: float = 12,
     disambig_method: int = 2,
     strict_required: bool = True,
 ) -> tuple[Dict[str, Map], dict]:
@@ -2774,6 +2786,8 @@ def _load_hmi_maps_from_downloader(
             "hmi": want_hmi,
             "backend": download_backend,
             "force_download": force_download,
+            "hmi_time_window": hmi_time_window,
+            "aia_time_window": aia_time_window,
         }
         if download_backend == "drms":
             kwargs["drms_sequential"] = drms_sequential
@@ -2840,7 +2854,8 @@ def _load_hmi_maps_from_downloader(
         "continuum": map_conti,
         "magnetogram": map_losma,
     }
-    resolved_obs_time = Time(map_field.date) if getattr(map_field, "date", None) is not None else requested_time
+    continuum_date = getattr(map_conti, "date", None)
+    resolved_obs_time = Time(continuum_date) if continuum_date is not None else requested_time
 
     context_elapsed = 0.0
     if euv or uv:
@@ -3109,6 +3124,8 @@ def main(
     use_fido: bool = typer.Option(False, "--use-fido", help="Use the legacy SunPy/Fido downloader instead of the default DRMS backend"),
     drms_sequential: bool = typer.Option(False, "--drms-sequential", help="Force DRMS downloads to single-worker mode for maximum reliability"),
     force_download: bool = typer.Option(False, "--force-download", help="Bypass local cache hits and redownload requested SDO products"),
+    hmi_time_window: float = typer.Option(720.0, "--hmi-time-window", help="HMI JSOC search window in seconds (default 720, IDL HMI_time_window)"),
+    aia_time_window: float = typer.Option(12.0, "--aia-time-window", help="AIA JSOC search window in seconds (default 12; UV uses max(12, 24), IDL AIA_time_window)"),
     entry_box: Optional[str] = typer.Option(None, "--entry-box", help="Existing HDF5/SAV box"),
     save_empty_box: bool = typer.Option(False, "--save-empty-box", help="Save NONE stage"),
     save_potential: bool = typer.Option(False, "--save-potential", help="Save POT stage"),
@@ -3182,6 +3199,8 @@ def main(
         download_backend=download_backend or "drms",
         drms_sequential=drms_sequential,
         force_download=force_download,
+        hmi_time_window=hmi_time_window,
+        aia_time_window=aia_time_window,
         entry_box=entry_box,
         save_empty_box=save_empty_box,
         save_potential=save_potential,

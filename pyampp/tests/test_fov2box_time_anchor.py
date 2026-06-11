@@ -53,7 +53,20 @@ class _FakeRefMap:
 class _FakeDownloader:
     calls: list[dict[str, object]] = []
 
-    def __init__(self, time, uv=True, euv=True, hmi=True, data_dir=None, backend="drms", force_download=False, poll_seconds=5):
+    def __init__(
+        self,
+        time,
+        uv=True,
+        euv=True,
+        hmi=True,
+        data_dir=None,
+        backend="drms",
+        force_download=False,
+        poll_seconds=5,
+        hmi_time_window=720,
+        aia_time_window=12,
+        **kwargs,
+    ):
         self.time = Time(time)
         self.uv = uv
         self.euv = euv
@@ -97,12 +110,14 @@ class _FakeDownloader:
 
 
 def _fake_map_loader(path):
+    if path == "continuum.fits":
+        return _FakeMap("2025-11-26T15:48:00.000")
     if path == "field.fits":
         return _FakeMap("2025-11-26T15:34:31.400")
     return _FakeMap("2025-11-26T15:34:31.400")
 
 
-def test_load_hmi_maps_anchors_context_downloads_to_resolved_hmi_time():
+def test_load_hmi_maps_anchors_context_downloads_to_continuum_time():
     _FakeDownloader.calls.clear()
     requested = Time("2025-11-26T15:47:52")
     with patch.object(gx_fov2box, "SDOImageDownloader", _FakeDownloader), patch.object(
@@ -123,14 +138,15 @@ def test_load_hmi_maps_anchors_context_downloads_to_resolved_hmi_time():
     assert _FakeDownloader.calls[0]["euv"] is False
     assert _FakeDownloader.calls[0]["uv"] is False
 
-    assert _FakeDownloader.calls[1]["time"] == "2025-11-26T15:34:31.400"
+    assert _FakeDownloader.calls[1]["time"] == "2025-11-26T15:48:00.000"
     assert _FakeDownloader.calls[1]["hmi"] is False
     assert _FakeDownloader.calls[1]["euv"] is True
     assert _FakeDownloader.calls[1]["uv"] is True
 
     assert info["requested_obs_time"] == requested.isot
-    assert info["resolved_obs_time"] == "2025-11-26T15:34:31.400"
+    assert info["resolved_obs_time"] == "2025-11-26T15:48:00.000"
     assert maps["field"].date.isot == "2025-11-26T15:34:31.400"
+    assert maps["continuum"].date.isot == "2025-11-26T15:48:00.000"
     assert "AIA_94" in maps
     assert "AIA_1700" in maps
 
@@ -229,6 +245,8 @@ def _make_transition_cfg(**overrides):
         download_backend="drms",
         drms_sequential=False,
         force_download=False,
+        hmi_time_window=720.0,
+        aia_time_window=12.0,
         entry_box="/tmp/model.h5",
         save_empty_box=False,
         save_potential=False,

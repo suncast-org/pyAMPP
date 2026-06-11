@@ -45,6 +45,8 @@ class SDOImageDownloader:
         force_download=False,
         poll_seconds=5,
         drms_sequential=False,
+        hmi_time_window=720,
+        aia_time_window=12,
     ):
         self.time = time if isinstance(time, Time) else Time(time)
         self.uv = uv
@@ -54,6 +56,8 @@ class SDOImageDownloader:
         self.force_download = bool(force_download)
         self.poll_seconds = max(1, int(poll_seconds))
         self.drms_sequential = bool(drms_sequential)
+        self.hmi_time_window = max(1, int(hmi_time_window))
+        self.aia_time_window = max(1, int(aia_time_window))
         self._drms_throttle_seen = False
         if self.backend not in self.SUPPORTED_BACKENDS:
             raise ValueError(
@@ -113,52 +117,162 @@ class SDOImageDownloader:
         }
         return patterns
 
+    def _time_tolerances(self):
+        uv_seconds = max(self.aia_time_window, 24) if self.uv else self.aia_time_window
+        return {
+            "euv": timedelta(seconds=self.aia_time_window),
+            "uv": timedelta(seconds=uv_seconds),
+            "hmi_b": timedelta(seconds=self.hmi_time_window),
+            "hmi_m": timedelta(seconds=self.hmi_time_window),
+            "hmi_ic": timedelta(seconds=self.hmi_time_window),
+        }
+
+    @staticmethod
+    def _parse_filename_datetime(filepath):
+        filename = os.path.basename(filepath)
+        match_aia = re.search(r"\d{4}-\d{2}-\d{2}T\d{6}Z", filename)
+        if match_aia:
+            return datetime.strptime(match_aia.group(), "%Y-%m-%dT%H%M%SZ")
+        match_hmi = re.search(r"\d{8}_\d{6}_TAI", filename)
+        if match_hmi:
+            return datetime.strptime(match_hmi.group(), "%Y%m%d_%H%M%S_TAI")
+        return None
+
+    def _find_nearest_cached_file(self, pattern_spec, tolerance_seconds):
+        if isinstance(pattern_spec, str):
+            pattern_spec = [pattern_spec]
+        matches = []
+        for pattern in pattern_spec:
+            matches.extend(glob(pattern))
+        unique_matches = sorted(set(matches))
+        target = self.time.datetime
+        tolerance = float(tolerance_seconds)
+        best_path = None
+        best_delta = None
+        for filepath in unique_matches:
+            file_dt = self._parse_filename_datetime(filepath)
+            if file_dt is None:
+                continue
+            delta = abs((file_dt - target).total_seconds())
+            if delta <= tolerance and (best_delta is None or delta < best_delta):
+                best_delta = delta
+                best_path = filepath
+        return best_path
+
+    def _tolerance_seconds_for_series(self, series, time_window):
+        if str(series or "").lower().startswith("hmi."):
+            return float(self.hmi_time_window)
+        if str(series or "").lower().startswith("aia.lev1_uv"):
+            return float(max(time_window, 24))
+        return float(time_window)
+
+    def _make_query_bounds(self, series, time_window):
+        query_window = self._query_window_seconds(series, time_window)
+        t1 = self.time - (query_window / 2.0) * u.s
+        t2 = self.time + (query_window / 2.0) * u.s
+        return t1, t2
+
+    def _try_resolve_local(self, series, segment, wave, time_window, patterns):
+        t1, t2 = self._make_query_bounds(series, time_window)
+        query_key = self._make_query_key(t1, t2, series, segment, wave=wave)
+        if not self.force_download:
+            cached = self._cache_lookup(query_key)
+            if cached:
+                print(f"  cache hit: {os.path.basename(cached)}")
+                return cached
+            tolerance = self._tolerance_seconds_for_series(series, time_window)
+            nearest = self._find_nearest_cached_file(patterns, tolerance)
+            if nearest:
+                if not self._fits_has_map_metadata(nearest):
+                    try:
+                        Path(nearest).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                else:
+                    print(f"  cache hit: {os.path.basename(nearest)}")
+                    self._cache_store(query_key, nearest)
+                    return nearest
+        return ""
+
+    def _iter_product_specs(self):
+        patterns = self._generate_filename_patterns(self.path)
+        backend_label = "DRMS" if self.backend == "drms" else "Fido"
+        specs = []
+        hmi_tasks = [
+            ("hmi.B_720s", "field", "field", "hmi_b"),
+            ("hmi.B_720s", "inclination", "inclination", "hmi_b"),
+            ("hmi.B_720s", "azimuth", "azimuth", "hmi_b"),
+            ("hmi.B_720s", "disambig", "disambig", "hmi_b"),
+            ("hmi.M_720s", "magnetogram", "magnetogram", "hmi_m"),
+            ("hmi.Ic_noLimbDark_720s", "continuum", "continuum", "hmi_ic"),
+        ]
+        if self.hmi:
+            for idx, (series, segment, key, category) in enumerate(hmi_tasks, start=1):
+                specs.append(
+                    {
+                        "key": key,
+                        "series": series,
+                        "segment": segment,
+                        "wave": None,
+                        "time_window": self.hmi_time_window,
+                        "patterns": patterns[category][key],
+                        "label": f"{backend_label} HMI: {idx}/{len(hmi_tasks)} ({segment})",
+                        "pool": "hmi",
+                    }
+                )
+        if self.euv:
+            for idx, wave in enumerate(AIA_EUV_PASSBANDS, start=1):
+                specs.append(
+                    {
+                        "key": wave,
+                        "series": "aia.lev1_euv_12s",
+                        "segment": "image",
+                        "wave": wave,
+                        "time_window": self.aia_time_window,
+                        "patterns": patterns["euv"][wave],
+                        "label": f"{backend_label} AIA EUV: {idx}/{len(AIA_EUV_PASSBANDS)} ({wave})",
+                        "pool": "aia",
+                    }
+                )
+        if self.uv:
+            uv_window = max(self.aia_time_window, 24)
+            for idx, wave in enumerate(AIA_UV_PASSBANDS, start=1):
+                specs.append(
+                    {
+                        "key": wave,
+                        "series": "aia.lev1_uv_24s",
+                        "segment": "image",
+                        "wave": wave,
+                        "time_window": uv_window,
+                        "patterns": patterns["uv"][wave],
+                        "label": f"{backend_label} AIA UV: {idx}/{len(AIA_UV_PASSBANDS)} ({wave})",
+                        "pool": "aia",
+                    }
+                )
+        return specs
+
     def _check_files_exist(self, datadir, returnfilelist=False):
         patterns = self._generate_filename_patterns(datadir)
         existence_report = {}
-
-        time_tolerances = {
-            "euv": timedelta(seconds=12),
-            "uv": timedelta(seconds=24),
-            "hmi_b": timedelta(seconds=720),
-            "hmi_m": timedelta(seconds=720),
-            "hmi_ic": timedelta(seconds=720),
-        }
-
-        def file_within_tolerance(filepath, tolerance):
-            filename = os.path.basename(filepath)
-            match_aia = re.search(r"\d{4}-\d{2}-\d{2}T\d{6}Z", filename)
-            if match_aia:
-                file_dt = datetime.strptime(match_aia.group(), "%Y-%m-%dT%H%M%SZ")
-                return abs((file_dt - self.time.datetime).total_seconds()) <= tolerance.total_seconds()
-
-            match_hmi = re.search(r"\d{8}_\d{6}_TAI", filename)
-            if match_hmi:
-                file_dt = datetime.strptime(match_hmi.group(), "%Y%m%d_%H%M%S_TAI")
-                return abs((file_dt - self.time.datetime).total_seconds()) <= tolerance.total_seconds()
-
-            return False
-
-        def find_matching_files(pattern_spec, tolerance):
-            if isinstance(pattern_spec, str):
-                pattern_spec = [pattern_spec]
-            all_matches = []
-            for pattern in pattern_spec:
-                all_matches.extend(glob(pattern))
-            unique_matches = sorted(set(all_matches))
-            return [f for f in unique_matches if file_within_tolerance(f, tolerance)]
+        time_tolerances = self._time_tolerances()
 
         if returnfilelist:
             for category, patterns_dict in patterns.items():
                 for key, pattern in patterns_dict.items():
-                    found_files = find_matching_files(pattern, time_tolerances[category])
-                    existence_report[key] = found_files[0] if found_files else None
+                    nearest = self._find_nearest_cached_file(
+                        pattern,
+                        time_tolerances[category].total_seconds(),
+                    )
+                    existence_report[key] = nearest
         else:
             for category, patterns_dict in patterns.items():
                 existence_report[category] = {}
                 for key, pattern in patterns_dict.items():
-                    found_files = find_matching_files(pattern, time_tolerances[category])
-                    existence_report[category][key] = bool(found_files)
+                    nearest = self._find_nearest_cached_file(
+                        pattern,
+                        time_tolerances[category].total_seconds(),
+                    )
+                    existence_report[category][key] = bool(nearest)
         return existence_report
 
     def download_images(self):
@@ -171,87 +285,40 @@ class SDOImageDownloader:
             self.existence_report = self._download_images_fido()
         return self.existence_report
 
-    def _download_images_fido(self):
-        all_files = {}
-        if self.euv:
-            self._handle_euv(all_files)
-        if self.uv:
-            self._handle_uv(all_files)
-        if self.hmi:
-            self._handle_hmi(all_files)
+    def _fetch_product(self, backend, job):
+        if backend == "drms":
+            return self._drms_get_fits(
+                job["series"],
+                job["segment"],
+                wave=job["wave"],
+                time_window=job["time_window"],
+            )
+        return self._fido_fetch_product(
+            job["series"],
+            job["segment"],
+            wave=job["wave"],
+            time_window=job["time_window"],
+        )
 
-        files_to_download = list(all_files.values())
-        if files_to_download:
-            self._fetch(files_to_download, overwrite=self.force_download)
-        return self._check_files_exist(self.path, returnfilelist=True)
-
-    def _download_images_drms(self):
+    def _download_images_resolved(self, backend):
         self._drms_throttle_seen = False
-        if self.drms_sequential:
+        if backend == "drms" and self.drms_sequential:
             print("DRMS sequential mode enabled: forcing single-worker downloads")
-        files = self._check_files_exist(self.path, returnfilelist=True)
-        for key, path in list(files.items()):
-            if path and not self._fits_has_map_metadata(path):
-                try:
-                    Path(path).unlink(missing_ok=True)
-                except Exception:
-                    pass
-                files[key] = None
-        if self.force_download:
-            for key in list(files.keys()):
-                files[key] = None
 
-        hmi_tasks = [
-            ("hmi.B_720s", "field", "field"),
-            ("hmi.B_720s", "inclination", "inclination"),
-            ("hmi.B_720s", "azimuth", "azimuth"),
-            ("hmi.B_720s", "disambig", "disambig"),
-            ("hmi.M_720s", "magnetogram", "magnetogram"),
-            ("hmi.Ic_noLimbDark_720s", "continuum", "continuum"),
-        ]
-        hmi_jobs = []
-        context_jobs = []
-        if self.hmi:
-            for idx, (series, segment, key) in enumerate(hmi_tasks, start=1):
-                if not files.get(key):
-                    hmi_jobs.append(
-                        {
-                            "key": key,
-                            "series": series,
-                            "segment": segment,
-                            "wave": None,
-                            "time_window": 720,
-                            "label": f"DRMS HMI: {idx}/{len(hmi_tasks)} ({segment})",
-                        }
-                    )
+        specs = self._iter_product_specs()
+        files = {}
+        for spec in specs:
+            path = self._try_resolve_local(
+                spec["series"],
+                spec["segment"],
+                spec["wave"],
+                spec["time_window"],
+                spec["patterns"],
+            )
+            files[spec["key"]] = path or None
 
-        if self.euv:
-            for idx, wave in enumerate(AIA_EUV_PASSBANDS, start=1):
-                if not files.get(wave):
-                    context_jobs.append(
-                        {
-                            "key": wave,
-                            "series": "aia.lev1_euv_12s",
-                            "segment": "image",
-                            "wave": wave,
-                            "time_window": 12,
-                            "label": f"DRMS AIA EUV: {idx}/{len(AIA_EUV_PASSBANDS)} ({wave})",
-                        }
-                    )
-
-        if self.uv:
-            for idx, wave in enumerate(AIA_UV_PASSBANDS, start=1):
-                if not files.get(wave):
-                    context_jobs.append(
-                        {
-                            "key": wave,
-                            "series": "aia.lev1_uv_24s",
-                            "segment": "image",
-                            "wave": wave,
-                            "time_window": 24,
-                            "label": f"DRMS AIA UV: {idx}/{len(AIA_UV_PASSBANDS)} ({wave})",
-                        }
-                    )
+        hmi_jobs = [spec for spec in specs if spec["pool"] == "hmi" and not files.get(spec["key"])]
+        aia_jobs = [spec for spec in specs if spec["pool"] == "aia" and not files.get(spec["key"])]
 
         def _run_jobs(jobs, workers, label):
             if not jobs:
@@ -259,20 +326,12 @@ class SDOImageDownloader:
             failed = []
             max_workers = max(1, min(workers, len(jobs)))
             if len(jobs) > 1:
-                print(f"DRMS: downloading {len(jobs)} {label} products with up to {max_workers} workers")
+                print(f"{backend.upper()}: downloading {len(jobs)} {label} products with up to {max_workers} workers")
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 future_to_job = {}
                 for job in jobs:
                     print(job["label"])
-                    future_to_job[
-                        pool.submit(
-                            self._drms_get_fits,
-                            job["series"],
-                            job["segment"],
-                            wave=job["wave"],
-                            time_window=job["time_window"],
-                        )
-                    ] = job
+                    future_to_job[pool.submit(self._fetch_product, backend, job)] = job
                 for future in as_completed(future_to_job):
                     job = future_to_job[future]
                     try:
@@ -281,112 +340,84 @@ class SDOImageDownloader:
                             failed.append(job)
                     except Exception as exc:
                         print(
-                            "DRMS task failed for "
+                            f"{backend.upper()} task failed for "
                             f"{job['series']}{{{job['segment']}}}: {exc}"
                         )
                         files[job["key"]] = ""
                         failed.append(job)
             return failed
 
-        # HMI requests are serialized to avoid JSOC pending-export throttling.
-        hmi_workers = 1 if self.drms_sequential else self.DRMS_HMI_MAX_WORKERS
-        _run_jobs(hmi_jobs, hmi_workers, "HMI")
-        # Context AIA products keep parallelism from PR40.
-        context_workers = 1 if self.drms_sequential else self.DRMS_MAX_WORKERS
-        failed_context = _run_jobs(context_jobs, context_workers, "AIA")
-        if (
-            failed_context
-            and context_workers > 1
-            and self._drms_throttle_seen
-        ):
-            retry_jobs = [job for job in failed_context if not files.get(job["key"])]
-            if retry_jobs:
-                print(
-                    "DRMS throttling detected during AIA parallel fetch; "
-                    "retrying missing AIA products sequentially"
-                )
-                self._drms_throttle_seen = False
-                _run_jobs(retry_jobs, 1, "AIA retry")
-
-        verified_files = self._check_files_exist(self.path, returnfilelist=True)
-        for key, path in files.items():
-            if path and not verified_files.get(key):
-                verified_files[key] = path
-        return verified_files
-
-    def _handle_euv(self, all_files):
-        if self.force_download:
-            missing_euv = AIA_EUV_PASSBANDS
-        elif self.existence_report:
-            missing_euv = [pb for pb, exists in self.existence_report.get("euv", {}).items() if not exists]
+        if backend == "drms":
+            hmi_workers = 1 if self.drms_sequential else self.DRMS_HMI_MAX_WORKERS
+            _run_jobs(hmi_jobs, hmi_workers, "HMI")
+            context_workers = 1 if self.drms_sequential else self.DRMS_MAX_WORKERS
+            failed_context = _run_jobs(aia_jobs, context_workers, "AIA")
+            if failed_context and context_workers > 1 and self._drms_throttle_seen:
+                retry_jobs = [job for job in failed_context if not files.get(job["key"])]
+                if retry_jobs:
+                    print(
+                        "DRMS throttling detected during AIA parallel fetch; "
+                        "retrying missing AIA products sequentially"
+                    )
+                    self._drms_throttle_seen = False
+                    _run_jobs(retry_jobs, 1, "AIA retry")
         else:
-            missing_euv = AIA_EUV_PASSBANDS
+            _run_jobs(hmi_jobs, 1, "HMI")
+            _run_jobs(aia_jobs, 1, "AIA")
 
-        if missing_euv:
-            missing_euv = [int(pb) for pb in missing_euv]
-            wavelength_attr = a.AttrOr([a.Wavelength(pb * u.AA) for pb in missing_euv])
-            all_files["euv"] = self._search(
-                "aia.lev1_euv_12s",
-                wavelength=wavelength_attr,
-                segments=a.jsoc.Segment("image"),
-            )
+        return {key: (path or "") for key, path in files.items()}
 
-    def _handle_uv(self, all_files):
-        if self.force_download:
-            missing_uv = AIA_UV_PASSBANDS
-        elif self.existence_report:
-            missing_uv = [pb for pb, exists in self.existence_report.get("uv", {}).items() if not exists]
-        else:
-            missing_uv = AIA_UV_PASSBANDS
+    def _download_images_fido(self):
+        return self._download_images_resolved("fido")
 
-        if missing_uv:
-            missing_uv = [int(pb) for pb in missing_uv]
-            wavelength_attr = a.AttrOr([a.Wavelength(pb * u.AA) for pb in missing_uv])
-            all_files["uv"] = self._search(
-                "aia.lev1_uv_24s",
-                wavelength=wavelength_attr,
-                segments=a.jsoc.Segment("image"),
-            )
+    def _download_images_drms(self):
+        return self._download_images_resolved("drms")
 
-    def _handle_hmi(self, all_files):
-        if self.force_download:
-            missing_hmi_b = HMI_B_SEGMENTS
-            missing_hmi_m = True
-            missing_hmi_ic = True
-        elif self.existence_report:
-            missing_hmi_b = [seg for seg, exists in self.existence_report.get("hmi_b", {}).items() if not exists]
-            missing_hmi_m = not self.existence_report.get("hmi_m", {}).get("magnetogram", True)
-            missing_hmi_ic = not self.existence_report.get("hmi_ic", {}).get("continuum", True)
-        else:
-            missing_hmi_b = HMI_B_SEGMENTS
-            missing_hmi_m = True
-            missing_hmi_ic = True
+    def _fido_fetch_product(self, series, segment, wave=None, time_window=12):
+        t1, t2 = self._make_query_bounds(series, time_window)
+        query_key = self._make_query_key(t1, t2, series, segment, wave=wave)
 
-        if missing_hmi_b:
-            segment_attr = a.AttrAnd([a.jsoc.Segment(seg) for seg in missing_hmi_b])
-            all_files["hmi_b"] = self._search("hmi.B_720s", segments=segment_attr)
-        if missing_hmi_m:
-            all_files["hmi_m"] = self._search("hmi.M_720s", segments=a.jsoc.Segment("magnetogram"))
-        if missing_hmi_ic:
-            all_files["hmi_ic"] = self._search("hmi.Ic_noLimbDark_720s", segments=a.jsoc.Segment("continuum"))
-
-    def _search(self, series, segments=None, wavelength=None):
         notify_email = jsoc_notify_email()
-        search_attrs = [a.Time(self.time, self.time), a.jsoc.Series(series), a.jsoc.Notify(notify_email)]
-        if wavelength:
-            search_attrs.insert(-1, wavelength)
-        if segments:
-            search_attrs.insert(-1, segments)
+        search_attrs = [a.Time(t1, t2), a.jsoc.Series(series), a.jsoc.Notify(notify_email)]
+        if wave is not None:
+            search_attrs.insert(-1, a.Wavelength(int(wave) * u.AA))
+        search_attrs.insert(-1, a.jsoc.Segment(segment))
 
         print(f"Searching for {series} with attributes {search_attrs}")
         result = Fido.search(*search_attrs)
         print(f"Found {len(result)} records for download.")
-        return result
+        if len(result) == 0:
+            return ""
 
-    def _fetch(self, files_to_download, streams=5, overwrite=False):
-        fetched_files = Fido.fetch(*files_to_download, path=self.path, overwrite=overwrite, max_conn=streams)
+        fetched_files = Fido.fetch(
+            *result,
+            path=self.path,
+            overwrite=self.force_download,
+            max_conn=1,
+        )
         print(f"Downloaded {len(fetched_files)} files.")
-        return fetched_files
+        if not fetched_files:
+            return ""
+
+        best_path = ""
+        best_delta = None
+        target = self.time.datetime
+        for item in fetched_files:
+            path = str(item)
+            if not self._fits_has_map_metadata(path):
+                continue
+            file_dt = self._parse_filename_datetime(path)
+            if file_dt is None:
+                if not best_path:
+                    best_path = path
+                continue
+            delta = abs((file_dt - target).total_seconds())
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_path = path
+        if best_path:
+            self._cache_store(query_key, best_path)
+        return best_path
 
     def _load_cache_index(self):
         if not self._cache_index_path.exists():
@@ -712,9 +743,7 @@ class SDOImageDownloader:
             return False
 
     def _drms_get_fits(self, series, segment, wave=None, time_window=12):
-        query_window = self._query_window_seconds(series, time_window)
-        t1 = self.time - (query_window / 2.0) * u.s
-        t2 = self.time + (query_window / 2.0) * u.s
+        t1, t2 = self._make_query_bounds(series, time_window)
         query_key = self._make_query_key(t1, t2, series, segment, wave=wave)
 
         if not self.force_download:
