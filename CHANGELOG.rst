@@ -4,32 +4,26 @@ Changelog
 Unreleased
 ----------
 
-- Retired the legacy ``gxbox`` GUI entrypoint from the public package surface.
-- Retired the compatibility aliases ``gxbox-view`` and ``gxbox-select`` from the public package surface.
-- Repositioned ``pyampp`` as the main GUI application and clarified the distinct roles of:
-  - ``gxbox-view2d``
-  - ``gxbox-view3d``
-  - ``gxrefmap-view``
-- ``h5tree`` now prints ``metadata/*`` values by default.
-- Replaced ``--show-metadata`` with ``--no-metadata`` to explicitly suppress metadata output.
-- Added ``--meta`` mode to print only ``metadata/*`` values (without tree output).
-- Simplified GUI launcher commands: removed ``gxampp`` alias; use ``pyampp`` as the single launcher.
-- Added a DRMS downloader backend and made it the default backend.
-- Added ``--use-fido`` to explicitly select the legacy SunPy/Fido downloader.
-- Added ``--force-download`` to bypass cache hits for clean downloader benchmarking.
-- Improved DRMS downloader throughput by scheduling independent HMI/AIA requests concurrently.
-- Added GUI downloader controls:
-  - ``Downloader`` selector (`DRMS` / `Fido`)
-  - ``Use cache`` checkbox
-- Added GUI command-export actions for the current ``gx-fov2box`` script:
-  - copy command
-  - save shell script
-- Implemented DRMS normalization of raw JSOC exports into reusable local FITS files.
-- Fixed DRMS nearest-record selection for HMI products so cadence choice now matches the intended IDL-style behavior.
-- Reworked ``Vert_current`` generation to use an IDL-style remapped-input path plus a vectorized NumPy kernel.
-- Fixed 2D viewer loading of embedded-only maps such as ``Vert_current`` when ``Map Source`` is set to ``Filesystem``.
-- Added redundant derived ``observer/pb0r`` metadata alongside canonical
-  ``observer/ephemeris`` for SSW-style ``B0 / L0 / Rsun`` interoperability.
+1.0.5
+-----
+
+Release focus:
+
+- address Copilot PR review follow-ups from releases 1.0.3 and 1.0.4.
+
+Highlights:
+
+- Align local cache tolerance with JSOC query bounds by using half the
+  configured query window for nearest-file matching (consistent with
+  ``_make_query_bounds()``).
+- Restore batched Fido ``search`` / ``fetch`` for AIA wavelengths and HMI
+  segment groups instead of one network round-trip per product.
+- Reorganize changelog: move previously shipped notes out of ``Unreleased``
+  into their release sections.
+
+Packaging/versioning:
+
+- Bumped package version to ``1.0.5`` in packaging metadata.
 
 1.0.4
 -----
@@ -66,6 +60,29 @@ Highlights:
   ``3b3d141`` (AMaFiL ``4.4.26.601``). PyPI ``1.1.5`` still ships the older
   WWNLFFF core ``4.2.25.326``, which ``pip install -U`` does not refresh when
   the wrapper version is unchanged.
+- Retired the legacy ``gxbox`` GUI entrypoint from the public package surface.
+- Retired the compatibility aliases ``gxbox-view`` and ``gxbox-select`` from the
+  public package surface.
+- Repositioned ``pyampp`` as the main GUI application and clarified the distinct
+  roles of ``gxbox-view2d``, ``gxbox-view3d``, and ``gxrefmap-view``.
+- ``h5tree`` now prints ``metadata/*`` values by default; replaced ``--show-metadata``
+  with ``--no-metadata`` and added ``--meta`` for metadata-only output.
+- Simplified GUI launcher commands: removed ``gxampp`` alias; use ``pyampp`` as
+  the single launcher.
+- Added a DRMS downloader backend and made it the default backend; added
+  ``--use-fido`` and ``--force-download`` CLI options.
+- Improved DRMS downloader throughput by scheduling independent HMI/AIA requests
+  concurrently.
+- Added GUI downloader controls (``Downloader`` selector and ``Use cache`` checkbox)
+  and GUI command-export actions (copy command, save shell script).
+- Implemented DRMS normalization of raw JSOC exports into reusable local FITS
+  files and fixed DRMS nearest-record selection for HMI products.
+- Reworked ``Vert_current`` generation to use an IDL-style remapped-input path
+  plus a vectorized NumPy kernel.
+- Fixed 2D viewer loading of embedded-only maps such as ``Vert_current`` when
+  ``Map Source`` is set to ``Filesystem``.
+- Added redundant derived ``observer/pb0r`` metadata alongside canonical
+  ``observer/ephemeris`` for SSW-style ``B0 / L0 / Rsun`` interoperability.
 
 Packaging/versioning:
 

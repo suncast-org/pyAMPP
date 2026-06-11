@@ -117,14 +117,21 @@ class SDOImageDownloader:
         }
         return patterns
 
+    def _local_match_tolerance_seconds(self, series, time_window):
+        """Half the JSOC query span, matching ``_make_query_bounds()``."""
+        return self._query_window_seconds(series, time_window) / 2.0
+
     def _time_tolerances(self):
-        uv_seconds = max(self.aia_time_window, 24) if self.uv else self.aia_time_window
+        euv_seconds = self._local_match_tolerance_seconds("aia.lev1_euv_12s", self.aia_time_window)
+        uv_window = max(self.aia_time_window, 24) if self.uv else self.aia_time_window
+        uv_seconds = self._local_match_tolerance_seconds("aia.lev1_uv_24s", uv_window)
+        hmi_seconds = self._local_match_tolerance_seconds("hmi.B_720s", self.hmi_time_window)
         return {
-            "euv": timedelta(seconds=self.aia_time_window),
+            "euv": timedelta(seconds=euv_seconds),
             "uv": timedelta(seconds=uv_seconds),
-            "hmi_b": timedelta(seconds=self.hmi_time_window),
-            "hmi_m": timedelta(seconds=self.hmi_time_window),
-            "hmi_ic": timedelta(seconds=self.hmi_time_window),
+            "hmi_b": timedelta(seconds=hmi_seconds),
+            "hmi_m": timedelta(seconds=hmi_seconds),
+            "hmi_ic": timedelta(seconds=hmi_seconds),
         }
 
     @staticmethod
@@ -160,11 +167,7 @@ class SDOImageDownloader:
         return best_path
 
     def _tolerance_seconds_for_series(self, series, time_window):
-        if str(series or "").lower().startswith("hmi."):
-            return float(self.hmi_time_window)
-        if str(series or "").lower().startswith("aia.lev1_uv"):
-            return float(max(time_window, 24))
-        return float(time_window)
+        return self._local_match_tolerance_seconds(series, time_window)
 
     def _make_query_bounds(self, series, time_window):
         query_window = self._query_window_seconds(series, time_window)
@@ -286,14 +289,7 @@ class SDOImageDownloader:
         return self.existence_report
 
     def _fetch_product(self, backend, job):
-        if backend == "drms":
-            return self._drms_get_fits(
-                job["series"],
-                job["segment"],
-                wave=job["wave"],
-                time_window=job["time_window"],
-            )
-        return self._fido_fetch_product(
+        return self._drms_get_fits(
             job["series"],
             job["segment"],
             wave=job["wave"],
@@ -368,56 +364,141 @@ class SDOImageDownloader:
         return {key: (path or "") for key, path in files.items()}
 
     def _download_images_fido(self):
-        return self._download_images_resolved("fido")
+        specs = self._iter_product_specs()
+        files = {}
+        for spec in specs:
+            path = self._try_resolve_local(
+                spec["series"],
+                spec["segment"],
+                spec["wave"],
+                spec["time_window"],
+                spec["patterns"],
+            )
+            files[spec["key"]] = path or None
+
+        hmi_missing = [spec for spec in specs if spec["pool"] == "hmi" and not files.get(spec["key"])]
+        euv_missing = [
+            spec
+            for spec in specs
+            if spec["series"] == "aia.lev1_euv_12s" and not files.get(spec["key"])
+        ]
+        uv_missing = [
+            spec
+            for spec in specs
+            if spec["series"] == "aia.lev1_uv_24s" and not files.get(spec["key"])
+        ]
+
+        if hmi_missing:
+            self._fido_fetch_hmi_batch(hmi_missing)
+            for spec in hmi_missing:
+                path = self._try_resolve_local(
+                    spec["series"],
+                    spec["segment"],
+                    spec["wave"],
+                    spec["time_window"],
+                    spec["patterns"],
+                )
+                if path:
+                    files[spec["key"]] = path
+
+        if euv_missing:
+            self._fido_fetch_aia_batch(euv_missing)
+            for spec in euv_missing:
+                path = self._try_resolve_local(
+                    spec["series"],
+                    spec["segment"],
+                    spec["wave"],
+                    spec["time_window"],
+                    spec["patterns"],
+                )
+                if path:
+                    files[spec["key"]] = path
+
+        if uv_missing:
+            self._fido_fetch_aia_batch(uv_missing)
+            for spec in uv_missing:
+                path = self._try_resolve_local(
+                    spec["series"],
+                    spec["segment"],
+                    spec["wave"],
+                    spec["time_window"],
+                    spec["patterns"],
+                )
+                if path:
+                    files[spec["key"]] = path
+
+        return {key: (path or "") for key, path in files.items()}
 
     def _download_images_drms(self):
         return self._download_images_resolved("drms")
 
-    def _fido_fetch_product(self, series, segment, wave=None, time_window=12):
+    def _fido_search(self, series, segment, time_window, wavelength=None, segments=None):
         t1, t2 = self._make_query_bounds(series, time_window)
-        query_key = self._make_query_key(t1, t2, series, segment, wave=wave)
-
         notify_email = jsoc_notify_email()
         search_attrs = [a.Time(t1, t2), a.jsoc.Series(series), a.jsoc.Notify(notify_email)]
-        if wave is not None:
-            search_attrs.insert(-1, a.Wavelength(int(wave) * u.AA))
-        search_attrs.insert(-1, a.jsoc.Segment(segment))
-
-        print(f"Searching for {series} with attributes {search_attrs}")
+        if wavelength is not None:
+            search_attrs.insert(-1, wavelength)
+        segment_attr = segments if segments is not None else a.jsoc.Segment(segment)
+        search_attrs.insert(-1, segment_attr)
+        print(f"Fido: searching {series} with {len(search_attrs)} attribute(s)")
         result = Fido.search(*search_attrs)
-        print(f"Found {len(result)} records for download.")
-        if len(result) == 0:
-            return ""
+        print(f"Fido: found {len(result)} record(s) for {series}")
+        return result, t1, t2
 
-        fetched_files = Fido.fetch(
+    def _fido_fetch_search_result(self, result, streams=5):
+        if len(result) == 0:
+            return []
+        max_conn = max(1, min(int(streams), len(result)))
+        fetched = Fido.fetch(
             *result,
             path=self.path,
             overwrite=self.force_download,
-            max_conn=1,
+            max_conn=max_conn,
         )
-        print(f"Downloaded {len(fetched_files)} files.")
-        if not fetched_files:
-            return ""
+        print(f"Fido: downloaded {len(fetched)} file(s)")
+        return [str(item) for item in fetched]
 
-        best_path = ""
-        best_delta = None
-        target = self.time.datetime
-        for item in fetched_files:
-            path = str(item)
-            if not self._fits_has_map_metadata(path):
-                continue
-            file_dt = self._parse_filename_datetime(path)
-            if file_dt is None:
-                if not best_path:
-                    best_path = path
-                continue
-            delta = abs((file_dt - target).total_seconds())
-            if best_delta is None or delta < best_delta:
-                best_delta = delta
-                best_path = path
-        if best_path:
-            self._cache_store(query_key, best_path)
-        return best_path
+    def _fido_fetch_aia_batch(self, jobs):
+        if not jobs:
+            return
+        series = jobs[0]["series"]
+        segment = jobs[0]["segment"]
+        time_window = jobs[0]["time_window"]
+        waves = [job["wave"] for job in jobs]
+        wavelength_attr = a.AttrOr([a.Wavelength(int(wave) * u.AA) for wave in waves])
+        result, _, _ = self._fido_search(
+            series,
+            segment,
+            time_window,
+            wavelength=wavelength_attr,
+        )
+        self._fido_fetch_search_result(result, streams=len(waves))
+
+    def _fido_fetch_hmi_batch(self, jobs):
+        if not jobs:
+            return
+        by_series: dict[str, list] = {}
+        for job in jobs:
+            by_series.setdefault(job["series"], []).append(job)
+
+        for series, series_jobs in by_series.items():
+            time_window = series_jobs[0]["time_window"]
+            if series == "hmi.B_720s":
+                segments = [job["segment"] for job in series_jobs]
+                segment_attr = a.AttrAnd([a.jsoc.Segment(seg) for seg in segments])
+                result, _, _ = self._fido_search(
+                    series,
+                    series_jobs[0]["segment"],
+                    time_window,
+                    segments=segment_attr,
+                )
+            else:
+                result, _, _ = self._fido_search(
+                    series,
+                    series_jobs[0]["segment"],
+                    time_window,
+                )
+            self._fido_fetch_search_result(result, streams=len(series_jobs))
 
     def _load_cache_index(self):
         if not self._cache_index_path.exists():
