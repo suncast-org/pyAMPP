@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyampp"
-version = "1.0.5"
+version = "1.0.6"
 description = "Python Automatic Model Production Pipeline"
 readme = "README.rst"
 requires-python = ">=3.10"
@@ -33,7 +33,7 @@ dependencies = ["sunpy[all]",
     "pyvistaqt",
     "pyqt5",
     "scipy",
-    "pyAMaFiL @ git+https://github.com/Alexey-Stupishin/pyAMaFiL@3b3d14181146aebefc3bf39333c4607bc155f0b9",
+    "pyAMaFiL>=1.2.0",
     "typer",
 ]
 
