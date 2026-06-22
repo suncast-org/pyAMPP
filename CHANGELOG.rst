@@ -4,6 +4,24 @@ Changelog
 Unreleased
 ----------
 
+1.0.6
+-----
+
+Release focus:
+
+- revert the temporary ``pyAMaFiL`` git pin now that PyPI ships AMaFiL
+  ``4.4.26.601``.
+
+Highlights:
+
+- Depend on ``pyAMaFiL>=1.2.0`` from PyPI instead of the GitHub commit pin
+  introduced in ``1.0.3``. PyPI ``1.2.0`` bundles the AMaFiL core
+  ``4.4.26.601`` that was previously required from git.
+
+Packaging/versioning:
+
+- Bumped package version to ``1.0.6`` in packaging metadata.
+
 1.0.5
 -----
 
