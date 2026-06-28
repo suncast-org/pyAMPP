@@ -126,7 +126,6 @@ _MIN_DISPLAY_MAP_SIDE = 32
 # Locked by: pyampp/tests/test_box_view_full_sun.py
 _FULL_SUN_DISK_EXTENT_PAD = 1.05
 _FULL_SUN_VIEWPORT_PAD = 1.02
-_NATIVE_REFMAP_TIME_WARN_HOURS = 1.0
 _BOX_EDGE_INDEX_PAIRS = (
     (0, 1), (1, 3), (3, 2), (2, 0),
     (4, 5), (5, 7), (7, 6), (6, 4),
@@ -134,7 +133,6 @@ _BOX_EDGE_INDEX_PAIRS = (
 )
 _DISPLAY_OBSERVER_OPTIONS = (
     ("earth", "Earth"),
-    ("sdo", "SDO"),
     ("solar orbiter", "Solar Orbiter"),
     ("stereo-a", "STEREO-A"),
     ("stereo-b", "STEREO-B"),
@@ -573,9 +571,9 @@ class MapBoxDisplayWidget(QWidget):
         key = str(raw or "earth").strip().lower()
         aliases = {
             "custom": "custom",
-            "sdo": "sdo",
-            "sdo/aia": "sdo",
-            "sdo/hmi": "sdo",
+            "sdo": "earth",
+            "sdo/aia": "earth",
+            "sdo/hmi": "earth",
             "earth": "earth",
             "solo": "solar orbiter",
             "solar-orbiter": "solar orbiter",
@@ -731,9 +729,142 @@ class MapBoxDisplayWidget(QWidget):
 
         QTimer.singleShot(0, _run)
 
+    _DATE_OBS_META_KEYS = ("DATE-OBS", "DATE_OBS", "date-obs", "date_obs")
+    _OBSTIME_FALLBACK_META_KEYS = ("SRC_DATE", "MODELT")
+
+    @staticmethod
+    def _parse_obstime(value) -> Time | None:
+        if value is None or value == "":
+            return None
+        try:
+            return value if isinstance(value, Time) else Time(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _meta_obstime_text(meta, keys: tuple[str, ...]) -> str | None:
+        if not meta:
+            return None
+        for key in keys:
+            for candidate in (key, key.lower(), key.upper()):
+                value = meta.get(candidate)
+                if value not in (None, ""):
+                    return str(value)
+        return None
+
+    @staticmethod
+    def _header_obstime_text(header) -> str | None:
+        if header is None:
+            return None
+        for key in MapBoxDisplayWidget._DATE_OBS_META_KEYS + MapBoxDisplayWidget._OBSTIME_FALLBACK_META_KEYS:
+            for candidate in (key, key.upper(), key.lower()):
+                try:
+                    value = header.get(candidate)
+                except Exception:
+                    value = None
+                if value not in (None, ""):
+                    return str(value)
+        return None
+
+    @staticmethod
+    def _header_has_explicit_date_obs(header) -> bool:
+        if header is None:
+            return False
+        for key in MapBoxDisplayWidget._DATE_OBS_META_KEYS:
+            for candidate in (key, key.upper(), key.lower()):
+                try:
+                    value = header.get(candidate)
+                except Exception:
+                    value = None
+                if value not in (None, ""):
+                    return True
+        return False
+
+    def _ensure_embedded_header_obstime(self, header: fits.Header) -> None:
+        if self._header_has_explicit_date_obs(header):
+            return
+        for key in self._OBSTIME_FALLBACK_META_KEYS:
+            value = header.get(key)
+            if value not in (None, ""):
+                header["DATE-OBS"] = str(value)
+                header["DATE_OBS"] = str(value)
+                return
+        fallback_iso = None
+        if self._state is not None:
+            fallback_iso = self._state.session_input.time_iso
+        if fallback_iso:
+            header["DATE-OBS"] = str(fallback_iso)
+            header["DATE_OBS"] = str(fallback_iso)
+
     @staticmethod
     def _obstime_for_map(smap, fallback_iso: str | None = None):
-        obstime = getattr(smap, "date", None)
+        if smap is None:
+            return MapBoxDisplayWidget._parse_obstime(fallback_iso)
+        meta = getattr(smap, "meta", None) or {}
+        for keys in (
+            MapBoxDisplayWidget._DATE_OBS_META_KEYS,
+            MapBoxDisplayWidget._OBSTIME_FALLBACK_META_KEYS,
+        ):
+            text = MapBoxDisplayWidget._meta_obstime_text(meta, keys)
+            if text:
+                parsed = MapBoxDisplayWidget._parse_obstime(text)
+                if parsed is not None:
+                    return parsed
+        parsed = MapBoxDisplayWidget._parse_obstime(fallback_iso)
+        if parsed is not None:
+            return parsed
+        return getattr(smap, "date", None)
+
+    @staticmethod
+    def _format_time_delta_short(delta_seconds: float) -> str:
+        if not np.isfinite(delta_seconds):
+            return "Δt=?"
+        if abs(float(delta_seconds)) < 0.05:
+            return "Δt=0"
+        sign = "+" if delta_seconds >= 0 else "-"
+        abs_s = abs(float(delta_seconds))
+        if abs_s < 90.0:
+            return f"Δt={sign}{abs_s:.0f}s"
+        if abs_s < 5400.0:
+            minutes = abs_s / 60.0
+            if minutes < 10.0:
+                return f"Δt={sign}{minutes:.1f}min"
+            return f"Δt={sign}{minutes:.0f}min"
+        hours = abs_s / 3600.0
+        return f"Δt={sign}{hours:.1f}h"
+
+    @staticmethod
+    def _format_display_time_banner(obstime, model_obstime) -> str:
+        if obstime is None:
+            return ""
+        try:
+            when = obstime if isinstance(obstime, Time) else Time(obstime)
+        except Exception:
+            return ""
+        obs_text = f"OBS {when.isot}"
+        if model_obstime is None:
+            return obs_text
+        try:
+            model_when = model_obstime if isinstance(model_obstime, Time) else Time(model_obstime)
+            delta_s = float((when - model_when).to_value(u.s))
+            return f"{obs_text} ({MapBoxDisplayWidget._format_time_delta_short(delta_s)})"
+        except Exception:
+            return obs_text
+
+    def _display_obstime_anchor(self) -> Time | None:
+        """Return the display time anchor (selected context refmap DATE-OBS)."""
+        if self._state is None:
+            return None
+        fallback_iso = self._state.session_input.time_iso
+        map_id = getattr(self._state, "selected_context_id", None)
+        raw = None
+        if map_id:
+            try:
+                canonical = self._canonical_map_key(map_id, purpose="context")
+                raw = self._load_raw_map(canonical, purpose="context")
+            except Exception:
+                raw = None
+        obstime = self._obstime_for_map(raw, fallback_iso)
         if obstime is not None:
             return obstime
         if fallback_iso:
@@ -742,6 +873,15 @@ class MapBoxDisplayWidget(QWidget):
             except Exception:
                 return None
         return None
+
+    def _display_obstime_cache_token(self) -> str:
+        anchor = self._display_obstime_anchor()
+        if anchor is None:
+            return "unknown"
+        try:
+            return anchor.isot
+        except Exception:
+            return "unknown"
 
     @staticmethod
     def _observer_cache_number(value, digits: int = 6) -> str:
@@ -808,32 +948,6 @@ class MapBoxDisplayWidget(QWidget):
                     key,
                     when,
                 )
-                if coord is None and key == "sdo":
-                    raw_map = None
-                    try:
-                        raw_map = self._load_raw_map(
-                            self._canonical_map_key(
-                                self._state.selected_context_id if self._state is not None else None,
-                                purpose="context",
-                            ),
-                            purpose="context",
-                        ) if (self._state is not None and self._state.selected_context_id) else None
-                    except Exception:
-                        raw_map = None
-                    if raw_map is None:
-                        try:
-                            raw_map = self._reference_context_map()
-                        except Exception:
-                            raw_map = None
-                    if raw_map is not None:
-                        try:
-                            raw_observer = getattr(raw_map, "observer_coordinate", None)
-                            if raw_observer is not None:
-                                coord = raw_observer.transform_to(HeliographicStonyhurst(obstime=when))
-                                warning = None
-                                used_key = "sdo"
-                        except Exception:
-                            pass
                 if warning and key not in self._observer_warning_cache:
                     self._observer_warning_cache.add(key)
                     self._last_status_text = warning
@@ -922,7 +1036,12 @@ class MapBoxDisplayWidget(QWidget):
         )
         if smap is None:
             return key
-        obstime = self._obstime_for_map(smap, self._state.session_input.time_iso if self._state is not None else None)
+        obstime = self._display_obstime_anchor()
+        if obstime is None:
+            obstime = self._obstime_for_map(
+                smap,
+                self._state.session_input.time_iso if self._state is not None else None,
+            )
         metadata = self._resolve_display_observer_metadata(key, obstime)
         if metadata is None:
             return key
@@ -1114,6 +1233,7 @@ class MapBoxDisplayWidget(QWidget):
         )
         return (
             f"__display__:{self._map_source_cache_token()}:"
+            f"{self._display_obstime_cache_token()}:"
             f"{observer_key}:{self.__dict__.get('_view_mode', 'box_fov') or 'box_fov'}:{purpose}:{map_key}"
         )
 
@@ -1275,7 +1395,7 @@ class MapBoxDisplayWidget(QWidget):
             return None
         return self._fov_selection_projected_to_display_observer(
             pad_fov,
-            getattr(smap, "date", None),
+            self._display_obstime_anchor(),
         )
 
     def _reproject_fov_override_for_display(self, map_key: str, smap, *, purpose: str):
@@ -1287,7 +1407,7 @@ class MapBoxDisplayWidget(QWidget):
                 return None
             projected = self._fov_selection_projected_to_display_observer(
                 disk_fov,
-                getattr(smap, "date", None),
+                self._display_obstime_anchor(),
             )
             if projected is not None:
                 self._record_prepare_event(f"context reproj full sun: {map_key} [roi]")
@@ -1392,9 +1512,6 @@ class MapBoxDisplayWidget(QWidget):
         if purpose == "bottom":
             return self._prepare_bottom_for_display(map_key, smap)
 
-        if self._is_embedded_native_spacecraft_map(smap):
-            self._warn_if_refmap_model_time_skew(smap, map_key)
-
         working = smap
         if self._should_use_native_crop(
             purpose=purpose,
@@ -1427,7 +1544,7 @@ class MapBoxDisplayWidget(QWidget):
     ) -> str:
         key = (
             f"__context_prepared__:{source_token}:{prepare_variant}:"
-            f"{observer_token}:{canonical_key}"
+            f"{self._display_obstime_cache_token()}:{observer_token}:{canonical_key}"
         )
         if self._state is not None and self._state.fov is not None:
             fov = self._state.fov
@@ -1492,33 +1609,6 @@ class MapBoxDisplayWidget(QWidget):
             keys.add(self._context_map_key_from_ref_key(ref_key))
         return sorted(keys)
 
-    def _warn_if_refmap_model_time_skew(self, smap, map_key: str) -> None:
-        if not self._on_gui_thread():
-            return
-        if self._state is None:
-            return
-        model_time = self._state.session_input.time_iso
-        map_time = getattr(smap, "date", None)
-        if not model_time or map_time is None:
-            return
-        warning_key = f"refmap_time:{map_key}"
-        if warning_key in self._observer_warning_cache:
-            return
-        try:
-            delta_hours = abs((Time(map_time) - Time(model_time)).to_value(u.hour))
-        except Exception:
-            return
-        if delta_hours <= _NATIVE_REFMAP_TIME_WARN_HOURS:
-            return
-        self._observer_warning_cache.add(warning_key)
-        notice = (
-            f"Reference map {map_key} differs from model time by {delta_hours:.1f} h; "
-            "alignment may be limited without rotation/reprojection."
-        )
-        if notice not in self._refmap_display_notices:
-            self._refmap_display_notices.append(notice)
-        self._refresh_status_text()
-
     def _reproject_map_for_display_observer(
         self,
         smap,
@@ -1548,7 +1638,9 @@ class MapBoxDisplayWidget(QWidget):
                 return self._rotate_map_for_display(smap), None
             except Exception:
                 return smap, None
-        obstime = self._obstime_for_map(smap, self._state.session_input.time_iso)
+        obstime = self._display_obstime_anchor()
+        if obstime is None:
+            obstime = self._obstime_for_map(smap, self._state.session_input.time_iso)
         observer = self._resolve_display_observer_coord(display_key, obstime)
         if observer is None:
             return smap, None
@@ -1976,6 +2068,8 @@ class MapBoxDisplayWidget(QWidget):
         if self._state.selected_context_id == map_id:
             return
         self._state.selected_context_id = map_id
+        self._invalidate_display_prepared_cache()
+        self._invalidate_geometry_dependent_display_maps()
         self._refresh_status_text()
         self._refresh_map_info()
         self._refresh_plot(preserve_current_view=False)
@@ -2840,6 +2934,11 @@ class MapBoxDisplayWidget(QWidget):
         model_time = str(self._state.session_input.time_iso or "")
         if model_time:
             base_text = f"{base_text}\nmodel_time={model_time}"
+        anchor = self._display_obstime_anchor()
+        if anchor is not None:
+            anchor_banner = self._format_display_time_banner(anchor, self._state.session_input.time_iso)
+            if anchor_banner:
+                base_text = f"{base_text}\ndisplay_time={anchor_banner}"
         observer_time = ""
         if self._normalize_observer_key(self._state.display_observer_key) == "custom":
             if isinstance(self._state.custom_observer_ephemeris, dict):
@@ -2848,7 +2947,12 @@ class MapBoxDisplayWidget(QWidget):
                     or self._state.custom_observer_ephemeris.get("obs_time")
                     or ""
                 )
-        else:
+        elif anchor is not None:
+            try:
+                observer_time = anchor.isot
+            except Exception:
+                observer_time = ""
+        elif model_time:
             observer_time = model_time
         if observer_time:
             base_text = f"{base_text}\nobserver_time={observer_time}"
@@ -3265,6 +3369,7 @@ class MapBoxDisplayWidget(QWidget):
                 return None
             header = box.bottom_cea_header
             self._copy_observer_cards_from_map(header, ref_map)
+            self._ensure_embedded_header_obstime(header)
             smap = map_from_data_header_compat(np.asarray(data), header)
         except Exception:
             return None
@@ -3298,6 +3403,9 @@ class MapBoxDisplayWidget(QWidget):
         meta = getattr(smap, "meta", None)
         if meta is None:
             return
+        # Copy observer ephemeris only; keep embedded DATE-OBS from the payload.
+        # Reference maps (often from filesystem) can be from unrelated epochs and
+        # must not overwrite the embedded observation-time anchor.
         for src_key, dst_key in (
             ("hgln_obs", "HGLN_OBS"),
             ("hglt_obs", "HGLT_OBS"),
@@ -3305,8 +3413,6 @@ class MapBoxDisplayWidget(QWidget):
             ("crln_obs", "CRLN_OBS"),
             ("crlt_obs", "CRLT_OBS"),
             ("rsun_ref", "RSUN_REF"),
-            ("date-obs", "DATE-OBS"),
-            ("date_obs", "DATE_OBS"),
         ):
             value = meta.get(src_key)
             if value is None:
@@ -3357,6 +3463,7 @@ class MapBoxDisplayWidget(QWidget):
                 ref_map = self._reference_context_map()
                 if ref_map is not None:
                     self._copy_observer_cards_from_map(header, ref_map)
+            self._ensure_embedded_header_obstime(header)
             header[_EMBEDDED_REFMAP_FLAG] = True
             smap = map_from_data_header_compat(np.asarray(data), header)
         except Exception:
@@ -3919,10 +4026,16 @@ class MapBoxDisplayWidget(QWidget):
                 ax.set_title("")
             except Exception:
                 pass
+            time_banner = self._format_display_time_banner(
+                self._display_obstime_anchor(),
+                self._state.session_input.time_iso,
+            )
+            if not time_banner:
+                time_banner = str(getattr(smap, "date", "") or "")
             title = (
                 f"{self._display_map_label(self._state.selected_context_id, bottom=False)} | "
                 f"{self._display_map_label(self._state.selected_bottom_id, bottom=True)} | "
-                f"{self._observer_label_for_key(self._state.display_observer_key)} | {getattr(smap, 'date', '')}"
+                f"{self._observer_label_for_key(self._state.display_observer_key)} | {time_banner}"
             )
             self._fig.text(0.02, 0.992, title, ha="left", va="top", fontsize=10)
             if context_xlim is not None and context_ylim is not None:

@@ -343,3 +343,105 @@ def test_prepare_context_map_full_sun_embedded_requests_disk_reproject():
         widget._prepare_context_map("171", smap, prepare_variant="fov_crop")
 
     assert captured.get("fov_override") is disk_fov
+
+
+def test_obstime_for_map_uses_model_fallback_when_date_obs_missing():
+    from astropy.io import fits
+    from pyampp.gxbox.boxutils import map_from_data_header_compat
+
+    model_time = "2026-04-03T19:34:37.800"
+    header = fits.Header()
+    header["NAXIS"] = 2
+    header["NAXIS1"] = 4
+    header["NAXIS2"] = 4
+    header["CTYPE1"] = "HPLN-TAN"
+    header["CTYPE2"] = "HPLT-TAN"
+    header["CRPIX1"] = 2.5
+    header["CRPIX2"] = 2.5
+    header["CRVAL1"] = 0
+    header["CRVAL2"] = 0
+    header["CDELT1"] = 1
+    header["CDELT2"] = 1
+    header["CUNIT1"] = "arcsec"
+    header["CUNIT2"] = "arcsec"
+    smap = map_from_data_header_compat(np.zeros((4, 4), dtype=np.float32), header)
+
+    resolved = MapBoxDisplayWidget._obstime_for_map(smap, model_time)
+    assert resolved is not None
+    assert resolved.isot.startswith("2026-04-03T19:34:37")
+
+
+def test_ensure_embedded_header_obstime_injects_model_time():
+    from astropy.io import fits
+
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._state = SimpleNamespace(
+        session_input=SimpleNamespace(time_iso="2026-04-03T19:34:37.800"),
+    )
+    header = fits.Header()
+    header["NAXIS"] = 2
+    MapBoxDisplayWidget._ensure_embedded_header_obstime(widget, header)
+    assert header["DATE-OBS"] == "2026-04-03T19:34:37.800"
+
+
+def test_copy_observer_cards_preserves_embedded_date_obs():
+    model_time = "2026-04-03T19:34:37.800"
+    ref_time = "2026-06-28T03:44:26.967"
+    obstime = Time(model_time)
+    earth = get_earth(obstime)
+    center = SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=Helioprojective(observer=earth, obstime=obstime))
+    embedded_header = make_fitswcs_header(
+        np.zeros((8, 8), dtype=np.float32),
+        center,
+        scale=u.Quantity([12.0, 12.0], u.arcsec / u.pix),
+    )
+    embedded_header["DATE-OBS"] = model_time
+    embedded_header["PYALIGN"] = True
+
+    ref_obstime = Time(ref_time)
+    ref_earth = get_earth(ref_obstime)
+    ref_center = SkyCoord(
+        0 * u.arcsec,
+        0 * u.arcsec,
+        frame=Helioprojective(observer=ref_earth, obstime=ref_obstime),
+    )
+    ref_header = make_fitswcs_header(
+        np.zeros((8, 8), dtype=np.float32),
+        ref_center,
+        scale=u.Quantity([12.0, 12.0], u.arcsec / u.pix),
+    )
+    ref_header["DATE-OBS"] = ref_time
+    ref_map = Map(np.zeros((8, 8), dtype=np.float32), ref_header)
+
+    MapBoxDisplayWidget._copy_observer_cards_from_map(embedded_header, ref_map)
+
+    assert embedded_header["DATE-OBS"] == model_time
+
+
+def test_format_time_delta_short_uses_compact_units():
+    assert MapBoxDisplayWidget._format_time_delta_short(0.0) == "Δt=0"
+    assert MapBoxDisplayWidget._format_time_delta_short(12.0) == "Δt=+12s"
+    assert MapBoxDisplayWidget._format_time_delta_short(-45.0) == "Δt=-45s"
+    assert MapBoxDisplayWidget._format_time_delta_short(138.0) == "Δt=+2.3min"
+    assert MapBoxDisplayWidget._format_time_delta_short(8280.0) == "Δt=+2.3h"
+
+
+def test_format_display_time_banner_includes_obs_and_delta():
+    model_time = "2026-04-03T17:16:37.800"
+    ref_time = "2026-04-03T19:46:37.800"
+    banner = MapBoxDisplayWidget._format_display_time_banner(ref_time, model_time)
+    assert banner.startswith("OBS 2026-04-03T19:46:37.800")
+    assert "(Δt=+2.5h)" in banner
+
+
+def test_normalize_observer_key_maps_sdo_to_earth():
+    assert MapBoxDisplayWidget._normalize_observer_key("sdo") == "earth"
+    assert MapBoxDisplayWidget._normalize_observer_key("SDO/AIA") == "earth"
+
+
+def test_display_observer_options_exclude_sdo():
+    from pyampp.gxbox import box_view2d as bv2d
+
+    option_keys = {key for key, _label in bv2d._DISPLAY_OBSERVER_OPTIONS}
+    assert "sdo" not in option_keys
+    assert "earth" in option_keys
