@@ -246,11 +246,10 @@ def test_reproject_without_fov_override_uses_full_disk_not_roi():
         reproject_to=lambda *_a, **_k: SimpleNamespace(data=np.zeros((8, 8))),
     )
 
-    with patch.object(
-        MapBoxDisplayWidget,
-        "_display_observer_reproject_header_for_selection",
-        return_value=None,
-    ) as roi_mock, patch.object(
+    with patch(
+        "pyampp.io.refmap_crop.reproject_refmap_to_observer",
+        return_value=SimpleNamespace(data=np.zeros((8, 8))),
+    ) as full_mock, patch.object(
         MapBoxDisplayWidget,
         "_current_display_prepare_fov",
         return_value=DisplayFovSelection(-1021.28, 107.67, 801.64, 801.64),
@@ -258,15 +257,11 @@ def test_reproject_without_fov_override_uses_full_disk_not_roi():
         MapBoxDisplayWidget,
         "_resolve_display_observer_coord",
         return_value="stereo-observer",
-    ), patch.object(
-        MapBoxDisplayWidget,
-        "_solar_disk_center_for_observer",
-        return_value="disk-center",
     ):
         widget._reproject_map_for_display_observer(smap, fov_override=None)
 
-    roi_mock.assert_called_once()
-    assert roi_mock.call_args.args[3] is None
+    full_mock.assert_called_once()
+    assert full_mock.call_args.kwargs.get("mask_off_limb") is True
     implicit_fov_mock.assert_not_called()
 
 
@@ -418,14 +413,14 @@ def test_native_stereo_map_reprojects_for_earth_display_observer(tmp_path):
     widget._observer_source_b3d = lambda: {}
 
     reprojected = map_from_data_header_compat(np.zeros((8, 8), dtype=np.float32), header.copy())
-    with patch.object(
-        smap,
-        "reproject_to",
+    with patch(
+        "pyampp.io.refmap_crop.reproject_refmap_to_observer",
         return_value=reprojected,
     ) as reproj_mock:
         out, coverage = widget._reproject_map_for_display_observer(smap)
 
     reproj_mock.assert_called_once()
+    assert reproj_mock.call_args.kwargs.get("mask_off_limb") is True
     assert out is reprojected
     assert coverage is None
     assert any("observer reproj:" in msg and "-> earth" in msg for msg in events)
@@ -877,6 +872,7 @@ def test_context_map_for_id_returns_prepared_map_without_runtime_crop():
     widget._state = SimpleNamespace(
         display_observer_key="stereo-a",
         map_source_mode="embedded",
+        selected_context_id="stereo171",
         session_input=SimpleNamespace(time_iso="2026-04-03T19:46:37.800"),
         fov=DisplayFovSelection(-1021.28, 107.67, 801.64, 801.64),
         map_files={},
@@ -1076,21 +1072,249 @@ def test_embedded_stereo_without_telescop_header_still_crops_at_display():
     assert shape[1] >= _MIN_DISPLAY_MAP_SIDE
 
 
-def test_cross_observer_bottom_skips_observer_reprojection():
+def test_cross_observer_bottom_reprojects_at_display_anchor():
     from types import SimpleNamespace
     from unittest.mock import patch
     from pyampp.gxbox.box_view2d import MapBoxDisplayWidget
+    from pyampp.gxbox.selector_api import DisplayFovSelection
 
     smap = SimpleNamespace(data=np.ones((301, 300)), meta={})
     widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
-    widget._state = SimpleNamespace(display_observer_key="stereo-a")
+    widget._state = SimpleNamespace(
+        display_observer_key="stereo-a",
+        session_input=SimpleNamespace(time_iso="2026-04-03T19:46:37.800"),
+        fov=DisplayFovSelection(0.0, 0.0, 100.0, 100.0),
+        fov_definition_observer_key="earth",
+    )
+    widget.__dict__["_view_mode"] = "box_fov"
     widget._record_prepare_event = lambda _msg: None
     widget._apply_display_scaling = lambda m, _k: m
 
     with patch.object(MapBoxDisplayWidget, "_map_display_los_matches", return_value=False), patch.object(
-        MapBoxDisplayWidget, "_reproject_map_for_display_observer"
+        MapBoxDisplayWidget,
+        "_fov_selection_projected_to_display_observer",
+        return_value=DisplayFovSelection(1.0, 2.0, 80.0, 80.0),
+    ), patch.object(
+        MapBoxDisplayWidget,
+        "_reproject_map_for_display_observer",
+        return_value=(smap, None),
     ) as reproj_mock:
         out, _cov = widget._prepare_map_for_display("bz", smap, purpose="bottom")
 
     assert out is smap
-    reproj_mock.assert_not_called()
+    reproj_mock.assert_called_once()
+
+
+def test_exportable_fov_selection_returns_none_when_projection_fails():
+    from astropy.time import Time
+    from types import SimpleNamespace
+
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._state = SimpleNamespace(
+        display_observer_key="stereo-a",
+        fov_definition_observer_key="earth",
+        fov=DisplayFovSelection(10.0, 20.0, 30.0, 40.0),
+        session_input=SimpleNamespace(time_iso="2026-04-03T19:46:37.800"),
+    )
+    with patch.object(MapBoxDisplayWidget, "_display_obstime_anchor", return_value=Time("2026-04-03T19:46:37.800")), patch.object(
+        MapBoxDisplayWidget, "_observers_share_los", return_value=False
+    ), patch.object(MapBoxDisplayWidget, "_project_fov_between_observers", return_value=None):
+        assert widget.exportable_fov_selection() is None
+
+
+def test_exportable_fov_selection_returns_none_without_anchor():
+    from types import SimpleNamespace
+
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._state = SimpleNamespace(
+        display_observer_key="earth",
+        fov_definition_observer_key="earth",
+        fov=DisplayFovSelection(10.0, 20.0, 30.0, 40.0),
+        session_input=SimpleNamespace(time_iso=""),
+    )
+    with patch.object(MapBoxDisplayWidget, "_display_obstime_anchor", return_value=None):
+        assert widget.exportable_fov_selection() is None
+
+
+def test_persist_selector_result_rejects_inconsistent_fov_box_observer(tmp_path):
+    from pyampp.gxbox.gxbox_selector_view import _persist_selector_result_to_entry
+    from pyampp.gxbox.selector_api import BoxGeometrySelection, CoordMode, DisplayFovBoxSelection, SelectorDialogResult
+
+    entry = tmp_path / "model.h5"
+    result = SelectorDialogResult(
+        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
+        fov=DisplayFovSelection(0.0, 0.0, 100.0, 100.0),
+    )
+    fov_box = DisplayFovBoxSelection(
+        center_x_arcsec=0.0,
+        center_y_arcsec=0.0,
+        width_arcsec=100.0,
+        height_arcsec=100.0,
+        z_min_mm=-100.0,
+        z_max_mm=100.0,
+        observer_key="earth",
+    )
+    observer_state = {
+        "display_observer_key": "stereo-a",
+        "display_fov_obstime": "2026-04-03T19:46:37.800",
+    }
+    box_data = {"observer": {"name": "earth"}, "refmaps": {}}
+
+    with patch("pyampp.gxbox.gxbox_selector_view.load_model", return_value=box_data):
+        ok = _persist_selector_result_to_entry(
+            entry,
+            result,
+            fov_box=fov_box,
+            observer_state=observer_state,
+            output_path=tmp_path / "out.h5",
+        )
+    assert ok is False
+
+
+def test_persist_selector_result_rejects_missing_display_fov_obstime(tmp_path):
+    from pyampp.gxbox.gxbox_selector_view import _persist_selector_result_to_entry
+    from pyampp.gxbox.selector_api import BoxGeometrySelection, CoordMode, SelectorDialogResult
+
+    entry = tmp_path / "model.h5"
+    result = SelectorDialogResult(
+        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
+        fov=DisplayFovSelection(0.0, 0.0, 100.0, 100.0),
+    )
+    observer_state = {
+        "display_observer_key": "earth",
+        "display_fov_obstime": "unknown",
+    }
+    box_data = {"observer": {"name": "earth"}, "refmaps": {}}
+
+    with patch("pyampp.gxbox.gxbox_selector_view.load_model", return_value=box_data):
+        ok = _persist_selector_result_to_entry(
+            entry,
+            result,
+            observer_state=observer_state,
+            output_path=tmp_path / "out.h5",
+        )
+    assert ok is False
+
+
+def test_fov_persistence_issue_reports_cross_observer_mismatch():
+    from types import SimpleNamespace
+
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._state = SimpleNamespace(
+        display_observer_key="stereo-a",
+        fov_definition_observer_key="earth",
+        fov=DisplayFovSelection(10.0, 20.0, 30.0, 40.0),
+        session_input=SimpleNamespace(time_iso="2026-04-03T19:46:37.800"),
+    )
+    with patch.object(MapBoxDisplayWidget, "_display_obstime_cache_token", return_value="2026-04-03T19:46:37.800"), patch.object(
+        MapBoxDisplayWidget, "exportable_fov_selection", return_value=None
+    ), patch.object(MapBoxDisplayWidget, "_observer_label_for_key", side_effect=lambda key: str(key)):
+        issue = widget.fov_persistence_issue()
+    assert issue is not None
+    assert "earth" in issue
+    assert "stereo-a" in issue
+
+
+def test_set_display_observer_preserves_fov_definition():
+    from types import SimpleNamespace
+
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    original_fov = DisplayFovSelection(10.0, 20.0, 30.0, 40.0)
+    widget._state = SimpleNamespace(
+        display_observer_key="earth",
+        fov_definition_observer_key="earth",
+        fov=original_fov,
+        fov_box=None,
+        session_input=SimpleNamespace(time_iso="2026-04-03T19:46:37.800"),
+        square_fov=False,
+    )
+    widget._view_mode = "box_fov"
+
+    with patch.object(MapBoxDisplayWidget, "_enabled_observer_keys", return_value={"earth", "stereo-a"}), patch.object(
+        MapBoxDisplayWidget, "_normalize_display_observer_state"
+    ), patch.object(MapBoxDisplayWidget, "_invalidate_display_prepared_cache"), patch.object(
+        MapBoxDisplayWidget, "_refresh_status_text"
+    ), patch.object(MapBoxDisplayWidget, "_emit_observer_info"), patch.object(
+        MapBoxDisplayWidget, "_schedule_observer_refresh"
+    ), patch.object(MapBoxDisplayWidget, "_should_preserve_pixel_view", return_value=False):
+        widget.set_display_observer_key("stereo-a")
+
+    assert widget._state.display_observer_key == "stereo-a"
+    assert widget._state.fov_definition_observer_key == "earth"
+    assert widget._state.fov is original_fov
+    assert widget._state.fov.center_x_arcsec == 10.0
+
+
+def test_compute_fov_box_from_current_selection_uses_definition_observer():
+    from types import SimpleNamespace
+
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._state = SimpleNamespace(
+        display_observer_key="stereo-a",
+        fov_definition_observer_key="earth",
+        geometry_definition_observer_key="earth",
+        fov=DisplayFovSelection(10.0, 20.0, 30.0, 40.0),
+        square_fov=False,
+    )
+    widget._current_map = SimpleNamespace(date="2026-04-03T19:46:37.800")
+
+    with patch.object(MapBoxDisplayWidget, "_observer_context", return_value=widget._current_map), patch.object(
+        MapBoxDisplayWidget, "_build_legacy_box",
+        return_value=SimpleNamespace(model_box_corners_world=lambda: object()),
+    ), patch.object(
+        MapBoxDisplayWidget,
+        "_resolved_observer_for_map",
+        return_value="earth",
+    ) as resolve_mock, patch(
+        "pyampp.gxbox.box_view2d.build_fov_box_from_user_hpc_and_red_box_world",
+        return_value={
+            "xc_arcsec": 10.0,
+            "yc_arcsec": 20.0,
+            "xsize_arcsec": 30.0,
+            "ysize_arcsec": 40.0,
+            "zmin_mm": -1.0,
+            "zmax_mm": 1.0,
+        },
+    ):
+        out = widget._compute_fov_box_from_current_selection()
+
+    assert out is not None
+    assert out.observer_key == "earth"
+    resolve_mock.assert_called()
+    assert resolve_mock.call_args[0][1] == "earth"
+
+
+def test_persist_selector_result_can_clear_observer_fov(tmp_path):
+    from pyampp.gxbox.gxbox_selector_view import _persist_selector_result_to_entry
+    from pyampp.gxbox.selector_api import BoxGeometrySelection, CoordMode, SelectorDialogResult
+
+    entry = tmp_path / "model.h5"
+    result = SelectorDialogResult(
+        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
+        fov=None,
+    )
+    box_data = {
+        "observer": {
+            "name": "earth",
+            "fov": {"xc_arcsec": 0.0, "yc_arcsec": 0.0, "xsize_arcsec": 100.0, "ysize_arcsec": 100.0},
+            "fov_box": {"xc_arcsec": 0.0, "yc_arcsec": 0.0, "xsize_arcsec": 100.0, "ysize_arcsec": 100.0},
+        },
+        "refmaps": {},
+    }
+
+    with patch("pyampp.gxbox.gxbox_selector_view.load_model", return_value=box_data), patch(
+        "pyampp.gxbox.gxbox_selector_view.save_model"
+    ) as save_model:
+        ok = _persist_selector_result_to_entry(
+            entry,
+            result,
+            observer_state={"display_observer_key": "stereo-a", "display_fov_obstime": "2026-04-03T19:46:37.800"},
+            output_path=tmp_path / "out.h5",
+            clear_observer_fov=True,
+        )
+
+    assert ok is True
+    saved = save_model.call_args[0][0]
+    assert saved["observer"]["name"] == "stereo-a"
+    assert "fov" not in saved["observer"]
+    assert "fov_box" not in saved["observer"]

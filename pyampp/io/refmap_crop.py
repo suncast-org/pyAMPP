@@ -828,6 +828,8 @@ def reproject_map_to_target_observer_fov(
     target_fov: dict[str, float],
     target_observer,
     target_obstime,
+    algorithm: str = "adaptive",
+    mask_off_limb: bool = True,
 ) -> Map:
     """Reproject ``smap`` into a precomputed target-observer ROI."""
     header = display_observer_reproject_header_for_fov(
@@ -839,7 +841,13 @@ def reproject_map_to_target_observer_fov(
     if header is None:
         return smap
     try:
-        return smap.reproject_to(header, algorithm="adaptive", roundtrip_coords=False)
+        ny = int(header["NAXIS2"])
+        nx = int(header["NAXIS1"])
+        canvas = Map(np.full((ny, nx), np.nan, dtype=float), header)
+        reprojected = reproject_map_onto_canvas(smap, canvas, algorithm=algorithm)
+        if mask_off_limb:
+            reprojected = mask_pixels_not_visible_from_source(smap, reprojected)
+        return _copy_plot_settings(reprojected, smap)
     except Exception:
         return smap
 

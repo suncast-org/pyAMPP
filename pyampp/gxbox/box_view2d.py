@@ -37,6 +37,7 @@ from sunpy.coordinates import (
     HeliographicCarrington,
     HeliographicStonyhurst,
     Helioprojective,
+    get_earth,
     sun,
 )
 from sunpy.visualization import colormaps as sunpy_colormaps
@@ -94,7 +95,6 @@ _SIGNED_MAGNETIC_KEYS = {"magnetogram", "bx", "by", "bz"}
 _TRANSVERSE_MAGNETIC_KEYS = set()
 _VERT_CURRENT_KEYS = {"Vert_current", "vert_current"}
 _CHROMO_MASK_KEYS = {"chromo_mask"}
-_AIA_REFERENCE_IDS = ("171", "193", "211", "304", "335", "1600", "1700", "131", "94")
 _HMI_VECTOR_DISPLAY_KEYS = {"field", "inclination", "azimuth", "disambig"}
 _AIA_COLOR_KEYS = {"94", "131", "1600", "1700", "171", "193", "211", "304", "335"}
 _EOVSA_REFMAP_PREFIX = "EOVSA_"
@@ -629,6 +629,12 @@ class MapBoxDisplayWidget(QWidget):
             self._state.display_observer_key = "earth"
 
     def set_display_observer_key(self, observer_key: str | None) -> None:
+        """Switch display LOS for map reprojection/overlays only.
+
+        Does not mutate ``_state.fov``, ``fov_box``, or ``fov_definition_observer_key``.
+        Users may inspect another LOS and switch back without losing the prior FOV.
+        Save-time alignment is handled explicitly via the FOV mismatch dialog.
+        """
         if self._state is None:
             return
         key = self._normalize_observer_key(observer_key)
@@ -1231,10 +1237,14 @@ class MapBoxDisplayWidget(QWidget):
         observer_key = self._normalize_observer_key(
             self._state.display_observer_key if self._state is not None else "earth"
         )
+        context_token = "__none__"
+        if self._state is not None:
+            context_token = str(getattr(self._state, "selected_context_id", None) or "__none__")
         return (
             f"__display__:{self._map_source_cache_token()}:"
             f"{self._display_obstime_cache_token()}:"
-            f"{observer_key}:{self.__dict__.get('_view_mode', 'box_fov') or 'box_fov'}:{purpose}:{map_key}"
+            f"{observer_key}:{context_token}:"
+            f"{self.__dict__.get('_view_mode', 'box_fov') or 'box_fov'}:{purpose}:{map_key}"
         )
 
     def _infer_map_native_observer_key(self, smap) -> str:
@@ -1366,7 +1376,7 @@ class MapBoxDisplayWidget(QWidget):
             display_map = display_map.rotate(order=3)
         except Exception:
             pass
-        ref_map = self._reference_context_map()
+        ref_map = self._earth_geometry_reference_map()
         if ref_map is None:
             return display_map
         try:
@@ -1477,26 +1487,37 @@ class MapBoxDisplayWidget(QWidget):
         return use_native_crop is not False
 
     def _prepare_bottom_for_display(self, map_key: str, smap):
-        """Embedded/model base maps stay in CEA for cross-observer overlays (autoalign)."""
+        """Embedded/model base maps reproject to display observer at anchor when needed."""
         display_key = self._normalize_observer_key(
             self._state.display_observer_key if self._state is not None else "earth"
         )
         los_matches = self._map_display_los_matches(smap, display_key)
         display_map = smap
-        if self.__dict__.get("_view_mode", "box_fov") == "box_fov" and los_matches:
-            box = self._build_legacy_box(display_map)
-            if box is not None:
-                try:
-                    self._record_prepare_event(f"bottom reproj: {map_key} -> base_cea")
-                    display_map = self._with_matching_rsun(display_map, box.bottom_cea_header)
-                    display_map = display_map.reproject_to(
-                        box.bottom_cea_header,
-                        algorithm="adaptive",
-                        roundtrip_coords=False,
-                    )
-                except Exception:
-                    pass
-            display_map = self._crop_bottom_to_display_window(map_key, display_map)
+        if self.__dict__.get("_view_mode", "box_fov") == "box_fov":
+            if los_matches:
+                box = self._build_legacy_box(display_map)
+                if box is not None:
+                    try:
+                        self._record_prepare_event(f"bottom reproj: {map_key} -> base_cea")
+                        display_map = self._with_matching_rsun(display_map, box.bottom_cea_header)
+                        display_map = display_map.reproject_to(
+                            box.bottom_cea_header,
+                            algorithm="adaptive",
+                            roundtrip_coords=False,
+                        )
+                    except Exception:
+                        pass
+                display_map = self._crop_bottom_to_display_window(map_key, display_map)
+            else:
+                anchor = self._display_obstime_anchor()
+                base_fov = self._state.fov if self._state is not None and self._state.fov is not None else self.projected_box_fov()
+                if base_fov is not None and anchor is not None:
+                    fov_override = self._fov_selection_projected_to_display_observer(base_fov, anchor)
+                    if fov_override is not None:
+                        display_map, _ = self._reproject_map_for_display_observer(
+                            display_map,
+                            fov_override=fov_override,
+                        )
         self._apply_display_scaling(display_map, map_key)
         return display_map, None
 
@@ -1663,41 +1684,37 @@ class MapBoxDisplayWidget(QWidget):
                     return smap, None
         except Exception:
             pass
-        ny, nx = np.asarray(smap.data).shape[:2]
-        cx = 0.5 * max(0, nx - 1)
-        cy = 0.5 * max(0, ny - 1)
+        source_label = str(
+            getattr(smap, "detector", None)
+            or getattr(smap, "observatory", None)
+            or getattr(smap, "nickname", None)
+            or "map"
+        )
+        from pyampp.io.refmap_crop import (
+            reproject_map_to_target_observer_fov,
+            reproject_refmap_to_observer,
+        )
+
         try:
-            center_world = smap.wcs.pixel_to_world(cx, cy)
-            source_label = str(
-                getattr(smap, "detector", None)
-                or getattr(smap, "observatory", None)
-                or getattr(smap, "nickname", None)
-                or "map"
-            )
-            target_fov = fov_override
-            header = self._display_observer_reproject_header_for_selection(smap, observer, obstime, target_fov)
-            if header is not None:
+            if fov_override is not None:
                 self._record_prepare_event(f"observer reproj: {source_label} -> {display_key} [roi]")
-                coverage_fov = target_fov
-            else:
-                target_center = self._solar_disk_center_for_observer(smap, observer, obstime)
-                if target_center is None:
-                    target_center = center_world.transform_to(Helioprojective(observer=observer, obstime=obstime))
-                self._record_prepare_event(f"observer reproj: {source_label} -> {display_key} [full]")
-                header = make_fitswcs_header(
-                    smap.data,
-                    target_center,
-                    scale=u.Quantity([
-                        abs(smap.scale.axis1.to_value(u.arcsec / u.pix)),
-                        abs(smap.scale.axis2.to_value(u.arcsec / u.pix)),
-                    ], u.arcsec / u.pix),
+                reprojected = reproject_map_to_target_observer_fov(
+                    smap,
+                    target_fov=self._fov_selection_to_dict(fov_override),
+                    target_observer=observer,
+                    target_obstime=obstime,
+                    mask_off_limb=True,
                 )
-                try:
-                    header["rsun_ref"] = float(smap.rsun_meters.to_value(u.m))
-                except Exception:
-                    pass
-                coverage_fov = None
-            return smap.reproject_to(header, algorithm="adaptive", roundtrip_coords=False), coverage_fov
+                return reprojected, fov_override
+            self._record_prepare_event(f"observer reproj: {source_label} -> {display_key} [full]")
+            reprojected = reproject_refmap_to_observer(
+                smap,
+                observer=observer,
+                obstime=obstime,
+                reference_smap=smap,
+                mask_off_limb=True,
+            )
+            return reprojected, None
         except Exception:
             return smap, None
 
@@ -2053,8 +2070,14 @@ class MapBoxDisplayWidget(QWidget):
         if self._state is None:
             return
         map_ids = list(map_ids)
-        self._state.session_input.map_ids = map_ids
-        if self._state.selected_context_id not in map_ids:
+        self._state.session_input.map_ids = tuple(map_ids)
+        context_ids = self._available_context_map_ids(self._state.session_input)
+        if not context_ids:
+            self._state.selected_context_id = None
+        elif (
+            self._state.selected_context_id is not None
+            and self._state.selected_context_id not in map_ids
+        ):
             self._state.selected_context_id = self._default_context_id(self._state.session_input)
         if self._state.selected_bottom_id not in map_ids:
             self._state.selected_bottom_id = self._default_bottom_id(self._state.session_input)
@@ -2528,6 +2551,104 @@ class MapBoxDisplayWidget(QWidget):
             return None
         return self._state.fov
 
+    def exportable_fov_selection(self) -> Optional[DisplayFovSelection]:
+        """Return the blue FOV rectangle in display-observer HPC at the display time anchor."""
+        if self._state is None:
+            return None
+        base = self._state.fov or self.projected_box_fov()
+        if base is None:
+            return None
+        anchor = self._display_obstime_anchor()
+        if anchor is None:
+            return None
+        def_key = self._normalize_observer_key(self._state.fov_definition_observer_key)
+        display_key = self._normalize_observer_key(self._state.display_observer_key)
+        if self._observers_share_los(def_key, display_key, anchor):
+            return base
+        return self._project_fov_between_observers(base, def_key, display_key, anchor)
+
+    def exportable_fov_box_selection(self) -> Optional[DisplayFovBoxSelection]:
+        """Return the 3D FOV box footprint at the display time anchor for synthesis export."""
+        if self._state is None:
+            return None
+        export_fov = self.exportable_fov_selection()
+        if export_fov is None:
+            return None
+        z_min_mm = z_max_mm = None
+        if self._state.fov_box is not None:
+            z_min_mm = float(self._state.fov_box.z_min_mm)
+            z_max_mm = float(self._state.fov_box.z_max_mm)
+        else:
+            recomputed = self._compute_fov_box_from_current_selection()
+            if recomputed is not None:
+                z_min_mm = float(recomputed.z_min_mm)
+                z_max_mm = float(recomputed.z_max_mm)
+        if z_min_mm is None or z_max_mm is None:
+            return None
+        return DisplayFovBoxSelection(
+            center_x_arcsec=float(export_fov.center_x_arcsec),
+            center_y_arcsec=float(export_fov.center_y_arcsec),
+            width_arcsec=float(export_fov.width_arcsec),
+            height_arcsec=float(export_fov.height_arcsec),
+            z_min_mm=z_min_mm,
+            z_max_mm=z_max_mm,
+            observer_key=self._normalize_observer_key(self._state.display_observer_key),
+        )
+
+    def fov_persistence_issue(self) -> str | None:
+        """Return a user-facing reason when FOV cannot be saved for the current display observer."""
+        if self._state is None:
+            return None
+        if self._state.fov is None and self.projected_box_fov() is None:
+            return None
+        export_fov = self.exportable_fov_selection()
+        if export_fov is not None:
+            export_box = self.exportable_fov_box_selection()
+            display_key = self._normalize_observer_key(self._state.display_observer_key)
+            if export_box is not None:
+                box_key = self._normalize_observer_key(export_box.observer_key)
+                if box_key != display_key:
+                    return (
+                        f"The FOV box observer ({self._observer_label_for_key(box_key)}) "
+                        f"does not match the display observer "
+                        f"({self._observer_label_for_key(display_key)})."
+                    )
+            return None
+        def_label = self._observer_label_for_key(self._state.fov_definition_observer_key)
+        display_label = self._observer_label_for_key(self._state.display_observer_key)
+        anchor = self._display_obstime_cache_token()
+        anchor_text = anchor if anchor != "unknown" else "undefined"
+        return (
+            f"The FOV was defined for {def_label}, but the display observer is "
+            f"{display_label} (time anchor: {anchor_text})."
+        )
+
+    def recompute_fov_for_display_observer(self) -> bool:
+        """Recompute the inscribing FOV rectangle and box for the current display observer."""
+        if self._state is None:
+            return False
+        if self._projected_box_fov is not None:
+            self.recompute_fov_from_box()
+        else:
+            base = self._state.fov or self.projected_box_fov()
+            if base is None:
+                return False
+            anchor = self._display_obstime_anchor()
+            if anchor is None:
+                return False
+            def_key = self._normalize_observer_key(self._state.fov_definition_observer_key)
+            display_key = self._normalize_observer_key(self._state.display_observer_key)
+            if self._observers_share_los(def_key, display_key, anchor):
+                self._state.fov_definition_observer_key = display_key
+                self._sync_fov_box_to_selection()
+            else:
+                projected = self._project_fov_between_observers(base, def_key, display_key, anchor)
+                if projected is None:
+                    return False
+                self._state.fov_definition_observer_key = display_key
+                self.set_fov_selection(projected)
+        return self.exportable_fov_selection() is not None
+
     def current_fov_box_selection(self) -> Optional[DisplayFovBoxSelection]:
         if self._state is None:
             return None
@@ -2610,6 +2731,7 @@ class MapBoxDisplayWidget(QWidget):
             "custom_observer_label": str(self._state.custom_observer_label or ""),
             "custom_observer_source": str(self._state.custom_observer_source or ""),
             "fov_definition_observer_key": self._normalize_observer_key(self._state.fov_definition_observer_key),
+            "display_fov_obstime": self._display_obstime_cache_token(),
         }
 
     def current_observer_info(self) -> dict[str, str]:
@@ -2782,7 +2904,8 @@ class MapBoxDisplayWidget(QWidget):
         world = box.model_box_corners_world()
         if world is None:
             return None
-        observer = self._resolved_observer_for_map(self._current_map, self._state.display_observer_key) or "earth"
+        fov_observer_key = self._normalize_observer_key(self._state.fov_definition_observer_key)
+        observer = self._resolved_observer_for_map(self._current_map, fov_observer_key) or "earth"
         try:
             fov_box = build_fov_box_from_user_hpc_and_red_box_world(
                 world,
@@ -2802,7 +2925,7 @@ class MapBoxDisplayWidget(QWidget):
                 height_arcsec=float(fov_box["ysize_arcsec"]),
                 z_min_mm=float(fov_box["zmin_mm"]),
                 z_max_mm=float(fov_box["zmax_mm"]),
-                observer_key=self._normalize_observer_key(self._state.display_observer_key),
+                observer_key=fov_observer_key,
             )
         except Exception:
             return None
@@ -2956,6 +3079,14 @@ class MapBoxDisplayWidget(QWidget):
             observer_time = model_time
         if observer_time:
             base_text = f"{base_text}\nobserver_time={observer_time}"
+        save_issue = self.fov_persistence_issue()
+        if save_issue is not None:
+            base_text = (
+                f"{base_text}\nfov_save_note=FOV unchanged in "
+                f"{self._observer_label_for_key(self._state.fov_definition_observer_key)} frame; "
+                f"save will ask to realign for "
+                f"{self._observer_label_for_key(self._state.display_observer_key)} or clear FOV"
+            )
         if self._normalize_observer_key(self._state.display_observer_key) == "custom":
             base_text = f"{base_text}\ncustom_label={self._state.custom_observer_label or 'Custom'}"
             if self._state.custom_observer_source:
@@ -3360,16 +3491,9 @@ class MapBoxDisplayWidget(QWidget):
         if data is None:
             return None
         try:
-            ref_map = self._reference_context_map()
-            if ref_map is None:
+            header = self._model_geometry_earth_wcs_header()
+            if header is None:
                 return None
-            base_geom = self._state.base_geometry or self._state.geometry
-            box = self._build_legacy_box(ref_map, geom=base_geom)
-            if box is None:
-                return None
-            header = box.bottom_cea_header
-            self._copy_observer_cards_from_map(header, ref_map)
-            self._ensure_embedded_header_obstime(header)
             smap = map_from_data_header_compat(np.asarray(data), header)
         except Exception:
             return None
@@ -3460,7 +3584,7 @@ class MapBoxDisplayWidget(QWidget):
         try:
             header = fits.Header.fromstring(header_text, sep="\n")
             if bool(header.get("PYALIGN", False)):
-                ref_map = self._reference_context_map()
+                ref_map = self._earth_geometry_reference_map()
                 if ref_map is not None:
                     self._copy_observer_cards_from_map(header, ref_map)
             self._ensure_embedded_header_obstime(header)
@@ -3541,29 +3665,247 @@ class MapBoxDisplayWidget(QWidget):
         )
         return prepared
 
-    def _reference_context_map(self):
+    def _model_obstime_for_geometry(self) -> Time | None:
         if self._state is None:
             return None
-        source_token = self._map_source_cache_token()
-        for map_id in _AIA_REFERENCE_IDS:
-            cache_key = f"__ref__:{source_token}:{map_id}"
-            with self._cache_lock:
-                if cache_key in self._raw_map_cache:
-                    return self._raw_map_cache[cache_key]
-            path = self._filesystem_path_for_key(map_id)
+        anchor = self._display_obstime_anchor()
+        if anchor is not None:
+            return anchor
+        fallback_iso = self._state.session_input.time_iso
+        return self._parse_obstime(fallback_iso)
+
+    def _geometry_stub_map(self, obstime, observer_key: str = "earth"):
+        when = obstime if isinstance(obstime, Time) else Time(obstime)
+        observer = self._resolve_display_observer_coord(observer_key, when)
+        if observer is None:
             try:
-                if path:
-                    ref_map = load_sunpy_map_compat(path)
-                else:
-                    ref_map = self._load_embedded_refmap(f"AIA_{map_id}")
-                    if ref_map is None:
-                        continue
-                with self._cache_lock:
-                    self._raw_map_cache[cache_key] = ref_map
-                return ref_map
+                observer = get_earth(when)
             except Exception:
-                continue
-        return None
+                observer = "earth"
+        center = SkyCoord(
+            0 * u.arcsec,
+            0 * u.arcsec,
+            frame=Helioprojective(observer=observer, obstime=when),
+        )
+        data = np.zeros((2, 2), dtype=np.float32)
+        header = make_fitswcs_header(
+            data,
+            center,
+            scale=u.Quantity([1.0, 1.0], u.arcsec / u.pix),
+        )
+        header["DATE-OBS"] = when.isot
+        header["DATE_OBS"] = when.isot
+        return Map(data, header)
+
+    def _stamp_model_time_and_observer_on_header(
+        self,
+        header: fits.Header,
+        obstime,
+        observer_key: str,
+    ) -> None:
+        if obstime is None:
+            return
+        when = obstime if isinstance(obstime, Time) else Time(obstime)
+        header["DATE-OBS"] = when.isot
+        header["DATE_OBS"] = when.isot
+        metadata = self._resolve_display_observer_metadata(observer_key, when)
+        if not isinstance(metadata, dict):
+            return
+        if metadata.get("hgln_obs_deg") is not None:
+            header["HGLN_OBS"] = float(metadata["hgln_obs_deg"])
+        if metadata.get("hglt_obs_deg") is not None:
+            header["HGLT_OBS"] = float(metadata["hglt_obs_deg"])
+        dsun_cm = metadata.get("dsun_cm")
+        if dsun_cm is not None:
+            try:
+                header["DSUN_OBS"] = float(dsun_cm) * 0.01
+            except Exception:
+                pass
+        rsun_cm = metadata.get("rsun_cm")
+        if rsun_cm is not None:
+            try:
+                header["RSUN_REF"] = float(rsun_cm) * 0.01
+            except Exception:
+                pass
+
+    @staticmethod
+    def _header_only_map_from_wcs(header: fits.Header):
+        try:
+            naxis1 = int(header.get("NAXIS1", 0) or 0)
+            naxis2 = int(header.get("NAXIS2", 0) or 0)
+            if naxis1 <= 0 or naxis2 <= 0:
+                return None
+            data = np.full((naxis2, naxis1), np.nan, dtype=np.float32)
+            return map_from_data_header_compat(data, header.copy())
+        except Exception:
+            return None
+
+    def _model_geometry_earth_wcs_header(self) -> fits.Header | None:
+        if self._state is None or self._state.geometry is None:
+            return None
+        obstime = self._model_obstime_for_geometry()
+        if obstime is None:
+            return None
+        geometry_observer_key = self._normalize_observer_key(
+            self._state.geometry_definition_observer_key
+        )
+        base_text = str(self._state.base_wcs_header or "").strip()
+        if base_text:
+            try:
+                header = fits.Header.fromstring(base_text, sep="\n")
+                naxis1 = int(header.get("NAXIS1", 0) or 0)
+                naxis2 = int(header.get("NAXIS2", 0) or 0)
+                if naxis1 > 0 and naxis2 > 0:
+                    self._stamp_model_time_and_observer_on_header(
+                        header,
+                        obstime,
+                        geometry_observer_key,
+                    )
+                    return header
+            except Exception:
+                pass
+        stub = self._geometry_stub_map(obstime, geometry_observer_key)
+        box = self._build_legacy_box(
+            stub,
+            geometry_observer_key=geometry_observer_key,
+        )
+        if box is None:
+            return None
+        header = fits.Header(box.bottom_cea_header)
+        self._stamp_model_time_and_observer_on_header(
+            header,
+            obstime,
+            geometry_observer_key,
+        )
+        return header
+
+    def _model_geometry_scaffold_cache_key(self) -> str:
+        display_key = (
+            self._normalize_observer_key(self._state.display_observer_key)
+            if self._state is not None
+            else "earth"
+        )
+        return (
+            f"__geom_scaffold__:{self._map_source_cache_token()}:"
+            f"{self._display_obstime_cache_token()}:"
+            f"{display_key}:{self._geometry_cache_token()}"
+        )
+
+    @staticmethod
+    def _fov_selection_to_dict(fov: DisplayFovSelection) -> dict[str, float]:
+        return {
+            "xc_arcsec": float(fov.center_x_arcsec),
+            "yc_arcsec": float(fov.center_y_arcsec),
+            "xsize_arcsec": float(fov.width_arcsec),
+            "ysize_arcsec": float(fov.height_arcsec),
+        }
+
+    def _empty_observer_scaffold_from_geometry(self, earth_map, display_key: str, obstime):
+        from pyampp.io.refmap_crop import make_empty_observer_fov_map
+
+        base_fov = self._model_fov_in_definition_frame(earth_map)
+        if base_fov is None:
+            return None
+        projected = self._project_fov_between_observers(
+            base_fov,
+            self._state.geometry_definition_observer_key,
+            display_key,
+            obstime,
+        )
+        if projected is None:
+            return None
+        observer = self._resolve_display_observer_coord(display_key, obstime)
+        if observer is None:
+            return None
+        try:
+            return make_empty_observer_fov_map(
+                earth_map,
+                observer=observer,
+                obstime=obstime,
+                fov=self._fov_selection_to_dict(projected),
+            )
+        except Exception:
+            return None
+
+    def _model_geometry_scaffold_map(self):
+        """Header-only model WCS scaffold at model time for the display observer."""
+        if self._state is None or self._state.geometry is None:
+            return None
+        self._ensure_cache_initialized()
+        cache_key = self._model_geometry_scaffold_cache_key()
+        with self._cache_lock:
+            cached = self._raw_map_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        header = self._model_geometry_earth_wcs_header()
+        if header is None:
+            return None
+        earth_map = self._header_only_map_from_wcs(header)
+        if earth_map is None:
+            return None
+        display_key = self._normalize_observer_key(self._state.display_observer_key)
+        geometry_key = self._normalize_observer_key(self._state.geometry_definition_observer_key)
+        obstime = self._model_obstime_for_geometry()
+        if obstime is not None and self._observers_share_los(display_key, geometry_key, obstime):
+            scaffold = earth_map
+        else:
+            scaffold = self._empty_observer_scaffold_from_geometry(earth_map, display_key, obstime)
+            if scaffold is None:
+                scaffold = earth_map
+        with self._cache_lock:
+            self._raw_map_cache[cache_key] = scaffold
+        return scaffold
+
+    def _earth_geometry_reference_map(self):
+        header = self._model_geometry_earth_wcs_header()
+        if header is None:
+            return None
+        return self._header_only_map_from_wcs(header)
+
+    @staticmethod
+    def _bottom_display_map_ids(session_input: SelectorSessionInput) -> set[str]:
+        base_maps = dict(session_input.base_maps or {})
+        aliases = {
+            "bx": "Bx",
+            "by": "By",
+            "bz": "Bz",
+            "ic": "Ic",
+            "vert_current": "Vert_current",
+            "chromo_mask": "chromo_mask",
+        }
+        out: set[str] = set()
+        for base_key in base_maps:
+            display_id = aliases.get(str(base_key).lower(), str(base_key))
+            out.add(display_id)
+        return out
+
+    @staticmethod
+    def _available_context_map_ids(session_input: SelectorSessionInput) -> list[str]:
+        base_ids = list(session_input.map_ids or ())
+        bottom_ids = MapBoxDisplayWidget._bottom_display_map_ids(session_input)
+        bottom_only = {map_id for map_id in bottom_ids if map_id not in {"Bz", "Ic"}}
+        bottom_only.update({"chromo_mask", "Bx", "By"})
+        preferred = [
+            "94", "131", "1600", "1700", "171", "193", "211", "304", "335",
+            "Bz", "Ic", "B_rho", "B_theta", "B_phi", "disambig", "Vert_current",
+            "Br", "Bp", "Bt",
+        ]
+        allowed = [map_id for map_id in base_ids if map_id not in bottom_only]
+        ordered = [map_id for map_id in preferred if map_id in allowed]
+        ordered.extend(map_id for map_id in allowed if map_id not in ordered)
+        return ordered
+
+    def _uses_geometry_scaffold_for_context(self) -> bool:
+        if self._state is None:
+            return False
+        if not self._state.selected_context_id:
+            return True
+        return not self._available_context_map_ids(self._state.session_input)
+
+    def _context_canvas_map(self):
+        if self._uses_geometry_scaffold_for_context():
+            return self._model_geometry_scaffold_map()
+        return self._selected_context_map()
 
     def _geometry_anchor_coord(self, geom: BoxGeometrySelection, smap, observer_key: str | None = None):
         obstime = getattr(smap, "date", None)
@@ -3946,7 +4288,7 @@ class MapBoxDisplayWidget(QWidget):
         self._full_view_limits = None
         smap = overlay_map = None
         try:
-            smap = self._selected_context_map()
+            smap = self._context_canvas_map()
             overlay_map = self._selected_bottom_map()
         except Exception as exc:
             ax = self._fig.add_subplot(111)
@@ -3956,16 +4298,12 @@ class MapBoxDisplayWidget(QWidget):
             return
 
         if smap is None:
-            ref_map = self._reference_context_map()
-            if ref_map is not None:
-                smap, _coverage_fov = self._reproject_map_for_display_observer(ref_map)
-            else:
-                ax = self._fig.add_subplot(111)
-                ax.text(0.5, 0.5, "No local map available for selected map ID", ha="center", va="center")
-                ax.axis("off")
-                self._fig.subplots_adjust(left=0.12, right=0.985, bottom=0.10, top=0.96)
-                self._canvas.draw_idle()
-                return
+            ax = self._fig.add_subplot(111)
+            ax.text(0.5, 0.5, "No local map available for selected map ID", ha="center", va="center")
+            ax.axis("off")
+            self._fig.subplots_adjust(left=0.12, right=0.985, bottom=0.10, top=0.96)
+            self._canvas.draw_idle()
+            return
 
         try:
             ax = self._fig.add_subplot(111, projection=smap)
@@ -3986,8 +4324,8 @@ class MapBoxDisplayWidget(QWidget):
             else:
                 restore_after_draw = None
             try:
-                if self._state is not None and self._state.selected_context_id is None:
-                    # Keep correct context-map extents even when context display is hidden.
+                if self._uses_geometry_scaffold_for_context():
+                    # Geometry-only canvas: keep extents without showing refmap pixels.
                     smap.plot(axes=ax, annotate=False, alpha=0.0)
                 else:
                     smap.plot(axes=ax, annotate=False)
@@ -4473,7 +4811,9 @@ class MapBoxDisplayWidget(QWidget):
 
     @staticmethod
     def _default_context_id(session_input: SelectorSessionInput) -> Optional[str]:
-        map_ids = list(session_input.map_ids or [])
+        context_ids = MapBoxDisplayWidget._available_context_map_ids(session_input)
+        if not context_ids:
+            return None
         preferred = [
             "171", "193", "211", "304", "335", "1600",
             "Bz", "Ic", "B_rho", "B_theta", "B_phi", "disambig",
@@ -4481,9 +4821,9 @@ class MapBoxDisplayWidget(QWidget):
             "Br", "Bp", "Bt",
         ]
         for key in preferred:
-            if key in map_ids:
+            if key in context_ids:
                 return key
-        return map_ids[0] if map_ids else None
+        return context_ids[0]
 
     @staticmethod
     def _default_bottom_id(session_input: SelectorSessionInput) -> Optional[str]:

@@ -676,38 +676,6 @@ def _reproject_onto_canvas(smap: Map, canvas: Map, *, algorithm: str) -> Map:
     return canvas
 
 
-def _mask_pixels_not_visible_from_source(source_map: Map, display_map: Map) -> Map:
-    """Mask display pixels that map off-disk in the source observer frame.
-
-    This keeps the Earth-view reprojection physically limited to source-visible
-    solar-surface pixels instead of interpolating data across the source limb.
-    """
-    rsun_arcsec = _rsun_arcsec_from_map(source_map) or 960.0
-    data = np.asarray(display_map.data, dtype=float)
-    ny, nx = data.shape
-    ys, xs = np.mgrid[0:ny, 0:nx]
-    try:
-        display_coords = display_map.pixel_to_world(xs * u.pix, ys * u.pix)
-        source_frame = source_map.coordinate_frame
-        source_observer = getattr(source_frame, "observer", None)
-        with _spherical_screen_context_for_observer(source_observer):
-            source_coords = display_coords.transform_to(source_frame)
-        tx = np.asarray(source_coords.Tx.to_value(u.arcsec), dtype=float)
-        ty = np.asarray(source_coords.Ty.to_value(u.arcsec), dtype=float)
-    except Exception:
-        return display_map
-
-    radius = np.sqrt(tx**2 + ty**2)
-    masked = data.copy()
-    invalid = (~np.isfinite(radius)) | (radius > float(rsun_arcsec) * 1.02)
-    masked[invalid] = np.nan
-    out = Map(masked, display_map.meta)
-    source_settings = getattr(source_map, "plot_settings", None) or {}
-    if source_settings:
-        out.plot_settings.update(source_settings)
-    return out
-
-
 def _save_crop_map_fits(smap: Map, path: str | Path) -> Path:
     """Persist a cropped map to FITS for round-trip verification."""
     out = Path(path)

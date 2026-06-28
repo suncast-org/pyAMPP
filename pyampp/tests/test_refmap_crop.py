@@ -383,3 +383,34 @@ def test_reproject_map_to_display_observer_fov_uses_roi_header():
     assert tuple(reprojected.data.shape) != tuple(result.cropped_map.data.shape)
     assert reprojected.data.shape[0] >= 8
     assert reprojected.data.shape[1] >= 8
+
+
+def test_reproject_map_to_target_observer_fov_masks_off_limb_pixels():
+    box, model_time, earth = _make_model_box()
+    world = box.model_box_corners_world()
+    smap = _stereo_map(date_obs=model_time.isot)
+    result = crop_refmap_to_model_box(smap, world, pad=1.1, model_obstime=model_time)
+    earth_crop_fov = project_fov_between_observers(
+        result.crop_fov,
+        source_observer=result.map_observer,
+        source_obstime=result.map_obstime,
+        target_observer=earth,
+        target_obstime=result.map_obstime,
+    )
+    assert earth_crop_fov is not None
+    unmasked = reproject_map_to_target_observer_fov(
+        result.cropped_map,
+        target_fov=earth_crop_fov,
+        target_observer=earth,
+        target_obstime=result.map_obstime,
+        mask_off_limb=False,
+    )
+    masked = reproject_map_to_target_observer_fov(
+        result.cropped_map,
+        target_fov=earth_crop_fov,
+        target_observer=earth,
+        target_obstime=result.map_obstime,
+        mask_off_limb=True,
+    )
+    assert np.sum(np.isfinite(unmasked.data)) >= np.sum(np.isfinite(masked.data))
+    assert np.any(~np.isfinite(masked.data))

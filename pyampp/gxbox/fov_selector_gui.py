@@ -580,8 +580,9 @@ class FovBoxSelectorDialog(QDialog):
                 self.context_map_combo.setCurrentIndex(idx)
             elif context_ids:
                 self.context_map_combo.setCurrentIndex(1)
+                self.map_box_widget.set_context_map_id(context_ids[0])
         else:
-            self.context_map_combo.setCurrentIndex(0 if not context_ids else 1)
+            self.context_map_combo.setCurrentIndex(0)
         self.context_map_combo.blockSignals(False)
 
         self.bottom_map_combo.blockSignals(True)
@@ -1200,9 +1201,10 @@ class FovBoxSelectorDialog(QDialog):
     def accept(self) -> None:
         self._push_form_to_view_state()
         self._commit_pending_observer_state()
+        export_fov = self.map_box_widget.exportable_fov_selection()
         self._accepted_selection = SelectorDialogResult(
             geometry=self._selection_from_form(),
-            fov=self._fov_from_form(),
+            fov=export_fov,
             square_fov=bool(self.square_fov_box.isChecked()),
         )
         super().accept()
@@ -1214,9 +1216,10 @@ class FovBoxSelectorDialog(QDialog):
         """Return current form state without closing the dialog."""
         self._push_form_to_view_state()
         self._commit_pending_observer_state()
+        export_fov = self.map_box_widget.exportable_fov_selection()
         return SelectorDialogResult(
             geometry=self._selection_from_form(),
-            fov=self._fov_from_form(),
+            fov=export_fov,
             square_fov=bool(self.square_fov_box.isChecked()),
         )
 
@@ -1224,7 +1227,13 @@ class FovBoxSelectorDialog(QDialog):
         return self.map_box_widget.committed_line_seeds()
 
     def current_fov_box_selection(self):
-        return self.map_box_widget.current_fov_box_selection()
+        return self.map_box_widget.exportable_fov_box_selection()
+
+    def fov_persistence_issue(self) -> str | None:
+        return self.map_box_widget.fov_persistence_issue()
+
+    def recompute_fov_for_display_observer(self) -> bool:
+        return self.map_box_widget.recompute_fov_for_display_observer()
 
     def current_observer_persistence_state(self):
         return self.map_box_widget.current_observer_persistence_state()

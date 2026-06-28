@@ -200,19 +200,15 @@ def test_reproject_with_projected_fov_uses_roi_not_full_disk():
         MapBoxDisplayWidget,
         "_resolve_display_observer_coord",
         wraps=widget._resolve_display_observer_coord,
-    ), patch.object(
-        MapBoxDisplayWidget,
-        "_display_observer_reproject_header_for_selection",
-        wraps=widget._display_observer_reproject_header_for_selection,
-    ) as roi_mock, patch.object(
-        MapBoxDisplayWidget,
-        "_solar_disk_center_for_observer",
-    ) as disk_center_mock:
+    ), patch(
+        "pyampp.io.refmap_crop.reproject_map_to_target_observer_fov",
+        return_value=smap,
+    ) as roi_mock:
         widget._reproject_map_for_display_observer(smap, fov_override=projected_fov)
 
     roi_mock.assert_called_once()
-    assert roi_mock.call_args.args[3] is projected_fov
-    disk_center_mock.assert_not_called()
+    assert roi_mock.call_args.kwargs.get("mask_off_limb") is True
+    assert roi_mock.call_args.kwargs["target_fov"]["xsize_arcsec"] == pytest.approx(880.0)
     assert any("[roi]" in event for event in events)
     assert not any("[full]" in event for event in events)
 
@@ -229,9 +225,14 @@ def test_reproject_without_fov_override_falls_back_to_full_disk_for_pyalign_shap
         MapBoxDisplayWidget,
         "_resolve_display_observer_coord",
         wraps=widget._resolve_display_observer_coord,
-    ):
+    ), patch(
+        "pyampp.io.refmap_crop.reproject_refmap_to_observer",
+        return_value=smap,
+    ) as full_mock:
         widget._reproject_map_for_display_observer(smap, fov_override=None)
 
+    full_mock.assert_called_once()
+    assert full_mock.call_args.kwargs.get("mask_off_limb") is True
     assert any("[full]" in event for event in events)
     assert not any("[roi]" in event for event in events)
 

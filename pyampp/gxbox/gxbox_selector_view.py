@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import re
 import shlex
+from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -13,7 +14,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from sunpy.coordinates import Heliocentric, HeliographicStonyhurst, Helioprojective, get_earth
 from astropy.time import Time
-from PyQt5.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox
+from PyQt5.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox, QWidget
 
 from pyampp.data.downloader import SDOImageDownloader
 from pyampp.gxbox.fov_selector_gui import FovBoxSelectorDialog
@@ -772,6 +773,134 @@ def _pick_save_as_h5_path(parent_widget, default_stem: str = "model") -> Path | 
     return path
 
 
+def _observer_fov_persistence_error(
+    *,
+    result: SelectorDialogResult,
+    display_observer_key: str,
+    observer_state: dict[str, Any] | None,
+    fov_box: DisplayFovBoxSelection | None,
+) -> str | None:
+    """Return an error message when observer/FOV metadata would be inconsistent on disk."""
+    if not isinstance(observer_state, dict):
+        return None
+    if result.fov is None:
+        return (
+            "FOV is undefined in the display observer frame at the display time anchor."
+        )
+    obstime_token = str(observer_state.get("display_fov_obstime") or "").strip()
+    if not obstime_token or obstime_token == "unknown":
+        return (
+            "Display time anchor is undefined; FOV cannot be expressed in observer coordinates."
+        )
+    if isinstance(fov_box, DisplayFovBoxSelection):
+        fov_box_key = _normalize_observer_key(fov_box.observer_key)
+        display_key = _normalize_observer_key(display_observer_key)
+        if fov_box_key != display_key:
+            return (
+                f"FOV box observer ({fov_box.observer_key!r}) does not match "
+                f"display observer ({display_observer_key!r})."
+            )
+    return None
+
+
+class FovPersistenceResolution(Enum):
+    RECOMPUTE_AND_SAVE = "recompute_and_save"
+    SAVE_WITHOUT_FOV = "save_without_fov"
+    CANCEL = "cancel"
+
+
+def _prompt_fov_persistence_resolution(
+    parent: QWidget,
+    issue_text: str,
+    display_observer_key: str,
+) -> FovPersistenceResolution:
+    display_label = _observer_display_label(display_observer_key)
+    message = QMessageBox(parent)
+    message.setIcon(QMessageBox.Warning)
+    message.setWindowTitle("FOV Observer Mismatch")
+    message.setText(
+        f"{issue_text}\n\n"
+        "The stored FOV was not changed when you switched display observer. "
+        "Saving now would write inconsistent observer FOV metadata."
+    )
+    message.setInformativeText("Choose how to continue:")
+    recompute_button = message.addButton(
+        f"Recompute FOV for {display_label} and Save",
+        QMessageBox.AcceptRole,
+    )
+    save_without_fov_button = message.addButton(
+        "Save without FOV",
+        QMessageBox.ActionRole,
+    )
+    cancel_button = message.addButton("Cancel", QMessageBox.RejectRole)
+    message.setDefaultButton(recompute_button)
+    message.exec_()
+    clicked = message.clickedButton()
+    if clicked is recompute_button:
+        return FovPersistenceResolution.RECOMPUTE_AND_SAVE
+    if clicked is save_without_fov_button:
+        return FovPersistenceResolution.SAVE_WITHOUT_FOV
+    if clicked is cancel_button:
+        return FovPersistenceResolution.CANCEL
+    return FovPersistenceResolution.CANCEL
+
+
+def _try_persist_selector_result_to_entry(
+    dialog: FovBoxSelectorDialog,
+    entry_path: Path,
+    *,
+    output_path: Path | None = None,
+) -> bool:
+    """Persist selector state, prompting when FOV/observer metadata would be inconsistent."""
+    while True:
+        result = dialog.current_selection_snapshot()
+        line_seeds = dialog.committed_line_seeds()
+        fov_box = dialog.current_fov_box_selection()
+        observer_state = dialog.current_observer_persistence_state()
+        issue = dialog.fov_persistence_issue()
+        if issue is None:
+            return _persist_selector_result_to_entry(
+                entry_path,
+                result,
+                line_seeds=line_seeds,
+                fov_box=fov_box,
+                observer_state=observer_state,
+                output_path=output_path,
+                external_ref_map_paths=dialog.external_ref_map_paths(),
+                session_refmaps=dialog.current_session_refmaps(),
+            )
+
+        display_observer_key = str(
+            observer_state.get("display_observer_key", "earth")
+            if isinstance(observer_state, dict)
+            else "earth"
+        )
+        choice = _prompt_fov_persistence_resolution(dialog, issue, display_observer_key)
+        if choice is FovPersistenceResolution.CANCEL:
+            return False
+        if choice is FovPersistenceResolution.SAVE_WITHOUT_FOV:
+            return _persist_selector_result_to_entry(
+                entry_path,
+                result,
+                line_seeds=line_seeds,
+                fov_box=None,
+                observer_state=observer_state,
+                output_path=output_path,
+                external_ref_map_paths=dialog.external_ref_map_paths(),
+                session_refmaps=dialog.current_session_refmaps(),
+                clear_observer_fov=True,
+            )
+        if not dialog.recompute_fov_for_display_observer():
+            QMessageBox.warning(
+                dialog,
+                "FOV Recompute Failed",
+                "Could not recompute the inscribing FOV for the current display observer.\n\n"
+                "Try adjusting the model box, switching back to the original observer, "
+                "or save without FOV.",
+            )
+            return False
+
+
 def _persist_selector_result_to_entry(
     entry_path: Path,
     result: SelectorDialogResult,
@@ -781,9 +910,12 @@ def _persist_selector_result_to_entry(
     output_path: Path | None = None,
     external_ref_map_paths: Optional[Sequence[str]] = None,
     session_refmaps: Optional[dict[str, Any]] = None,
+    clear_observer_fov: bool = False,
 ) -> bool:
     dest = output_path or entry_path
     if dest.suffix.lower() != ".h5":
+        return False
+    if not clear_observer_fov and result.fov is None:
         return False
 
     box_data = load_model(entry_path)
@@ -795,9 +927,19 @@ def _persist_selector_result_to_entry(
 
     observer_name = observer.get("name", "earth")
     ephemeris = observer.get("ephemeris")
-    display_observer_key = _normalize_observer_key(
-        observer_state.get("display_observer_key") if isinstance(observer_state, dict) else observer_name
-    )
+    if isinstance(observer_state, dict):
+        display_observer_key = _normalize_observer_key(observer_state.get("display_observer_key"))
+    else:
+        display_observer_key = _normalize_observer_key(observer_name)
+    if not clear_observer_fov:
+        persist_error = _observer_fov_persistence_error(
+            result=result,
+            display_observer_key=display_observer_key,
+            observer_state=observer_state,
+            fov_box=fov_box,
+        )
+        if persist_error is not None:
+            return False
     raw_custom_ephemeris = (
         observer_state.get("custom_observer_ephemeris")
         if isinstance(observer_state, dict)
@@ -815,26 +957,36 @@ def _persist_selector_result_to_entry(
     )
     if not isinstance(raw_custom_ephemeris, dict):
         raw_custom_ephemeris = None
-    fov = {
-        "frame": "helioprojective",
-        "xc_arcsec": float(result.fov.center_x_arcsec),
-        "yc_arcsec": float(result.fov.center_y_arcsec),
-        "xsize_arcsec": float(result.fov.width_arcsec),
-        "ysize_arcsec": float(result.fov.height_arcsec),
-        "square": bool(result.square_fov),
-    }
+    display_fov_obstime = None
+    if isinstance(observer_state, dict):
+        display_fov_obstime = observer_state.get("display_fov_obstime")
     observer["name"] = str(display_observer_key or "earth")
-    observer["fov"] = fov
-    if isinstance(fov_box, DisplayFovBoxSelection):
-        observer["fov_box"] = fov_box.as_observer_metadata(square=bool(result.square_fov))
-    else:
+    if clear_observer_fov:
+        observer.pop("fov", None)
         observer.pop("fov_box", None)
-    persisted_fov_meta = observer.get("fov_box", {}) if isinstance(observer.get("fov_box"), dict) else {}
-    fov_observer_key = (
-        str(fov_box.observer_key)
-        if isinstance(fov_box, DisplayFovBoxSelection)
-        else _normalize_observer_key(persisted_fov_meta.get("observer_key", observer["name"]))
-    )
+        fov_observer_key = display_observer_key
+    else:
+        fov = {
+            "frame": "helioprojective",
+            "xc_arcsec": float(result.fov.center_x_arcsec),
+            "yc_arcsec": float(result.fov.center_y_arcsec),
+            "xsize_arcsec": float(result.fov.width_arcsec),
+            "ysize_arcsec": float(result.fov.height_arcsec),
+            "square": bool(result.square_fov),
+        }
+        if display_fov_obstime:
+            fov["obstime"] = str(display_fov_obstime)
+        observer["fov"] = fov
+        if isinstance(fov_box, DisplayFovBoxSelection):
+            observer["fov_box"] = fov_box.as_observer_metadata(square=bool(result.square_fov))
+        else:
+            observer.pop("fov_box", None)
+        persisted_fov_meta = observer.get("fov_box", {}) if isinstance(observer.get("fov_box"), dict) else {}
+        fov_observer_key = (
+            str(fov_box.observer_key)
+            if isinstance(fov_box, DisplayFovBoxSelection)
+            else _normalize_observer_key(persisted_fov_meta.get("observer_key", observer["name"]))
+        )
     needs_custom_ephemeris = (
         display_observer_key == "custom"
         or _normalize_observer_key(fov_observer_key) == "custom"
@@ -849,13 +1001,17 @@ def _persist_selector_result_to_entry(
         observer.pop("source", None)
     resolved_ephemeris: dict[str, float | str] = {}
     obs_time = _infer_time_from_entry_loaded(box_data, entry_path)
-    if obs_time:
+    when = None
+    if display_fov_obstime:
+        try:
+            when = Time(display_fov_obstime)
+        except Exception:
+            when = None
+    if when is None and obs_time:
         try:
             when = Time(obs_time)
         except Exception:
             when = None
-    else:
-        when = None
     if needs_custom_ephemeris and raw_custom_ephemeris:
         resolved_ephemeris = {
             key: raw_custom_ephemeris[key]
@@ -1003,20 +1159,13 @@ def main() -> int:
         if out_path is None:
             return
         try:
-            result = dialog.current_selection_snapshot()
-            line_seeds = dialog.committed_line_seeds()
-            fov_box = dialog.current_fov_box_selection()
-            observer_state = dialog.current_observer_persistence_state()
-            _persist_selector_result_to_entry(
+            ok = _try_persist_selector_result_to_entry(
+                dialog,
                 entry_path,
-                result,
-                line_seeds=line_seeds,
-                fov_box=fov_box,
-                observer_state=observer_state,
                 output_path=out_path,
-                external_ref_map_paths=dialog.external_ref_map_paths(),
-                session_refmaps=dialog.current_session_refmaps(),
             )
+            if not ok:
+                return
             QMessageBox.information(
                 dialog,
                 "Model Saved",
@@ -1038,9 +1187,6 @@ def main() -> int:
         result = dialog.accepted_selection()
         if result is None:
             return
-        line_seeds = dialog.committed_line_seeds()
-        fov_box = dialog.current_fov_box_selection()
-        observer_state = dialog.current_observer_persistence_state()
         if entry_path.suffix.lower() != ".h5":
             btn = QMessageBox.question(
                 dialog,
@@ -1059,16 +1205,13 @@ def main() -> int:
             if out_path is None:
                 return
             try:
-                _persist_selector_result_to_entry(
+                ok = _try_persist_selector_result_to_entry(
+                    dialog,
                     entry_path,
-                    result,
-                    line_seeds=line_seeds,
-                    fov_box=fov_box,
-                    observer_state=observer_state,
                     output_path=out_path,
-                    external_ref_map_paths=dialog.external_ref_map_paths(),
-                    session_refmaps=dialog.current_session_refmaps(),
                 )
+                if not ok:
+                    return
             except Exception as exc:
                 QMessageBox.warning(
                     dialog,
@@ -1077,15 +1220,9 @@ def main() -> int:
                 )
             return
         try:
-            _persist_selector_result_to_entry(
-                entry_path,
-                result,
-                line_seeds=line_seeds,
-                fov_box=fov_box,
-                observer_state=observer_state,
-                external_ref_map_paths=dialog.external_ref_map_paths(),
-                session_refmaps=dialog.current_session_refmaps(),
-            )
+            ok = _try_persist_selector_result_to_entry(dialog, entry_path)
+            if not ok:
+                return
         except Exception as exc:
             QMessageBox.warning(
                 dialog,

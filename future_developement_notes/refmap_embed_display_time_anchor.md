@@ -98,22 +98,32 @@ Replace model-time reprojection in `pyampp/io/refmaps.py`:
 
 ---
 
-## Phase 3 — Display reprojection alignment
+## Phase 3 — Display reprojection alignment (completed)
 
 With native-time embeds:
 
 - **Native LOS** (map observer = display observer): show embedded crop; overlays at anchor.
-- **Cross-observer** (e.g. Earth refmap, STEREO display): Tier-2 `reproject_refmap_to_observer` at **display anchor time** (already partially implemented).
-- **Base map overlay**: reproject bottom/base maps to display observer **at anchor** when shown with context.
+- **Cross-observer**: `reproject_refmap_to_observer` / `reproject_map_to_target_observer_fov` at **display anchor time** with `mask_off_limb=True` via `mask_pixels_not_visible_from_source`.
+- **Base map overlay**: cross-observer bottom maps reproject through the same masked pipeline at anchor.
+- **Geometry scaffold (Context = none)**: build target canvas with `make_empty_observer_fov_map` at model time (no costly `reproject_to` on empty data).
 
-Cache: keyed by `(context_id, display_obstime, display_observer, view_mode, purpose)`.
+Cache: `_display_prepared_cache_key` includes `(context_id, display_obstime, display_observer, view_mode, purpose)`.
+
+API exports: `reproject_refmap_to_observer`, `reproject_map_to_target_observer_fov`, `mask_pixels_not_visible_from_source`, `make_empty_observer_fov_map`.
 
 ---
 
-## Phase 4 — FOV export for synthesis
+## Phase 4 — FOV export for synthesis (completed)
 
-- Exportable FOV (blue inscribing / crop rectangle) computed at **context refmap time** in the selected display observer frame.
-- Matches future synthetic map generation time = refmap observation time.
+- `MapBoxDisplayWidget.exportable_fov_selection()` — blue FOV in display-observer HPC at display time anchor.
+- `MapBoxDisplayWidget.exportable_fov_box_selection()` — 3D FOV box at anchor with `observer_key = display_observer_key`.
+- Selector **Save / Apply** uses exportable FOV/box (not raw form values in definition frame).
+- Persisted `observer.fov` includes `obstime` = display anchor; ephemeris resolution prefers `display_fov_obstime` from observer persistence state.
+
+### 4.1 Session vs save policy
+
+- **Display observer switch** reprojects maps/overlays only; it does **not** recompute or overwrite `_state.fov`, `fov_box`, or `fov_definition_observer_key`. Users may inspect another LOS and switch back without losing the prior FOV.
+- **Save / Apply** uses exportable FOV/box (display observer + anchor). If incompatible, a dialog offers: recompute for current display observer, save without FOV, or cancel. No implicit recompute on observer change.
 
 ---
 

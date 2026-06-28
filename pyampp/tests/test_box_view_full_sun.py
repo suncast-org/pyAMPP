@@ -245,6 +245,10 @@ def test_refresh_plot_applies_full_sun_viewport_after_draw():
     widget._view_mode = "full_sun"
     widget._state.selected_context_id = "171"
     widget._state.selected_bottom_id = None
+    widget._state.session_input = SimpleNamespace(
+        time_iso=Time(_OBS_TIME).isot,
+        map_ids=("171",),
+    )
     mock_ax = SimpleNamespace(
         set_facecolor=lambda *args, **kwargs: None,
         set_box_aspect=lambda *args, **kwargs: None,
@@ -284,7 +288,9 @@ def test_refresh_plot_applies_full_sun_viewport_after_draw():
     smap.plot = lambda *args, **kwargs: None
     smap.draw_grid = lambda *args, **kwargs: None
     smap.draw_limb = lambda *args, **kwargs: None
-    with patch.object(MapBoxDisplayWidget, "_selected_context_map", return_value=smap), patch.object(
+    with patch.object(MapBoxDisplayWidget, "_context_canvas_map", return_value=smap), patch.object(
+        MapBoxDisplayWidget, "_uses_geometry_scaffold_for_context", return_value=False
+    ), patch.object(
         MapBoxDisplayWidget, "_selected_bottom_map", return_value=None
     ), patch.object(MapBoxDisplayWidget, "_plot_box_outline"), patch.object(
         MapBoxDisplayWidget, "_emit_observer_info"
