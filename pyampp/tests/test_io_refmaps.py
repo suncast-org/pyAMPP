@@ -6,6 +6,7 @@ from astropy.io import fits
 from pyampp.io import (
     add_fits_refmaps_from_dir_to_h5,
     add_fits_refmaps_to_h5,
+    box_corners_world_from_model,
     build_fits_refmaps_for_model,
     discover_fits_refmap_map_ids,
     discover_fits_refmap_paths,
@@ -14,6 +15,16 @@ from pyampp.io import (
     remove_refmaps_from_h5,
 )
 from pyampp.tests._fits_header import canonical_base_index_header
+
+
+def _test_model_dict(*, base_date_obs: str = "2026-04-03T19:46:37.800") -> dict:
+    return {
+        "base": {"index": canonical_base_index_header(date_obs=base_date_obs)},
+        "corona": {
+            "bx": np.zeros((32, 32, 16), dtype=np.float32),
+            "dr": np.array([0.05, 0.05, 0.05], dtype=np.float64),
+        },
+    }
 
 
 def _hpc_header(
@@ -46,15 +57,17 @@ def _hpc_header(
     return header
 
 
-def _write_refmap_model(path, *, base_date_obs=None):
+def _write_refmap_model(path, *, base_date_obs="2026-04-03T19:46:37.800"):
     header = _hpc_header(shape=(4, 4), crpix=(2.5, 2.5))
     with h5py.File(path, "w") as h5f:
-        if base_date_obs is not None:
-            base = h5f.create_group("base", track_order=True)
-            base.create_dataset(
-                "index",
-                data=np.bytes_(canonical_base_index_header(date_obs=base_date_obs)),
-            )
+        base = h5f.create_group("base", track_order=True)
+        base.create_dataset(
+            "index",
+            data=np.bytes_(canonical_base_index_header(date_obs=base_date_obs)),
+        )
+        corona = h5f.create_group("corona", track_order=True)
+        corona.create_dataset("bx", data=np.zeros((32, 32, 16), dtype=np.float32))
+        corona.create_dataset("dr", data=np.array([0.05, 0.05, 0.05], dtype=np.float64))
         refmaps = h5f.create_group("refmaps", track_order=True)
         group = refmaps.create_group("Bz_reference", track_order=True)
         group.attrs["order_index"] = np.int64(0)
@@ -62,22 +75,32 @@ def _write_refmap_model(path, *, base_date_obs=None):
         group.create_dataset("wcs_header", data=np.bytes_(header.tostring(sep="\n", endcard=True)))
 
 
-def _write_aia_fits(path, wavelength=171, date_obs="2026-04-03T20:00:00.000"):
-    header = _hpc_header(shape=(8, 8), crpix=(4.5, 4.5), date_obs=date_obs)
+def _write_aia_fits(path, wavelength=171, date_obs="2026-04-03T20:00:00.000", shape=(128, 128)):
+    header = _hpc_header(
+        shape=shape,
+        crpix=(shape[1] / 2.0, shape[0] / 2.0),
+        cdelt=(2.0, 2.0),
+        date_obs=date_obs,
+    )
+    header["CRVAL1"] = 10.0
+    header["CRVAL2"] = -5.0
     header["TELESCOP"] = "SDO/AIA"
     header["INSTRUME"] = "AIA_3"
     header["WAVELNTH"] = int(wavelength)
     header["WAVEUNIT"] = "angstrom"
-    fits.PrimaryHDU(data=np.arange(64, dtype=np.float32).reshape(8, 8), header=header).writeto(path)
+    data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    fits.PrimaryHDU(data=data, header=header).writeto(path)
 
 
-def _write_eovsa_fits(path, freq_hz):
-    header = _hpc_header(shape=(8, 8), crpix=(4.5, 4.5))
+def _write_eovsa_fits(path, freq_hz, *, shape=(128, 128)):
+    header = _hpc_header(shape=shape, crpix=(shape[1] / 2.0, shape[0] / 2.0), cdelt=(2.0, 2.0))
+    header["CRVAL1"] = 10.0
+    header["CRVAL2"] = -5.0
     header["TELESCOP"] = "EOVSA"
     header["INSTRUME"] = "EOVSA"
     header["CRVAL3"] = float(freq_hz)
     header["CUNIT3"] = "Hz"
-    fits.PrimaryHDU(data=np.ones((8, 8), dtype=np.float32), header=header).writeto(path)
+    fits.PrimaryHDU(data=np.ones(shape, dtype=np.float32), header=header).writeto(path)
 
 
 def test_add_fits_refmaps_to_h5_crops_and_preserves_aia_metadata(tmp_path):
@@ -92,14 +115,16 @@ def test_add_fits_refmaps_to_h5_crops_and_preserves_aia_metadata(tmp_path):
     with h5py.File(model, "r") as h5f:
         group = h5f["refmaps/AIA_171"]
         assert group.attrs["order_index"] == 1
-        assert group["data"].shape == (4, 4)
+        assert tuple(group["data"].shape) != (4, 4)
+        assert group["data"].ndim == 2
         header = fits.Header.fromstring(group["wcs_header"][()].decode(), sep="\n")
         assert header["TELESCOP"] == "SDO/AIA"
         assert header["WAVELNTH"] == 171
         assert header["WAVEUNIT"] == "angstrom"
+        assert header["PYALIGN"] is False
 
 
-def test_add_fits_refmaps_uses_base_index_time_for_model_alignment(tmp_path):
+def test_add_fits_refmaps_preserves_native_date_obs(tmp_path):
     model = tmp_path / "model.h5"
     source = tmp_path / "aia171.fits"
     model_time = "2026-04-03T19:46:37.800"
@@ -114,10 +139,20 @@ def test_add_fits_refmaps_uses_base_index_time_for_model_alignment(tmp_path):
 
     with h5py.File(model, "r") as h5f:
         header = fits.Header.fromstring(h5f["refmaps/AIA_171/wcs_header"][()].decode(), sep="\n")
-        assert header["DATE-OBS"] == model_time
+        assert header["DATE-OBS"] == source_time
         assert header["MODELT"] == model_time
         assert header["SRC_DATE"] == source_time
-        assert header["PYALIGN"] is True
+        assert header["PYALIGN"] is False
+        assert header["PYEMBED"] is True
+
+
+def test_box_corners_world_from_model_uses_corona_geometry(tmp_path):
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model, base_date_obs="2026-04-03T19:46:37.800")
+    with h5py.File(model, "r") as h5f:
+        world = box_corners_world_from_model(h5f)
+    assert world is not None
+    assert len(world) == 8
 
 
 def test_add_fits_refmaps_from_dir_to_h5_adds_all_fits(tmp_path):
@@ -146,13 +181,13 @@ def test_build_fits_refmaps_for_model_from_directory(tmp_path):
     payloads = build_fits_refmaps_for_model(
         [source_dir],
         model_obstime="2026-04-03T19:46:37.800",
-        target_fov=None,
+        model=_test_model_dict(),
     )
 
     assert [p.name for p in discovered] == ["eovsa_1.fits", "eovsa_2.fits"]
     assert set(payloads) == {"EOVSA_f1.418GHz", "EOVSA_f2.874GHz"}
     for payload in payloads.values():
-        assert payload["data"].shape == (8, 8)
+        assert payload["data"].ndim == 2
 
 
 def test_discover_fits_refmap_map_ids_known_only_excludes_hmi_wavelength(tmp_path):
@@ -189,7 +224,7 @@ def test_build_fits_refmaps_for_model_known_only_uses_shared_discovery_policy(tm
     payloads = build_fits_refmaps_for_model(
         [source_dir],
         model_obstime="2026-04-03T19:46:37.800",
-        target_fov=None,
+        model=_test_model_dict(),
         generic=False,
     )
 

@@ -13,10 +13,14 @@ from astropy.io import fits
 from astropy.time import Time
 import astropy.units as u
 from astropy.coordinates import SkyCoord
-from sunpy.coordinates import HeliographicStonyhurst, Helioprojective, propagate_with_solar_surface
-from sunpy.map import Map, make_fitswcs_header
+from sunpy.map import Map
 
-from pyampp.geometry.contract import infer_obstime
+from pyampp.geometry.contract import (
+    GeometryContract,
+    complete_geometry_contract,
+    infer_obstime,
+    world_corners_from_geometry_contract,
+)
 from pyampp.gxbox.boxutils import load_sunpy_map_compat
 
 
@@ -106,12 +110,11 @@ def add_fits_refmaps_to_h5(
     if not paths:
         return []
 
-    template = None
     with h5py.File(h5_path, "r+") as h5f:
-        model_obstime = model_obstime_from_base_index(h5f)
+        model_ctx = _model_context_from_open_h5(h5f)
+        model_obstime = model_obstime_from_base_index(model_ctx)
+        box_corners_world = box_corners_world_from_model(model_ctx)
         refmaps = h5f.require_group("refmaps")
-        if crop_refmap is not None:
-            template = _load_template_refmap(refmaps, crop_refmap)
 
         next_order = _next_refmap_order(refmaps)
         out: list[AddedRefmap] = []
@@ -121,7 +124,7 @@ def add_fits_refmaps_to_h5(
             payload = build_refmap_payload_for_model(
                 smap,
                 model_obstime=model_obstime,
-                target_template=template,
+                box_corners_world=box_corners_world,
                 source_path=path,
             )
 
@@ -366,14 +369,33 @@ def build_fits_refmaps_for_model(
     paths: Iterable[PathLike],
     *,
     model_obstime: str | Time | None,
-    target_fov: tuple[SkyCoord, SkyCoord] | None = None,
-    target_template=None,
+    box_corners_world: SkyCoord | None = None,
+    model: Mapping[str, Any] | None = None,
     map_ids: Mapping[PathLike, str] | Sequence[str] | MapIdFactory | None = None,
-    reproject_algorithm: str = "adaptive",
+    pad: float = 1.1,
+    pangle_policy: str = "auto",
     recursive: bool = False,
     generic: bool = True,
+    # Deprecated legacy kwargs kept for call-site compatibility during migration.
+    target_fov: tuple[SkyCoord, SkyCoord] | None = None,
+    target_template=None,
+    reproject_algorithm: str = "adaptive",
 ) -> dict[str, dict[str, Any]]:
-    """Load FITS refmaps from paths and build model-aligned payloads."""
+    """Load FITS refmaps from paths and build spatially cropped embed payloads."""
+
+    if box_corners_world is None:
+        if model is None:
+            raise ValueError(
+                "build_fits_refmaps_for_model requires box_corners_world or model "
+                "with resolvable geometry_contract."
+            )
+        box_corners_world = box_corners_world_from_model(model)
+    if target_fov is not None or target_template is not None:
+        raise ValueError(
+            "target_fov/target_template are no longer supported; pass box_corners_world "
+            "or model geometry instead."
+        )
+    _ = reproject_algorithm
 
     if map_ids is None:
         discovered = discover_fits_refmap_map_ids(paths, recursive=recursive, generic=generic)
@@ -389,10 +411,10 @@ def build_fits_refmaps_for_model(
         out[map_id] = build_refmap_payload_for_model(
             smap,
             model_obstime=model_obstime,
-            target_template=target_template,
-            target_fov=target_fov,
+            box_corners_world=box_corners_world,
             source_path=path,
-            reproject_algorithm=reproject_algorithm,
+            pad=pad,
+            pangle_policy=pangle_policy,
         )
     return out
 
@@ -413,123 +435,135 @@ def model_obstime_from_base_index(model_or_h5: Any) -> str | None:
     """Return the model time from canonical ``base/index`` metadata."""
 
     if isinstance(model_or_h5, (h5py.File, h5py.Group)):
-        model = {"base": {}}
-        if "base" in model_or_h5 and "index" in model_or_h5["base"]:
-            model["base"]["index"] = _decode_h5_string(model_or_h5["base/index"][()])
-        elif "base" in model_or_h5 and "index_header" in model_or_h5["base"]:
-            model["base"]["index_header"] = _decode_h5_string(model_or_h5["base/index_header"][()])
-        return infer_obstime(model)
+        model_or_h5 = _model_context_from_open_h5(model_or_h5)
     if isinstance(model_or_h5, Mapping):
         return infer_obstime(dict(model_or_h5))
     return None
 
 
+def _geometry_contract_from_model(model_dict: Mapping[str, Any]) -> GeometryContract | None:
+    metadata = model_dict.get("metadata")
+    if isinstance(metadata, Mapping):
+        contract = metadata.get("geometry_contract")
+        if isinstance(contract, GeometryContract):
+            return contract
+        if isinstance(contract, Mapping):
+            try:
+                return GeometryContract.from_dict(dict(contract))
+            except Exception:
+                pass
+    return complete_geometry_contract(dict(model_dict), strict=False)
+
+
+def box_corners_world_from_model(
+    model_or_h5: Any,
+    *,
+    obstime: str | Time | None = None,
+) -> SkyCoord:
+    """Return model red-box world corners from geometry metadata."""
+
+    if isinstance(model_or_h5, (h5py.File, h5py.Group)):
+        model_dict = _model_context_from_open_h5(model_or_h5)
+    elif isinstance(model_or_h5, Mapping):
+        model_dict = dict(model_or_h5)
+    else:
+        raise TypeError("model_or_h5 must be a mapping or open HDF5 handle")
+
+    contract = _geometry_contract_from_model(model_dict)
+    if contract is None:
+        raise ValueError(
+            "Cannot resolve model red-box corners: geometry_contract is missing "
+            "and could not be inferred from base/index and corona metadata."
+        )
+    when = obstime
+    if when is None:
+        when = model_obstime_from_base_index(model_dict) or contract.obstime
+    world = world_corners_from_geometry_contract(contract, obstime=when)
+    if world is None:
+        raise ValueError("Could not build world corners from geometry contract.")
+    return world
+
+
+def _model_context_from_open_h5(h5f: h5py.Group) -> dict[str, Any]:
+    ctx: dict[str, Any] = {}
+    base = h5f.get("base")
+    if isinstance(base, h5py.Group):
+        ctx["base"] = {}
+        for key in ("index", "index_header", "wcs_header"):
+            if key in base:
+                ctx["base"][key] = _decode_h5_string(base[key][()])
+    corona = h5f.get("corona")
+    if isinstance(corona, h5py.Group):
+        ctx["corona"] = {}
+        if "dr" in corona:
+            ctx["corona"]["dr"] = np.asarray(corona["dr"])
+        for key in ("bx", "by", "bz"):
+            if key in corona:
+                ctx["corona"][key] = np.asarray(corona[key])
+                break
+    metadata = h5f.get("metadata")
+    if isinstance(metadata, h5py.Group):
+        ctx["metadata"] = {}
+        contract = metadata.get("geometry_contract")
+        if isinstance(contract, h5py.Group):
+            contract_data = {}
+            for key in contract.keys():
+                value = contract[key][()]
+                if isinstance(value, (bytes, np.bytes_)):
+                    value = value.decode("utf-8", "ignore")
+                contract_data[key] = value
+            ctx["metadata"]["geometry_contract"] = contract_data
+        else:
+            for key in metadata.keys():
+                value = metadata[key][()]
+                if isinstance(value, (bytes, np.bytes_)):
+                    value = value.decode("utf-8", "ignore")
+                ctx["metadata"][key] = value
+    return ctx
+
+
 def build_refmap_payload_for_model(
     smap,
     *,
-    model_obstime: str | Time | None,
+    model_obstime: str | Time | None = None,
+    box_corners_world: SkyCoord | None = None,
+    source_path: Path | None = None,
+    pad: float = 1.1,
+    pangle_policy: str = "auto",
+    # Deprecated legacy kwargs kept for call-site compatibility during migration.
     target_template=None,
     target_fov: tuple[SkyCoord, SkyCoord] | None = None,
-    source_path: Path | None = None,
     reproject_algorithm: str = "adaptive",
 ) -> dict[str, Any]:
-    """Build a refmap payload using pyAMPP's model-time alignment policy.
+    """Build a spatially cropped refmap payload at native map observer/time."""
 
-    Earth-line-of-sight maps are solar-rotated to the model time and remapped
-    onto a target FOV WCS. Non-Earth maps keep their native WCS and data so the
-    viewer can display them in their own spacecraft LOS mode.
-    """
-
-    aligned = smap
-    should_reproject = _is_earth_los_map(smap)
-    if should_reproject and model_obstime is not None:
-        header = _model_fov_header_for_refmap(
-            smap,
-            model_obstime=model_obstime,
-            target_template=target_template,
-            target_fov=target_fov,
+    if box_corners_world is None:
+        raise ValueError("box_corners_world is required for refmap embedding")
+    if target_fov is not None or target_template is not None:
+        raise ValueError(
+            "target_fov/target_template are no longer supported; pass box_corners_world instead."
         )
-        if header is not None:
-            with propagate_with_solar_surface():
-                aligned = smap.reproject_to(
-                    header,
-                    algorithm=reproject_algorithm,
-                    roundtrip_coords=False,
-                )
-    elif target_template is not None and should_reproject:
-        aligned = _crop_to_template_footprint(smap, target_template)
+    _ = reproject_algorithm
 
-    header_text = _refmap_wcs_header(
-        aligned,
-        source_path=source_path,
+    from pyampp.io.refmap_crop import crop_refmap_spatial
+
+    source_obstime = _map_date_isot(smap)
+    result = crop_refmap_spatial(
+        smap=smap,
+        box_corners_world=box_corners_world,
         model_obstime=model_obstime,
-        source_obstime=_map_date_isot(smap),
-        aligned_to_model=bool(aligned is not smap and should_reproject),
+        pad=pad,
+        pangle_policy=pangle_policy,
     )
-    return {"data": np.asarray(aligned.data), "wcs_header": header_text}
-
-
-def _model_fov_header_for_refmap(
-    smap,
-    *,
-    model_obstime: str | Time,
-    target_template=None,
-    target_fov: tuple[SkyCoord, SkyCoord] | None = None,
-):
-    observer = _earth_like_observer(smap)
-    obs_time = Time(model_obstime)
-    if target_template is not None:
-        ny, nx = np.asarray(target_template.data).shape
-        bl = target_template.pixel_to_world(0 * u.pix, 0 * u.pix)
-        tr = target_template.pixel_to_world((nx - 1) * u.pix, (ny - 1) * u.pix)
-    elif target_fov is not None:
-        bl, tr = target_fov
-    else:
-        return None
-
-    try:
-        bl_hpc = bl.transform_to(Helioprojective(observer=observer, obstime=obs_time))
-        tr_hpc = tr.transform_to(Helioprojective(observer=observer, obstime=obs_time))
-        x0, x1 = sorted([bl_hpc.Tx.to_value(u.arcsec), tr_hpc.Tx.to_value(u.arcsec)])
-        y0, y1 = sorted([bl_hpc.Ty.to_value(u.arcsec), tr_hpc.Ty.to_value(u.arcsec)])
-        scale_x = abs(float(smap.scale.axis1.to_value(u.arcsec / u.pix)))
-        scale_y = abs(float(smap.scale.axis2.to_value(u.arcsec / u.pix)))
-    except Exception:
-        return None
-    if not all(np.isfinite(v) and v > 0 for v in (scale_x, scale_y)):
-        return None
-
-    width = max(float(x1 - x0), scale_x)
-    height = max(float(y1 - y0), scale_y)
-    nx = max(2, int(np.ceil(width / scale_x)) + 1)
-    ny = max(2, int(np.ceil(height / scale_y)) + 1)
-    center = SkyCoord(
-        Tx=(0.5 * (x0 + x1)) * u.arcsec,
-        Ty=(0.5 * (y0 + y1)) * u.arcsec,
-        frame=Helioprojective(observer=observer, obstime=obs_time),
+    cropped = result.cropped_map
+    header_text = _refmap_wcs_header(
+        cropped,
+        source_path=source_path,
+        model_obstime=model_obstime or result.model_obstime,
+        source_obstime=source_obstime,
+        aligned_to_model=False,
     )
-    header = make_fitswcs_header(
-        np.empty((ny, nx), dtype=np.float32),
-        center,
-        scale=u.Quantity([scale_x, scale_y], u.arcsec / u.pix),
-    )
-    header["DATE-OBS"] = obs_time.isot
-    header["DATE_OBS"] = obs_time.isot
-    try:
-        header["RSUN_REF"] = float(smap.rsun_meters.to_value(u.m))
-    except Exception:
-        pass
-    return header
-
-
-def _crop_to_template_footprint(smap, template):
-    ny, nx = np.asarray(template.data).shape
-    bottom_left = template.pixel_to_world(0 * u.pix, 0 * u.pix)
-    top_right = template.pixel_to_world((nx - 1) * u.pix, (ny - 1) * u.pix)
-    return smap.submap(
-        bottom_left.transform_to(smap.coordinate_frame),
-        top_right=top_right.transform_to(smap.coordinate_frame),
-    )
+    return {"data": np.asarray(cropped.data), "wcs_header": header_text}
 
 
 def _refmap_wcs_header(
@@ -586,6 +620,7 @@ def _refmap_wcs_header(
             header["MODELT"] = Time(model_obstime).isot
         except Exception:
             header["MODELT"] = str(model_obstime)
+    header["PYEMBED"] = True
     header["PYALIGN"] = bool(aligned_to_model)
     return header.tostring(sep="\n", endcard=True)
 
@@ -595,28 +630,6 @@ def _map_date_isot(smap) -> str | None:
         return smap.date.isot
     except Exception:
         return None
-
-
-def _is_earth_los_map(smap) -> bool:
-    meta = getattr(smap, "meta", {}) or {}
-    telescope = str(_meta_get(meta, "TELESCOP") or "").upper()
-    instrument = str(_meta_get(meta, "INSTRUME") or "").upper()
-    if any(token in telescope or token in instrument for token in ("SDO", "AIA", "HMI", "EOVSA")):
-        return True
-    try:
-        obs = smap.observer_coordinate
-        lon = abs(float(obs.lon.to_value(u.deg)))
-        lat = abs(float(obs.lat.to_value(u.deg)))
-        return lon < 5.0 and lat < 10.0
-    except Exception:
-        return False
-
-
-def _earth_like_observer(smap):
-    try:
-        return smap.observer_coordinate
-    except Exception:
-        return "earth"
 
 
 def _resolve_map_id(

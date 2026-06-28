@@ -911,13 +911,14 @@ def _prepare_observation_state(
             bottom_wcs_header_local = box_local.bottom_cea_header
             projection_tag_local = "CEA"
         fov_coords_local = box_local.bounds_coords_bl_tr(pad_frac=cfg.pad_frac)
+        box_corners_world_local = box_local.model_box_corners_world()
         return (
             rsun_local, observer_local, box_origin_local, bottom_wcs_header_local,
-            projection_tag_local, fov_coords_local,
+            projection_tag_local, fov_coords_local, box_corners_world_local,
         )
 
     (
-        rsun, observer, box_origin, bottom_wcs_header, projection_tag, fov_coords,
+        rsun, observer, box_origin, bottom_wcs_header, projection_tag, fov_coords, box_corners_world,
     ) = run_logged_step("Preparing observer and box geometry", _prepare_geometry)
 
     map_bp, map_bt, map_br = run_logged_step(
@@ -1000,8 +1001,7 @@ def _prepare_observation_state(
         refmaps[ref_id] = build_refmap_payload_for_model(
             smap,
             model_obstime=refmap_model_time,
-            target_fov=(fov_coords[0], fov_coords[1]),
-            reproject_algorithm=cfg.reproject_algorithm,
+            box_corners_world=box_corners_world,
         )
 
     def _collect_refmaps():
@@ -1036,8 +1036,7 @@ def _prepare_observation_state(
             refmaps["Vert_current"] = build_refmap_payload_for_model(
                 jz_map,
                 model_obstime=refmap_model_time,
-                target_fov=(fov_coords[0], fov_coords[1]),
-                reproject_algorithm=cfg.reproject_algorithm,
+                box_corners_world=box_corners_world,
             )
 
         try:
@@ -1065,8 +1064,7 @@ def _prepare_observation_state(
             missing_cache_refmaps = build_fits_refmaps_for_model(
                 list(cache_map_ids.keys()),
                 model_obstime=refmap_model_time,
-                target_fov=(fov_coords[0], fov_coords[1]),
-                reproject_algorithm=cfg.reproject_algorithm,
+                box_corners_world=box_corners_world,
                 map_ids=cache_map_ids,
                 generic=False,
             )
@@ -1082,8 +1080,7 @@ def _prepare_observation_state(
             external_refmaps = build_fits_refmaps_for_model(
                 cfg.refmaps_path,
                 model_obstime=refmap_model_time,
-                target_fov=(fov_coords[0], fov_coords[1]),
-                reproject_algorithm=cfg.reproject_algorithm,
+                box_corners_world=box_corners_world,
                 generic=True,
             )
             for key, payload in external_refmaps.items():

@@ -9,6 +9,7 @@ from pyampp.gxbox.gxbox_selector_view import (
     _discover_external_ref_map_files,
     _parse_execute_refmap_paths,
 )
+from pyampp.tests._fits_header import canonical_base_index_header
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -151,16 +152,22 @@ def test_build_session_input_uses_refmap_paths_from_execute_metadata(tmp_path):
 @patch("pyampp.gxbox.gxbox_selector_view.build_fits_refmaps_for_model")
 def test_embed_external_refmaps_into_box_data_uses_explicit_paths_only(mock_build, tmp_path):
     from pyampp.gxbox.gxbox_selector_view import _embed_external_refmaps_into_box_data
+    from pyampp.gxbox.selector_api import BoxGeometrySelection, CoordMode
 
     stereo = tmp_path / "stereo304.fits"
     stereo.write_text("placeholder")
     mock_build.return_value = {"stereo304": {"data": np.ones((4, 4)), "wcs_header": "SIMPLE  = T"}}
     box_data = {
-        "base": {"index": np.bytes_(b"DATE-OBS = '2026-04-03T19:46:37.800'\n")},
+        "base": {"index": canonical_base_index_header(date_obs="2026-04-03T19:46:37.800")},
         "refmaps": {},
     }
 
-    embedded, skipped = _embed_external_refmaps_into_box_data(box_data, [str(stereo)])
+    embedded, skipped = _embed_external_refmaps_into_box_data(
+        box_data,
+        [str(stereo)],
+        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
+        overwrite=True,
+    )
 
     assert embedded == ["stereo304"]
     assert skipped == []
@@ -176,7 +183,7 @@ def test_persist_selector_result_embeds_external_refmaps(mock_build, tmp_path):
     entry = tmp_path / "model.h5"
     out = tmp_path / "saved.h5"
     box_data = {
-        "base": {"index": np.bytes_(b"DATE-OBS = '2026-04-03T19:46:37.800'\n")},
+        "base": {"index": canonical_base_index_header(date_obs="2026-04-03T19:46:37.800")},
         "observer": {"name": "earth", "fov": {"xc_arcsec": 0.0, "yc_arcsec": 0.0, "xsize_arcsec": 100.0, "ysize_arcsec": 100.0}},
         "refmaps": {},
     }
@@ -740,12 +747,15 @@ def test_bottom_map_loads_from_embedded_base_maps_in_filesystem_mode():
 def test_context_map_change_recomputes_view_instead_of_preserving_pixels():
     widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
     widget._state = SimpleNamespace(selected_context_id="171")
+    widget._background_cache_generation = 0
     calls = []
 
     widget._refresh_status_text = lambda: None
     widget._refresh_map_info = lambda: None
     widget._refresh_plot = lambda preserve_current_view=False: calls.append(preserve_current_view)
     widget._should_preserve_pixel_view = lambda: True
+    widget._invalidate_display_prepared_cache = lambda: None
+    widget._invalidate_geometry_dependent_display_maps = lambda: None
 
     MapBoxDisplayWidget.set_context_map_id(widget, "EOVSA_f1.418GHz")
 

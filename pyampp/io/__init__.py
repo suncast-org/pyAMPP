@@ -12,6 +12,7 @@ from .refmaps import (
     RemovedRefmap,
     add_fits_refmaps_from_dir_to_h5,
     add_fits_refmaps_to_h5,
+    box_corners_world_from_model,
     build_fits_refmaps_for_model,
     build_refmap_payload_for_model,
     discover_fits_refmap_map_ids,
@@ -23,6 +24,7 @@ from .refmaps import (
 )
 from .refmap_crop import (
     RefmapCropResult,
+    crop_refmap_spatial,
     crop_refmap_to_model_box,
     crop_refmap_to_model_box_after_pangle_rotation,
     crop_fov_xy_from_inscribing_box,
@@ -41,8 +43,10 @@ __all__ = [
     "RefmapCropResult",
     "add_fits_refmaps_from_dir_to_h5",
     "add_fits_refmaps_to_h5",
+    "box_corners_world_from_model",
     "build_fits_refmaps_for_model",
     "build_refmap_payload_for_model",
+    "crop_refmap_spatial",
     "compute_crop_fov_for_observer",
     "compute_crop_fov_box_for_observer",
     "compute_inscribing_fov_box_for_observer",

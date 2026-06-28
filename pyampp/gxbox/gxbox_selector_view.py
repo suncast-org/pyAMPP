@@ -9,13 +9,15 @@ from typing import Any, Optional, Sequence
 
 import astropy.units as u
 import numpy as np
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
-from sunpy.coordinates import HeliographicStonyhurst
+from sunpy.coordinates import Heliocentric, HeliographicStonyhurst, Helioprojective, get_earth
 from astropy.time import Time
 from PyQt5.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox
 
 from pyampp.data.downloader import SDOImageDownloader
 from pyampp.gxbox.fov_selector_gui import FovBoxSelectorDialog
+from pyampp.gxbox.box import Box
 from pyampp.gxbox.gx_fov2box import (
     _decode_id_text,
     _extract_execute_geometry,
@@ -26,6 +28,7 @@ from pyampp.gxbox.gx_fov2box import (
 from sunpy.map import Map
 
 from pyampp.io import (
+    box_corners_world_from_model,
     build_fits_refmaps_for_model,
     discover_fits_refmap_map_ids,
     load_model,
@@ -41,6 +44,8 @@ from pyampp.gxbox.selector_api import (
     SelectorSessionInput,
 )
 from pyampp.gxbox.observer_restore import build_pb0r_metadata_from_ephemeris, resolve_observer_with_info
+
+from pyampp.util.config import IDL_HMI_RSUN_M
 
 _DEFAULT_MAP_IDS = (
     "Bz",
@@ -425,10 +430,87 @@ def _session_box_data_for_refmap_embed(
     return box_data
 
 
+def _box_corners_world_from_selector_geometry(
+    geometry: BoxGeometrySelection,
+    *,
+    obstime_iso: str | None,
+) -> SkyCoord:
+    if geometry is None:
+        raise ValueError("selector geometry is required to resolve model box corners")
+    when = Time(obstime_iso) if obstime_iso else Time.now()
+    observer = get_earth(when)
+    rsun = (IDL_HMI_RSUN_M * u.m).to(u.km)
+    frame_obs = Helioprojective(observer=observer, obstime=when, rsun=rsun)
+    if geometry.coord_mode == CoordMode.HPC:
+        box_origin = SkyCoord(
+            Tx=geometry.coord_x * u.arcsec,
+            Ty=geometry.coord_y * u.arcsec,
+            obstime=when,
+            observer=observer,
+            rsun=rsun,
+            frame=Helioprojective,
+        )
+    elif geometry.coord_mode == CoordMode.HGC:
+        box_origin = SkyCoord(
+            lon=geometry.coord_x * u.deg,
+            lat=geometry.coord_y * u.deg,
+            radius=rsun,
+            obstime=when,
+            observer=observer,
+            frame=HeliographicCarrington,
+        )
+    else:
+        box_origin = SkyCoord(
+            lon=geometry.coord_x * u.deg,
+            lat=geometry.coord_y * u.deg,
+            radius=rsun,
+            obstime=when,
+            observer=observer,
+            frame=HeliographicStonyhurst,
+        )
+    box_dims = u.Quantity([geometry.grid_x, geometry.grid_y, geometry.grid_z], u.pix)
+    box_res = geometry.dx_km * u.km
+    frame_hcc = Heliocentric(observer=box_origin, obstime=when)
+    box_center = box_origin.transform_to(frame_hcc)
+    center_z = box_center.z + (box_dims[2] / u.pix * box_res.to(u.Mm))
+    box_center = SkyCoord(
+        x=box_center.x,
+        y=box_center.y,
+        z=center_z,
+        frame=frame_hcc,
+    )
+    box = Box(frame_obs, box_origin, box_center, box_dims, box_res.to(u.Mm))
+    world = box.model_box_corners_world()
+    if world is None:
+        raise ValueError("could not build model box corners from selector geometry")
+    return world
+
+
+def _resolve_box_corners_world_for_embed(
+    box_data: dict[str, Any],
+    *,
+    session_input: SelectorSessionInput | None = None,
+    geometry: BoxGeometrySelection | None = None,
+) -> SkyCoord:
+    try:
+        return box_corners_world_from_model(box_data)
+    except ValueError:
+        pass
+    geom = geometry
+    if geom is None and session_input is not None:
+        geom = session_input.geometry
+    obstime = model_obstime_from_base_index(box_data)
+    if obstime is None and session_input is not None:
+        obstime = session_input.time_iso
+    return _box_corners_world_from_selector_geometry(geom, obstime_iso=obstime)
+
+
 def _embed_external_refmaps_into_box_data(
     box_data: dict[str, Any],
     external_ref_map_paths: Optional[Sequence[str]],
     *,
+    session_input: SelectorSessionInput | None = None,
+    geometry: BoxGeometrySelection | None = None,
     overwrite: bool = True,
 ) -> tuple[list[str], list[str]]:
     """Embed FITS refmaps from explicit external paths into in-memory box_data.
@@ -449,11 +531,15 @@ def _embed_external_refmaps_into_box_data(
         box_data["refmaps"] = refmaps
 
     model_obstime = model_obstime_from_base_index(box_data)
-    template = _template_map_from_box_refmaps(refmaps)
+    box_corners_world = _resolve_box_corners_world_for_embed(
+        box_data,
+        session_input=session_input,
+        geometry=geometry,
+    )
     payloads = build_fits_refmaps_for_model(
         paths,
         model_obstime=model_obstime,
-        target_template=template,
+        box_corners_world=box_corners_world,
         generic=True,
     )
 
@@ -481,6 +567,7 @@ def _embed_external_refmaps_into_session(
     embedded, skipped = _embed_external_refmaps_into_box_data(
         box_data,
         external_ref_map_paths,
+        session_input=session_input,
         overwrite=overwrite,
     )
     session_input.refmaps = dict(box_data.get("refmaps") or {})
@@ -856,6 +943,7 @@ def _persist_selector_result_to_entry(
     _embed_external_refmaps_into_box_data(
         box_data,
         external_ref_map_paths,
+        geometry=result.geometry,
         overwrite=True,
     )
 

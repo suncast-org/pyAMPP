@@ -68,7 +68,7 @@ Invalidate display cache on **context refmap** change (`set_context_map_id`).
 
 ---
 
-## Phase 2 — Refmap embed via `refmap_crop.py`
+## Phase 2 — Refmap embed via `refmap_crop.py` (completed)
 
 ### 2.1 Unified embed pipeline
 
