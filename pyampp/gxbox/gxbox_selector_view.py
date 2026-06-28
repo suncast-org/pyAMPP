@@ -23,7 +23,15 @@ from pyampp.gxbox.gx_fov2box import (
     _infer_time_from_entry_loaded,
     _load_entry_box_any,
 )
-from pyampp.io import discover_fits_refmap_map_ids, load_model, save_model
+from sunpy.map import Map
+
+from pyampp.io import (
+    build_fits_refmaps_for_model,
+    discover_fits_refmap_map_ids,
+    load_model,
+    model_obstime_from_base_index,
+    save_model,
+)
 from pyampp.gxbox.selector_api import (
     BoxGeometrySelection,
     CoordMode,
@@ -375,6 +383,110 @@ def _viewer_context_id_from_refmap_id(refmap_id: str) -> str:
     return str(refmap_id)
 
 
+def _template_map_from_box_refmaps(refmaps: dict[str, Any]):
+    for key in ("Bz_reference", "Ic_reference"):
+        payload = refmaps.get(key)
+        if not isinstance(payload, dict):
+            continue
+        header_text = payload.get("wcs_header")
+        data = payload.get("data")
+        if header_text is None or data is None:
+            continue
+        try:
+            text = _decode_id_text(header_text).replace("\\n", "\n")
+            header = fits.Header.fromstring(text, sep="\n")
+            arr = np.asarray(data)
+            return Map(np.zeros(arr.shape, dtype=np.float32), header)
+        except Exception:
+            continue
+    return None
+
+
+def _session_box_data_for_refmap_embed(
+    session_input: SelectorSessionInput,
+    entry_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Build the same in-memory box payload used by save-time refmap embedding."""
+
+    if entry_path is not None:
+        try:
+            box_data = load_model(Path(entry_path).expanduser().resolve())
+            refmaps = dict(box_data.get("refmaps") or {})
+            if isinstance(session_input.refmaps, dict):
+                refmaps.update(session_input.refmaps)
+            box_data["refmaps"] = refmaps
+            return box_data
+        except Exception:
+            pass
+
+    box_data: dict[str, Any] = {"refmaps": dict(session_input.refmaps or {})}
+    if session_input.base_wcs_header:
+        box_data["base"] = {"index": session_input.base_wcs_header}
+    return box_data
+
+
+def _embed_external_refmaps_into_box_data(
+    box_data: dict[str, Any],
+    external_ref_map_paths: Optional[Sequence[str]],
+    *,
+    overwrite: bool = True,
+) -> tuple[list[str], list[str]]:
+    """Embed FITS refmaps from explicit external paths into in-memory box_data.
+
+    Only paths supplied via ``external_ref_map_paths`` are embedded. JSOC cache
+    files discovered from ``data_dir`` are intentionally excluded.
+
+    Returns ``(embedded_map_ids, skipped_map_ids)``.
+    """
+
+    paths = _merge_ref_map_paths(external_ref_map_paths)
+    if not paths:
+        return [], []
+
+    refmaps = box_data.get("refmaps")
+    if not isinstance(refmaps, dict):
+        refmaps = {}
+        box_data["refmaps"] = refmaps
+
+    model_obstime = model_obstime_from_base_index(box_data)
+    template = _template_map_from_box_refmaps(refmaps)
+    payloads = build_fits_refmaps_for_model(
+        paths,
+        model_obstime=model_obstime,
+        target_template=template,
+        generic=True,
+    )
+
+    embedded: list[str] = []
+    skipped: list[str] = []
+    for map_id, payload in payloads.items():
+        if map_id in refmaps and not overwrite:
+            skipped.append(map_id)
+            continue
+        refmaps[map_id] = payload
+        embedded.append(map_id)
+    return embedded, skipped
+
+
+def _embed_external_refmaps_into_session(
+    session_input: SelectorSessionInput,
+    external_ref_map_paths: Optional[Sequence[str]],
+    *,
+    entry_path: Path | str | None = None,
+    overwrite: bool = True,
+) -> tuple[list[str], list[str]]:
+    """Embed FITS refmaps into the selector session's in-memory model."""
+
+    box_data = _session_box_data_for_refmap_embed(session_input, entry_path)
+    embedded, skipped = _embed_external_refmaps_into_box_data(
+        box_data,
+        external_ref_map_paths,
+        overwrite=overwrite,
+    )
+    session_input.refmaps = dict(box_data.get("refmaps") or {})
+    return embedded, skipped
+
+
 def _available_map_ids_from_sources(map_files: dict[str, str], refmaps: dict[str, dict], base_maps: dict[str, Any]) -> list[str]:
     out: list[str] = []
     fs_availability = {
@@ -471,6 +583,7 @@ def _build_session_input(entry_path: Path, ref_map_paths: Optional[Sequence[str]
     data_dir, _gxmodel_dir = _extract_execute_paths(execute_text)
     execute_ref_map_paths = _parse_execute_refmap_paths(execute_text)
     all_ref_map_paths = _merge_ref_map_paths(execute_ref_map_paths, ref_map_paths)
+    external_ref_map_paths = all_ref_map_paths
     explicit_fov, square_fov, explicit_fov_box = _observer_fov_from_entry(entry_loaded)
     observer_meta = entry_loaded.get("observer") if isinstance(entry_loaded, dict) else None
     observer_name = observer_meta.get("name", "earth") if isinstance(observer_meta, dict) else "earth"
@@ -538,6 +651,7 @@ def _build_session_input(entry_path: Path, ref_map_paths: Optional[Sequence[str]
         allow_geometry_edit=False,
         map_ids=tuple(map_ids),
         map_files=map_files or None,
+        external_ref_map_paths=external_ref_map_paths,
         refmaps=refmaps or None,
         base_maps=base_maps or None,
         base_wcs_header=base_wcs_header,
@@ -578,6 +692,8 @@ def _persist_selector_result_to_entry(
     fov_box: DisplayFovBoxSelection | None = None,
     observer_state: dict[str, Any] | None = None,
     output_path: Path | None = None,
+    external_ref_map_paths: Optional[Sequence[str]] = None,
+    session_refmaps: Optional[dict[str, Any]] = None,
 ) -> bool:
     dest = output_path or entry_path
     if dest.suffix.lower() != ".h5":
@@ -728,7 +844,21 @@ def _persist_selector_result_to_entry(
         box_data["line_seeds"] = line_seeds
     else:
         box_data.pop("line_seeds", None)
-    
+
+    if isinstance(session_refmaps, dict):
+        existing_refmaps = box_data.get("refmaps")
+        if not isinstance(existing_refmaps, dict):
+            existing_refmaps = {}
+        merged_refmaps = dict(existing_refmaps)
+        merged_refmaps.update(session_refmaps)
+        box_data["refmaps"] = merged_refmaps
+
+    _embed_external_refmaps_into_box_data(
+        box_data,
+        external_ref_map_paths,
+        overwrite=True,
+    )
+
     # Save with contract persistence via centralized model.io loader
     save_model(box_data, dest)
     return True
@@ -796,6 +926,8 @@ def main() -> int:
                 fov_box=fov_box,
                 observer_state=observer_state,
                 output_path=out_path,
+                external_ref_map_paths=dialog.external_ref_map_paths(),
+                session_refmaps=dialog.current_session_refmaps(),
             )
             QMessageBox.information(
                 dialog,
@@ -846,6 +978,8 @@ def main() -> int:
                     fov_box=fov_box,
                     observer_state=observer_state,
                     output_path=out_path,
+                    external_ref_map_paths=dialog.external_ref_map_paths(),
+                    session_refmaps=dialog.current_session_refmaps(),
                 )
             except Exception as exc:
                 QMessageBox.warning(
@@ -861,6 +995,8 @@ def main() -> int:
                 line_seeds=line_seeds,
                 fov_box=fov_box,
                 observer_state=observer_state,
+                external_ref_map_paths=dialog.external_ref_map_paths(),
+                session_refmaps=dialog.current_session_refmaps(),
             )
         except Exception as exc:
             QMessageBox.warning(

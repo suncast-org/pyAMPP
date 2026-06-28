@@ -12,15 +12,15 @@ import numpy as np
 import astropy.units as u
 import matplotlib.colors as mcolors
 from astropy.io import fits
+from astropy.constants import R_sun
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavigationToolbar
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QThread, QSize
 from PyQt5.QtGui import QFont, QIcon
-from PyQt5.QtCore import QSize
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -37,11 +37,11 @@ from sunpy.coordinates import (
     HeliographicCarrington,
     HeliographicStonyhurst,
     Helioprojective,
-    SphericalScreen,
     sun,
 )
 from sunpy.visualization import colormaps as sunpy_colormaps
 
+from pyampp.gxbox.gx_fov2box import _submap_with_fov_safe
 from pyampp.geometry import (
     build_fov_box_from_red_box_world,
     build_fov_box_from_user_hpc_and_red_box_world,
@@ -100,6 +100,33 @@ _AIA_COLOR_KEYS = {"94", "131", "1600", "1700", "171", "193", "211", "304", "335
 _EOVSA_REFMAP_PREFIX = "EOVSA_"
 _BOTTOM_OVERLAY_CONTEXT_KEYS = _AIA_COLOR_KEYS | _HMI_VECTOR_DISPLAY_KEYS
 _EMBEDDED_REFMAP_FLAG = "PYEMBED"
+_CONTEXT_PREPARE_VARIANT_FULL_DISK = "full_disk"
+_CONTEXT_PREPARE_VARIANT_FOV_CROP = "fov_crop"
+_EMBEDDED_REFMAP_FOV_PAD_FACTOR = 1.10
+_MIN_DISPLAY_MAP_SIDE = 32
+# Unified map display policy (regression-locked):
+# Tier 1 (_native_crop_cache): on upload, each reference map is cropped in its native
+# LOS by projecting the model box from fov_definition_observer_key, inscribing a FOV,
+# and cropping at _EMBEDDED_REFMAP_FOV_PAD_FACTOR. Background prewarm must not touch
+# the visible viewport.
+# Tier 2 (_display_prepared_cache): on display, maps are reprojected to display_observer
+# when native LOS differs; results are cached per session and reused on later switches.
+# _prepare_map_for_display() is the single entry point for context, base overlays,
+# foreground display, and prewarm.
+# PYALIGN embedded maps skip tier-1 crop (pre-cropped at embed). Cross-observer PYALIGN
+# display uses a projected 1.1x FOV ROI for reprojection ([roi], not [full]).
+# Locked by: pyampp/tests/test_pyalign_cross_observer_reprojection.py,
+# pyampp/tests/test_embedded_display_crop.py
+# Full Sun View viewport policy (regression-locked):
+# Zoom to Full Sun must center on display-observer HPC disk center (0, 0), not the FOV
+# center, and size the square viewport from RSUN_ARCSEC / map plate scale (primary path).
+# Overlay pixel rects (red/blue boxes) may expand the square but must never replace disk
+# sizing. Do not fall back to _projected_box_bbox_rect for disk extent conversion.
+# Embedded PYALIGN maps in full_sun mode reproject via disk HPC ROI (see _prepare_context_map).
+# Locked by: pyampp/tests/test_box_view_full_sun.py
+_FULL_SUN_DISK_EXTENT_PAD = 1.05
+_FULL_SUN_VIEWPORT_PAD = 1.02
+_NATIVE_REFMAP_TIME_WARN_HOURS = 1.0
 _BOX_EDGE_INDEX_PAIRS = (
     (0, 1), (1, 3), (3, 2), (2, 0),
     (4, 5), (5, 7), (7, 6), (6, 4),
@@ -222,12 +249,16 @@ class MapBoxDisplayWidget(QWidget):
         self._geometry_change_callback = None
         self._map_summary_cache: dict[str, str] = {}
         self._loaded_map_cache = {}
-        self._prepared_context_map_cache = {}
+        self._native_crop_cache = {}
+        self._display_prepared_cache = {}
         self._raw_map_cache = {}
         self._cache_lock = threading.RLock()
         self._background_cache_enabled = False
         self._background_cache_generation = 0
         self._background_cache_thread = None
+        self._context_prewarm_generation = 0
+        self._context_prewarm_thread = None
+        self._context_prewarm_active = False
         self._current_map = None
         self._current_axes = None
         self._overlay_rect = None
@@ -274,6 +305,7 @@ class MapBoxDisplayWidget(QWidget):
         self._observer_refresh_serial = 0
         self._available_observer_keys_override: set[str] | None = None
         self._observer_availability_notice: str | None = None
+        self._refmap_display_notices: list[str] = []
         self._pending_launch_margin_fix = False
         self._last_map_info_text = "Map info: <uninitialized>"
         self._last_status_base_text = "Map/box display initialized"
@@ -611,6 +643,7 @@ class MapBoxDisplayWidget(QWidget):
             return
         self._state.display_observer_key = key
         self._normalize_display_observer_state()
+        self._invalidate_display_prepared_cache()
         self._refresh_status_text()
         self._emit_observer_info()
         preserve_current_view = self._should_preserve_pixel_view()
@@ -814,18 +847,34 @@ class MapBoxDisplayWidget(QWidget):
                 hgs = coord.transform_to(HeliographicStonyhurst(obstime=when))
             except Exception:
                 hgs = coord
-            metadata = {
-                "observer_coordinate": coord,
-                "observer_key": used_key,
-                "obs_time": when,
-                "b0_deg": float(hgs.lat.to_value(u.deg)),
-                "l0_deg": float(hgs.lon.to_value(u.deg)),
-                "p_deg": float(sun.P(when).to_value(u.deg)) if used_key == "earth" else None,
+            ephemeris_card = {
+                "hgln_obs_deg": float(hgs.lon.to_value(u.deg)),
+                "hglt_obs_deg": float(hgs.lat.to_value(u.deg)),
                 "dsun_cm": float(coord.radius.to_value(u.cm)),
-                "rsun_cm": None,
-                "rsun_arcsec": None,
-                "source": "session",
+                "rsun_cm": float(R_sun.to_value(u.cm)),
+                "obs_date": when.isot,
             }
+            metadata = resolve_observer_parameters_from_ephemeris(
+                ephemeris_card,
+                observer_key=used_key,
+                obs_time=when,
+            )
+            if metadata is None:
+                metadata = {
+                    "observer_coordinate": coord,
+                    "observer_key": used_key,
+                    "obs_time": when,
+                    "b0_deg": float(hgs.lat.to_value(u.deg)),
+                    "l0_deg": float(hgs.lon.to_value(u.deg)),
+                    "p_deg": float(sun.P(when).to_value(u.deg)) if used_key == "earth" else None,
+                    "dsun_cm": float(coord.radius.to_value(u.cm)),
+                    "rsun_cm": float(R_sun.to_value(u.cm)),
+                    "rsun_arcsec": None,
+                    "source": "session",
+                }
+                rsun_value = self._rsun_arcsec_from_observer_metadata(metadata)
+                if rsun_value is not None:
+                    metadata["rsun_arcsec"] = rsun_value
 
         observer = metadata.get("observer_coordinate") if isinstance(metadata, dict) else None
         if observer is None:
@@ -886,6 +935,590 @@ class MapBoxDisplayWidget(QWidget):
             return self._normalize_observer_key(observer_key_a) == self._normalize_observer_key(observer_key_b)
         return str(meta_a.get("los_signature") or "") == str(meta_b.get("los_signature") or "")
 
+    def _infer_native_display_observer_key_from_map(self, smap) -> str | None:
+        """Map spacecraft products to a display observer key when metadata is unambiguous."""
+
+        meta = getattr(smap, "meta", {}) or {}
+        tele = str(meta.get("telescop") or meta.get("TELESCOP") or "").upper()
+        instr = str(meta.get("instrume") or meta.get("INSTRUME") or "").upper()
+        detector = str(getattr(smap, "detector", "") or meta.get("detector") or meta.get("DETECTOR") or "").upper()
+        if "SOLO" in tele or "SOLAR ORBITER" in tele or "SOLO" in instr:
+            return "solar orbiter"
+        if "STEREO" in tele or "SECCHI" in instr or "EUVI" in detector:
+            candidates = ("stereo-a", "stereo-b")
+        elif not MapBoxDisplayWidget._is_earth_native_los_map(smap):
+            candidates = ("stereo-a", "stereo-b", "solar orbiter")
+        else:
+            return None
+        try:
+            map_observer = smap.observer_coordinate
+            obstime = getattr(smap, "date", None)
+        except Exception:
+            return None
+        if map_observer is None or obstime is None:
+            return None
+        best_key = None
+        best_sep_deg = None
+        for key in candidates:
+            candidate = self._resolve_display_observer_coord(key, obstime)
+            if candidate is None:
+                continue
+            sep_deg = float(map_observer.separation(candidate).to_value(u.deg))
+            if best_sep_deg is None or sep_deg < best_sep_deg:
+                best_sep_deg = sep_deg
+                best_key = key
+        if best_key is not None and best_sep_deg is not None and best_sep_deg < 1.0:
+            return best_key
+        return None
+
+    def _map_matches_display_observer_native_los(self, smap, display_key: str) -> bool:
+        native_key = self._infer_native_display_observer_key_from_map(smap)
+        return native_key is not None and native_key == self._normalize_observer_key(display_key)
+
+    @staticmethod
+    def _is_earth_native_los_map(smap) -> bool:
+        """Return whether a map is natively expressed in an Earth-like LOS."""
+        meta = getattr(smap, "meta", {}) or {}
+        if bool(meta.get("PYALIGN", False)):
+            return True
+        telescope = str(meta.get("telescop") or meta.get("TELESCOP") or "").upper()
+        instrument = str(meta.get("instrume") or meta.get("INSTRUME") or "").upper()
+        if any(token in telescope or token in instrument for token in ("SDO", "AIA", "HMI", "EOVSA")):
+            return True
+        try:
+            obs = smap.observer_coordinate
+            lon = abs(float(obs.lon.to_value(u.deg)))
+            lat = abs(float(obs.lat.to_value(u.deg)))
+            return lon < 5.0 and lat < 10.0
+        except Exception:
+            return True
+
+    @staticmethod
+    def _is_native_spacecraft_payload(smap) -> bool:
+        meta = getattr(smap, "meta", {}) or {}
+        if bool(meta.get("PYALIGN", False)):
+            return False
+        tele = str(meta.get("telescop") or meta.get("TELESCOP") or "").upper()
+        instr = str(meta.get("instrume") or meta.get("INSTRUME") or "").upper()
+        detector = str(getattr(smap, "detector", "") or meta.get("detector") or meta.get("DETECTOR") or "").upper()
+        if (
+            "STEREO" in tele
+            or "SECCHI" in instr
+            or "EUVI" in detector
+            or "SOLO" in tele
+            or "SOLAR ORBITER" in tele
+            or "SOLO" in instr
+        ):
+            return True
+        return not MapBoxDisplayWidget._is_earth_native_los_map(smap)
+
+    @staticmethod
+    def _rotate_map_for_display(smap):
+        try:
+            data = np.asarray(smap.data)
+            if np.issubdtype(data.dtype, np.integer):
+                fill = 0
+                if data.dtype == np.bool_:
+                    fill = False
+                return smap.rotate(order=3, missing=fill, clip=False)
+            return smap.rotate(order=3)
+        except Exception:
+            return smap
+
+    @staticmethod
+    def _is_embedded_pyalign_map(smap) -> bool:
+        meta = getattr(smap, "meta", {}) or {}
+        if not bool(meta.get(_EMBEDDED_REFMAP_FLAG, False)):
+            return False
+        return bool(meta.get("PYALIGN", False))
+
+    def _embedded_context_needs_display_crop(self, smap) -> bool:
+        """Return whether embedded context maps need a display-time FOV crop.
+
+        Earth-view maps persisted in the H5 workflow are already cropped to the
+        model FOV at embed time (PYALIGN=True). Reprojecting them to a spacecraft
+        view uses a projected 1.1x FOV ROI instead of a second pixel crop. Native
+        spacecraft embedded maps (PYALIGN=False) still need a 1.1x FOV crop after
+        P-angle rotation, using the FOV frame defined by ``fov_definition_observer_key``.
+        """
+        if not self._is_embedded_pyalign_map(smap):
+            return True
+        return False
+
+    @staticmethod
+    def _valid_map_array(smap, *, min_side: int = _MIN_DISPLAY_MAP_SIDE) -> bool:
+        try:
+            data = np.asarray(smap.data)
+        except Exception:
+            return False
+        if data.ndim != 2:
+            return False
+        ny = int(data.shape[0])
+        nx = int(data.shape[1])
+        side = int(min_side)
+        return ny >= side and nx >= side
+
+    def _fov_observer_coord_for_submap(self, smap, *, prefer_display_observer: bool = False):
+        observer_key = "earth"
+        if self._state is not None:
+            if prefer_display_observer:
+                observer_key = self._state.display_observer_key
+            else:
+                observer_key = self._state.fov_definition_observer_key
+        source_context = self._observer_context(observer_key, getattr(smap, "date", None))
+        observer = getattr(source_context, "observer_coordinate", None) or "earth"
+        obstime = getattr(source_context, "date", None) or getattr(smap, "date", None)
+        return observer, obstime
+
+    def _map_source_cache_token(self) -> str:
+        if self._state is None:
+            return "auto"
+        return str(getattr(self._state, "map_source_mode", None) or "auto")
+
+    @staticmethod
+    def _is_embedded_native_spacecraft_map(smap) -> bool:
+        meta = getattr(smap, "meta", {}) or {}
+        if not bool(meta.get(_EMBEDDED_REFMAP_FLAG, False)):
+            return False
+        return MapBoxDisplayWidget._is_native_spacecraft_payload(smap)
+
+    def _geometry_cache_token(self) -> str:
+        if self._state is None:
+            return "none"
+        parts = [
+            self._normalize_observer_key(getattr(self._state, "fov_definition_observer_key", "earth")),
+            self._normalize_observer_key(getattr(self._state, "geometry_definition_observer_key", "earth")),
+        ]
+        if getattr(self._state, "fov", None) is not None:
+            fov = self._state.fov
+            parts.append(
+                f"{fov.center_x_arcsec:.2f},{fov.center_y_arcsec:.2f},"
+                f"{fov.width_arcsec:.2f},{fov.height_arcsec:.2f}"
+            )
+        geom = getattr(self._state, "geometry", None)
+        if geom is not None:
+            parts.append(
+                f"{geom.coord_x},{geom.coord_y},{geom.grid_x},{geom.grid_y},{geom.grid_z}"
+            )
+        return "|".join(parts)
+
+    def _native_crop_cache_key(self, map_key: str) -> str:
+        return (
+            f"__native_crop__:{self._map_source_cache_token()}:"
+            f"{self._geometry_cache_token()}:{map_key}"
+        )
+
+    def _display_prepared_cache_key(self, map_key: str, purpose: str) -> str:
+        observer_key = self._normalize_observer_key(
+            self._state.display_observer_key if self._state is not None else "earth"
+        )
+        return (
+            f"__display__:{self._map_source_cache_token()}:"
+            f"{observer_key}:{self.__dict__.get('_view_mode', 'box_fov') or 'box_fov'}:{purpose}:{map_key}"
+        )
+
+    def _infer_map_native_observer_key(self, smap) -> str:
+        native_key = self._infer_native_display_observer_key_from_map(smap)
+        if native_key is not None:
+            return native_key
+        return "earth"
+
+    def _model_fov_in_definition_frame(self, smap) -> DisplayFovSelection | None:
+        if self._state is None:
+            return None
+        if self._state.fov is not None:
+            fov = self._state.fov
+            return DisplayFovSelection(
+                center_x_arcsec=float(fov.center_x_arcsec),
+                center_y_arcsec=float(fov.center_y_arcsec),
+                width_arcsec=float(max(fov.width_arcsec, 1e-3)),
+                height_arcsec=float(max(fov.height_arcsec, 1e-3)),
+            )
+        geometry_observer_key = self._state.geometry_definition_observer_key
+        box = self._build_legacy_box(smap, geometry_observer_key=geometry_observer_key)
+        if box is None:
+            return None
+        return self._box_bounds_to_fov_selection(box, smap)
+
+    def _native_box_crop_fov(self, smap) -> DisplayFovSelection | None:
+        if self._state is None:
+            return None
+        base_fov = self._model_fov_in_definition_frame(smap)
+        if base_fov is None:
+            return None
+        fov_key = self._normalize_observer_key(self._state.fov_definition_observer_key)
+        native_key = self._infer_map_native_observer_key(smap)
+        obstime = getattr(smap, "date", None) or self._state.session_input.time_iso
+        projected = self._project_fov_between_observers(base_fov, fov_key, native_key, obstime)
+        if projected is None:
+            return None
+        return self._padded_fov_selection(projected, _EMBEDDED_REFMAP_FOV_PAD_FACTOR)
+
+    def _crop_map_at_observer_fov(
+        self,
+        smap,
+        fov: DisplayFovSelection,
+        observer_key: str,
+        *,
+        pad_factor: float = 1.0,
+    ):
+        half_w = 0.5 * max(float(fov.width_arcsec), 1e-3) * float(pad_factor)
+        half_h = 0.5 * max(float(fov.height_arcsec), 1e-3) * float(pad_factor)
+        obstime = getattr(smap, "date", None)
+        source_context = self._observer_context(self._normalize_observer_key(observer_key), obstime)
+        observer = getattr(source_context, "observer_coordinate", None) or "earth"
+        obstime = getattr(source_context, "date", None) or obstime
+        bottom_left = SkyCoord(
+            Tx=(float(fov.center_x_arcsec) - half_w) * u.arcsec,
+            Ty=(float(fov.center_y_arcsec) - half_h) * u.arcsec,
+            frame=Helioprojective(observer=observer, obstime=obstime),
+        )
+        top_right = SkyCoord(
+            Tx=(float(fov.center_x_arcsec) + half_w) * u.arcsec,
+            Ty=(float(fov.center_y_arcsec) + half_h) * u.arcsec,
+            frame=Helioprojective(observer=observer, obstime=obstime),
+        )
+        try:
+            cropped = _submap_with_fov_safe(smap, bottom_left, top_right)
+            if not self._valid_map_array(cropped):
+                return smap
+            return cropped
+        except Exception:
+            return smap
+
+    def _build_native_crop(self, map_key: str, smap):
+        if self._is_embedded_pyalign_map(smap):
+            self._record_prepare_event(f"native crop: {map_key} skipped (pre-cropped at embed)")
+            return smap, None
+        crop_fov = self._native_box_crop_fov(smap)
+        if crop_fov is None:
+            return smap, None
+        native_key = self._infer_map_native_observer_key(smap)
+        self._record_prepare_event(
+            f"native crop: {map_key} @ {_EMBEDDED_REFMAP_FOV_PAD_FACTOR:.2f}x FOV in {native_key}"
+        )
+        cropped = self._crop_map_at_observer_fov(smap, crop_fov, native_key)
+        if cropped is smap:
+            return smap, None
+        return cropped, crop_fov
+
+    def _ensure_cache_initialized(self) -> None:
+        self.__dict__.setdefault("_cache_lock", threading.RLock())
+        self.__dict__.setdefault("_native_crop_cache", {})
+        self.__dict__.setdefault("_display_prepared_cache", {})
+        self.__dict__.setdefault("_loaded_map_cache", {})
+
+    def _ensure_native_crop_cache(self, map_key: str, smap=None):
+        self._ensure_cache_initialized()
+        cache_key = self._native_crop_cache_key(map_key)
+        native_cache = self.__dict__.setdefault("_native_crop_cache", {})
+        with self._cache_lock:
+            entry = native_cache.get(cache_key)
+            if entry is not None:
+                return entry.get("map")
+        if smap is None:
+            smap = self._load_raw_map(map_key, purpose="context")
+        if smap is None:
+            return None
+        cropped, crop_fov = self._build_native_crop(map_key, smap)
+        with self._cache_lock:
+            native_cache[cache_key] = {"map": cropped, "crop_fov": crop_fov}
+        return cropped
+
+    def _get_native_cropped_map(self, map_key: str, raw_smap):
+        self._ensure_cache_initialized()
+        cache_key = self._native_crop_cache_key(map_key)
+        native_cache = self.__dict__.setdefault("_native_crop_cache", {})
+        with self._cache_lock:
+            entry = native_cache.get(cache_key)
+            if entry is not None:
+                return entry.get("map")
+        cropped, crop_fov = self._build_native_crop(map_key, raw_smap)
+        with self._cache_lock:
+            native_cache[cache_key] = {"map": cropped, "crop_fov": crop_fov}
+        return cropped
+
+    def _apply_hmi_context_adjustments(self, map_key: str, smap):
+        if map_key not in _HMI_DISPLAY_KEYS:
+            return smap
+        display_map = smap
+        try:
+            display_map = display_map.rotate(order=3)
+        except Exception:
+            pass
+        ref_map = self._reference_context_map()
+        if ref_map is None:
+            return display_map
+        try:
+            self._record_prepare_event(f"context reproj: {map_key} -> ref_wcs")
+            display_map = self._with_matching_rsun(display_map, ref_map)
+            return display_map.reproject_to(ref_map.wcs)
+        except Exception:
+            return display_map
+
+    def _map_display_los_matches(self, smap, display_key: str) -> bool:
+        display_key = self._normalize_observer_key(display_key)
+        if self._map_matches_display_observer_native_los(smap, display_key):
+            return True
+        if not self._is_native_spacecraft_payload(smap):
+            return display_key == "earth"
+        return False
+
+    def _cross_observer_roi_fov_for_display(self, smap, *, pad_factor: float | None = None) -> DisplayFovSelection | None:
+        if self._state is None:
+            return None
+        pad = _EMBEDDED_REFMAP_FOV_PAD_FACTOR if pad_factor is None else float(pad_factor)
+        pad_fov = self._embedded_context_crop_fov(smap)
+        if pad_fov is None and self._state.fov is not None:
+            pad_fov = self._padded_fov_selection(self._state.fov, pad)
+        if pad_fov is None:
+            return None
+        return self._fov_selection_projected_to_display_observer(
+            pad_fov,
+            getattr(smap, "date", None),
+        )
+
+    def _reproject_fov_override_for_display(self, map_key: str, smap, *, purpose: str):
+        view_mode = self.__dict__.get("_view_mode", "box_fov")
+        display_key = self._normalize_observer_key(self._state.display_observer_key)
+        if view_mode == "full_sun" and purpose == "context" and self._is_embedded_pyalign_map(smap):
+            disk_fov = self._full_sun_disk_hpc_fov(smap, pad_factor=_FULL_SUN_DISK_EXTENT_PAD)
+            if disk_fov is None:
+                return None
+            projected = self._fov_selection_projected_to_display_observer(
+                disk_fov,
+                getattr(smap, "date", None),
+            )
+            if projected is not None:
+                self._record_prepare_event(f"context reproj full sun: {map_key} [roi]")
+            return projected
+        if self._map_display_los_matches(smap, display_key):
+            return None
+        if purpose != "context":
+            return None
+        if view_mode != "box_fov":
+            return None
+        projected = self._cross_observer_roi_fov_for_display(smap)
+        if projected is not None:
+            self._record_prepare_event(
+                f"context reproj roi: {map_key} @ {_EMBEDDED_REFMAP_FOV_PAD_FACTOR:.2f}x FOV -> {display_key}"
+            )
+        return projected
+
+    def _crop_bottom_to_display_window(self, map_key: str, smap):
+        if self._view_mode != "box_fov":
+            return smap
+        display_bounds = self._display_window_pixel_bounds(smap)
+        if display_bounds is not None:
+            return self._submap_to_pixel_bounds(smap, display_bounds)
+        display_fov = self._display_window_fov_selection(smap)
+        if display_fov is not None:
+            return self._submap_to_explicit_fov(
+                smap,
+                fov_override=display_fov,
+                pad_factor=1.0,
+                prefer_display_observer=True,
+            )
+        box = self._build_legacy_box(smap)
+        if box is None:
+            return smap
+        return self._submap_to_box_bounds(smap, box)
+
+    def _should_skip_native_crop_for_cross_observer_display(self, smap) -> bool:
+        """Skip tier-1 native crop only for Earth-native maps shown at spacecraft LOS.
+
+        Native spacecraft maps are always cropped in their own LOS first, even when
+        the display observer differs (crop native → ROI reproject to display).
+        """
+        if self._state is None:
+            return False
+        display_key = self._normalize_observer_key(self._state.display_observer_key)
+        if self._map_display_los_matches(smap, display_key):
+            return False
+        if self._is_embedded_pyalign_map(smap):
+            return True
+        return not self._is_native_spacecraft_payload(smap)
+
+    def _should_use_native_crop(
+        self,
+        *,
+        purpose: str,
+        use_native_crop: bool | None,
+        smap=None,
+    ) -> bool:
+        if purpose != "context":
+            return False
+        if self.__dict__.get("_view_mode", "box_fov") != "box_fov":
+            return False
+        if use_native_crop is False:
+            return False
+        if smap is not None and self._should_skip_native_crop_for_cross_observer_display(smap):
+            return False
+        return use_native_crop is not False
+
+    def _prepare_bottom_for_display(self, map_key: str, smap):
+        """Embedded/model base maps stay in CEA for cross-observer overlays (autoalign)."""
+        display_key = self._normalize_observer_key(
+            self._state.display_observer_key if self._state is not None else "earth"
+        )
+        los_matches = self._map_display_los_matches(smap, display_key)
+        display_map = smap
+        if self.__dict__.get("_view_mode", "box_fov") == "box_fov" and los_matches:
+            box = self._build_legacy_box(display_map)
+            if box is not None:
+                try:
+                    self._record_prepare_event(f"bottom reproj: {map_key} -> base_cea")
+                    display_map = self._with_matching_rsun(display_map, box.bottom_cea_header)
+                    display_map = display_map.reproject_to(
+                        box.bottom_cea_header,
+                        algorithm="adaptive",
+                        roundtrip_coords=False,
+                    )
+                except Exception:
+                    pass
+            display_map = self._crop_bottom_to_display_window(map_key, display_map)
+        self._apply_display_scaling(display_map, map_key)
+        return display_map, None
+
+    def _prepare_map_for_display(
+        self,
+        map_key: str,
+        smap,
+        *,
+        purpose: str = "context",
+        use_native_crop: bool | None = None,
+    ):
+        """Single display-preparation pipeline for context, base overlays, and prewarm."""
+        if purpose == "bottom":
+            return self._prepare_bottom_for_display(map_key, smap)
+
+        if self._is_embedded_native_spacecraft_map(smap):
+            self._warn_if_refmap_model_time_skew(smap, map_key)
+
+        working = smap
+        if self._should_use_native_crop(
+            purpose=purpose,
+            use_native_crop=use_native_crop,
+            smap=smap,
+        ):
+            working = self._get_native_cropped_map(map_key, smap)
+
+        working = self._apply_hmi_context_adjustments(map_key, working)
+
+        reproject_fov_override = self._reproject_fov_override_for_display(
+            map_key,
+            smap,
+            purpose=purpose,
+        )
+        display_map, coverage_fov = self._reproject_map_for_display_observer(
+            working,
+            fov_override=reproject_fov_override,
+        )
+
+        self._apply_display_scaling(display_map, map_key)
+        return display_map, coverage_fov
+
+    def _context_prepared_cache_key(
+        self,
+        source_token: str,
+        prepare_variant: str,
+        observer_token: str,
+        canonical_key: str,
+    ) -> str:
+        key = (
+            f"__context_prepared__:{source_token}:{prepare_variant}:"
+            f"{observer_token}:{canonical_key}"
+        )
+        if self._state is not None and self._state.fov is not None:
+            fov = self._state.fov
+            key = (
+                f"{key}@{fov.center_x_arcsec:.2f},{fov.center_y_arcsec:.2f},"
+                f"{fov.width_arcsec:.2f},{fov.height_arcsec:.2f}"
+            )
+        return key
+
+    def _context_prepare_variant_for_display(self, canonical_key: str) -> str:
+        mode = self._map_source_cache_token()
+        if mode == "embedded":
+            return _CONTEXT_PREPARE_VARIANT_FOV_CROP
+        if mode == "filesystem":
+            return _CONTEXT_PREPARE_VARIANT_FULL_DISK
+        if self._filesystem_path_for_key(canonical_key):
+            return _CONTEXT_PREPARE_VARIANT_FULL_DISK
+        return _CONTEXT_PREPARE_VARIANT_FOV_CROP
+
+    def _uses_cropped_context_display(self, canonical_key: str | None = None) -> bool:
+        if self._state is None:
+            return False
+        if canonical_key is None and self._state.selected_context_id:
+            canonical_key = self._canonical_map_key(self._state.selected_context_id, purpose="context")
+        if canonical_key is None:
+            return self._map_source_cache_token() == "embedded"
+        return self._context_prepare_variant_for_display(canonical_key) == _CONTEXT_PREPARE_VARIANT_FOV_CROP
+
+    def _embedded_context_crop_fov(self, smap) -> DisplayFovSelection | None:
+        if self._state is None or self._state.fov is None:
+            geometry_observer_key = self._state.geometry_definition_observer_key if self._state is not None else None
+            box = self._build_legacy_box(smap, geometry_observer_key=geometry_observer_key)
+            if box is None:
+                return None
+            fov = self._box_bounds_to_fov_selection(box, smap)
+            return DisplayFovSelection(
+                center_x_arcsec=float(fov.center_x_arcsec),
+                center_y_arcsec=float(fov.center_y_arcsec),
+                width_arcsec=float(max(fov.width_arcsec, 1e-3) * _EMBEDDED_REFMAP_FOV_PAD_FACTOR),
+                height_arcsec=float(max(fov.height_arcsec, 1e-3) * _EMBEDDED_REFMAP_FOV_PAD_FACTOR),
+            )
+        return self._padded_fov_selection(self._state.fov, _EMBEDDED_REFMAP_FOV_PAD_FACTOR)
+
+    @staticmethod
+    def _context_map_key_from_ref_key(ref_key: str) -> str:
+        key = str(ref_key)
+        if key == "Bz_reference":
+            return "magnetogram"
+        if key == "Ic_reference":
+            return "continuum"
+        if key.lower() == "vert_current":
+            return "vert_current"
+        if key.startswith("AIA_") and key[4:].isdigit():
+            return key[4:]
+        return key
+
+    def _iter_warmable_context_map_keys(self) -> list[str]:
+        if self._state is None:
+            return []
+        keys: set[str] = set()
+        for ref_key in (self._state.refmaps or {}):
+            keys.add(self._context_map_key_from_ref_key(ref_key))
+        return sorted(keys)
+
+    def _warn_if_refmap_model_time_skew(self, smap, map_key: str) -> None:
+        if not self._on_gui_thread():
+            return
+        if self._state is None:
+            return
+        model_time = self._state.session_input.time_iso
+        map_time = getattr(smap, "date", None)
+        if not model_time or map_time is None:
+            return
+        warning_key = f"refmap_time:{map_key}"
+        if warning_key in self._observer_warning_cache:
+            return
+        try:
+            delta_hours = abs((Time(map_time) - Time(model_time)).to_value(u.hour))
+        except Exception:
+            return
+        if delta_hours <= _NATIVE_REFMAP_TIME_WARN_HOURS:
+            return
+        self._observer_warning_cache.add(warning_key)
+        notice = (
+            f"Reference map {map_key} differs from model time by {delta_hours:.1f} h; "
+            "alignment may be limited without rotation/reprojection."
+        )
+        if notice not in self._refmap_display_notices:
+            self._refmap_display_notices.append(notice)
+        self._refresh_status_text()
+
     def _reproject_map_for_display_observer(
         self,
         smap,
@@ -895,8 +1528,26 @@ class MapBoxDisplayWidget(QWidget):
         if self._state is None:
             return smap, None
         display_key = self._normalize_observer_key(self._state.display_observer_key)
-        if display_key == "earth":
-            return smap, None
+        if display_key == "earth" and fov_override is None:
+            cross_observer_native = (
+                self._is_native_spacecraft_payload(smap)
+                and not self._map_matches_display_observer_native_los(smap, display_key)
+            )
+            if not cross_observer_native:
+                return smap, None
+        native_spacecraft = self._is_native_spacecraft_payload(smap)
+        if native_spacecraft and display_key in {"stereo-a", "stereo-b", "solar orbiter"}:
+            try:
+                self._record_prepare_event("display rotate: native spacecraft solar north")
+                return self._rotate_map_for_display(smap), None
+            except Exception:
+                return smap, None
+        if self._map_matches_display_observer_native_los(smap, display_key):
+            try:
+                self._record_prepare_event("display rotate: native spacecraft solar north")
+                return self._rotate_map_for_display(smap), None
+            except Exception:
+                return smap, None
         obstime = self._obstime_for_map(smap, self._state.session_input.time_iso)
         observer = self._resolve_display_observer_coord(display_key, obstime)
         if observer is None:
@@ -907,12 +1558,14 @@ class MapBoxDisplayWidget(QWidget):
                 same_lon = np.isclose(
                     float(current_observer.lon.to_value(u.deg)),
                     float(observer.lon.to_value(u.deg)),
-                    atol=1e-6,
+                    rtol=0.0,
+                    atol=0.01,
                 )
                 same_lat = np.isclose(
                     float(current_observer.lat.to_value(u.deg)),
                     float(observer.lat.to_value(u.deg)),
-                    atol=1e-6,
+                    rtol=0.0,
+                    atol=0.01,
                 )
                 if same_lon and same_lat:
                     return smap, None
@@ -929,16 +1582,15 @@ class MapBoxDisplayWidget(QWidget):
                 or getattr(smap, "nickname", None)
                 or "map"
             )
-            target_fov = fov_override if fov_override is not None else self._current_display_prepare_fov(
-                display_key,
-                obstime=obstime,
-            )
+            target_fov = fov_override
             header = self._display_observer_reproject_header_for_selection(smap, observer, obstime, target_fov)
             if header is not None:
                 self._record_prepare_event(f"observer reproj: {source_label} -> {display_key} [roi]")
                 coverage_fov = target_fov
             else:
-                target_center = center_world.transform_to(Helioprojective(observer=observer, obstime=obstime))
+                target_center = self._solar_disk_center_for_observer(smap, observer, obstime)
+                if target_center is None:
+                    target_center = center_world.transform_to(Helioprojective(observer=observer, obstime=obstime))
                 self._record_prepare_event(f"observer reproj: {source_label} -> {display_key} [full]")
                 header = make_fitswcs_header(
                     smap.data,
@@ -956,6 +1608,292 @@ class MapBoxDisplayWidget(QWidget):
             return smap.reproject_to(header, algorithm="adaptive", roundtrip_coords=False), coverage_fov
         except Exception:
             return smap, None
+
+    def _solar_disk_center_for_observer(self, smap, observer, obstime):
+        try:
+            source_observer = getattr(smap, "observer_coordinate", None) or "earth"
+            solar_center = SkyCoord(
+                0 * u.arcsec,
+                0 * u.arcsec,
+                frame=Helioprojective(observer=source_observer, obstime=obstime),
+            )
+            return solar_center.transform_to(Helioprojective(observer=observer, obstime=obstime))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _rsun_arcsec_from_observer_metadata(metadata: dict | None) -> float | None:
+        if not isinstance(metadata, dict):
+            return None
+        rsun_arcsec = metadata.get("rsun_arcsec")
+        if rsun_arcsec is not None:
+            value = float(rsun_arcsec)
+            if np.isfinite(value) and value > 0:
+                return value
+        rsun_cm = metadata.get("rsun_cm")
+        dsun_cm = metadata.get("dsun_cm")
+        if dsun_cm is None:
+            observer = metadata.get("observer_coordinate")
+            if observer is not None:
+                try:
+                    dsun_cm = float(observer.radius.to_value(u.cm))
+                except Exception:
+                    dsun_cm = None
+        if rsun_cm is None:
+            try:
+                rsun_cm = float(R_sun.to_value(u.cm))
+            except Exception:
+                rsun_cm = None
+        if dsun_cm is None or rsun_cm is None:
+            return None
+        try:
+            dsun_value = float(dsun_cm)
+            rsun_value = float(rsun_cm)
+        except Exception:
+            return None
+        if not (np.isfinite(dsun_value) and np.isfinite(rsun_value) and dsun_value > 0):
+            return None
+        ratio = float(np.clip(rsun_value / dsun_value, -1.0, 1.0))
+        return float(np.arcsin(ratio) * u.rad.to(u.arcsec))
+
+    def _full_sun_disk_rsun_arcsec(self, smap, obstime) -> float | None:
+        compare_time = obstime
+        if compare_time is None and self._state is not None:
+            compare_time = self._state.session_input.time_iso
+        if self._state is not None:
+            metadata = self._resolve_display_observer_metadata(
+                self._state.display_observer_key,
+                compare_time,
+            )
+            value = self._rsun_arcsec_from_observer_metadata(metadata)
+            if value is not None:
+                return value
+            ephemeris = self._state.custom_observer_ephemeris
+            if isinstance(ephemeris, dict):
+                params = resolve_observer_parameters_from_ephemeris(
+                    ephemeris,
+                    observer_key=self._state.display_observer_key,
+                    obs_time=compare_time,
+                )
+                value = self._rsun_arcsec_from_observer_metadata(params)
+                if value is not None:
+                    return value
+        if smap is not None:
+            try:
+                rsun_m = float(smap.rsun_meters.to_value(u.m))
+                dsun_m = float(smap.dsun.to_value(u.m))
+                if np.isfinite(rsun_m) and np.isfinite(dsun_m) and dsun_m > 0:
+                    return float(np.degrees(np.arcsin(min(1.0, rsun_m / dsun_m))) * 3600.0)
+            except Exception:
+                pass
+        return None
+
+    def _full_sun_disk_hpc_fov(self, smap, *, pad_factor: float = 1.05) -> DisplayFovSelection | None:
+        rsun_arcsec = self._full_sun_disk_rsun_arcsec(smap, getattr(smap, "date", None))
+        if rsun_arcsec is None:
+            return None
+        side = 2.0 * float(rsun_arcsec) * float(pad_factor)
+        return DisplayFovSelection(0.0, 0.0, side, side)
+
+    @staticmethod
+    def _union_pixel_rect_bounds(*rects) -> tuple[float, float, float, float] | None:
+        xmins: list[float] = []
+        xmaxs: list[float] = []
+        ymins: list[float] = []
+        ymaxs: list[float] = []
+        for rect in rects:
+            if rect is None:
+                continue
+            try:
+                x0 = float(rect.get_x())
+                y0 = float(rect.get_y())
+                x1 = x0 + float(rect.get_width())
+                y1 = y0 + float(rect.get_height())
+                if not all(np.isfinite(v) for v in (x0, x1, y0, y1)):
+                    continue
+                xmins.append(min(x0, x1))
+                xmaxs.append(max(x0, x1))
+                ymins.append(min(y0, y1))
+                ymaxs.append(max(y0, y1))
+            except Exception:
+                continue
+        if not xmins:
+            return None
+        return (min(xmins), max(xmaxs), min(ymins), max(ymaxs))
+
+    @staticmethod
+    def _union_pixel_view_windows(
+        *windows: tuple[tuple[float, float], tuple[float, float]] | None,
+    ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        xmins: list[float] = []
+        xmaxs: list[float] = []
+        ymins: list[float] = []
+        ymaxs: list[float] = []
+        for window in windows:
+            if window is None:
+                continue
+            try:
+                (x0, x1), (y0, y1) = window
+                vals = (float(x0), float(x1), float(y0), float(y1))
+                if not all(np.isfinite(v) for v in vals):
+                    continue
+                xmins.append(min(vals[0], vals[1]))
+                xmaxs.append(max(vals[0], vals[1]))
+                ymins.append(min(vals[2], vals[3]))
+                ymaxs.append(max(vals[2], vals[3]))
+            except Exception:
+                continue
+        if not xmins:
+            return None
+        return ((min(xmins), max(xmaxs)), (min(ymins), max(ymaxs)))
+
+    def _full_sun_disk_half_extent_pixels(
+        self,
+        smap,
+        *,
+        pad_factor: float = 1.05,
+    ) -> float | None:
+        """Convert display-observer solar radius to a pixel half-extent."""
+        rsun_arcsec = self._full_sun_disk_rsun_arcsec(smap, getattr(smap, "date", None))
+        if rsun_arcsec is None:
+            return None
+        try:
+            sx = abs(float(smap.scale.axis1.to_value(u.arcsec / u.pix)))
+            sy = abs(float(smap.scale.axis2.to_value(u.arcsec / u.pix)))
+            if np.isfinite(sx) and np.isfinite(sy) and sx > 0 and sy > 0:
+                scale = max(sx, sy)
+                return float(rsun_arcsec) * float(pad_factor) / scale
+        except Exception:
+            pass
+        disk_fov = self._full_sun_disk_hpc_fov(smap, pad_factor=pad_factor)
+        if disk_fov is None:
+            return None
+        projected = self._fov_selection_projected_to_display_observer(
+            disk_fov,
+            getattr(smap, "date", None),
+        )
+        if projected is not None:
+            disk_fov = projected
+        window = self._fov_selection_to_pixel_window(
+            smap,
+            disk_fov,
+            use_display_observer=True,
+        )
+        if window is None:
+            return None
+        (x0, x1), (y0, y1) = window
+        return 0.5 * max(abs(x1 - x0), abs(y1 - y0), 4.0)
+
+    def _display_disk_center_pixel(self, smap) -> tuple[float, float] | None:
+        if self._state is None or smap is None:
+            return None
+        observer = self._resolved_observer_for_map(smap, self._state.display_observer_key) or "earth"
+        obstime = getattr(smap, "date", None)
+        center = SkyCoord(
+            Tx=0 * u.arcsec,
+            Ty=0 * u.arcsec,
+            frame=Helioprojective(observer=observer, obstime=obstime),
+        )
+        for projector in (
+            lambda coord: smap.wcs.world_to_pixel(coord),
+            lambda coord: smap.world_to_pixel(coord.transform_to(smap.coordinate_frame)),
+            lambda coord: smap.world_to_pixel(coord),
+        ):
+            try:
+                px, py = projector(center)
+                px = float(np.asarray(px, dtype=float).ravel()[0])
+                py = float(np.asarray(py, dtype=float).ravel()[0])
+                if np.isfinite(px) and np.isfinite(py):
+                    return px, py
+            except Exception:
+                continue
+        try:
+            ny, nx = np.asarray(smap.data).shape[:2]
+            return 0.5 * max(0, nx - 1), 0.5 * max(0, ny - 1)
+        except Exception:
+            return None
+
+    def _fov_selection_to_pixel_window(
+        self,
+        smap,
+        fov: DisplayFovSelection | None,
+        *,
+        use_display_observer: bool = False,
+    ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        if smap is None or fov is None or self._state is None:
+            return None
+        if use_display_observer:
+            observer_key = self._state.display_observer_key
+        else:
+            observer_key = self._state.fov_definition_observer_key
+        source_context = self._observer_context(observer_key, getattr(smap, "date", None))
+        observer = getattr(source_context, "observer_coordinate", None) or "earth"
+        obstime = getattr(source_context, "date", None) or getattr(smap, "date", None)
+        half_w = 0.5 * max(float(fov.width_arcsec), 1e-3)
+        half_h = 0.5 * max(float(fov.height_arcsec), 1e-3)
+        cx = float(fov.center_x_arcsec)
+        cy = float(fov.center_y_arcsec)
+        frame = Helioprojective(observer=observer, obstime=obstime)
+        corners = SkyCoord(
+            Tx=np.asarray([cx - half_w, cx + half_w, cx - half_w, cx + half_w], dtype=float) * u.arcsec,
+            Ty=np.asarray([cy - half_h, cy - half_h, cy + half_h, cy + half_h], dtype=float) * u.arcsec,
+            frame=frame,
+        )
+        try:
+            px, py = smap.wcs.world_to_pixel(corners)
+            px = np.asarray(px, dtype=float).ravel()
+            py = np.asarray(py, dtype=float).ravel()
+            finite = np.isfinite(px) & np.isfinite(py)
+            if not np.any(finite):
+                return None
+            px = px[finite]
+            py = py[finite]
+            return (
+                (float(np.nanmin(px)), float(np.nanmax(px))),
+                (float(np.nanmin(py)), float(np.nanmax(py))),
+            )
+        except Exception:
+            return None
+
+    def _set_view_to_full_sun_disk(self, pad_factor: float | None = None) -> None:
+        """After plot: center on the solar disk and include projected box/FOV overlays.
+
+        See ``_FULL_SUN_DISK_EXTENT_PAD`` / ``_FULL_SUN_VIEWPORT_PAD`` policy comment.
+        """
+        if pad_factor is None:
+            pad_factor = _FULL_SUN_VIEWPORT_PAD
+        if self._current_axes is None or self._current_map is None or self._state is None:
+            return
+        smap = self._current_map
+        center = self._display_disk_center_pixel(smap)
+        if center is None:
+            return
+        cx, cy = center
+        half_extent = (
+            self._full_sun_disk_half_extent_pixels(smap, pad_factor=_FULL_SUN_DISK_EXTENT_PAD) or 0.0
+        )
+        for rect in (self._projected_box_bbox_rect, self._overlay_bbox_rect):
+            if rect is None:
+                continue
+            try:
+                x0 = float(rect.get_x())
+                y0 = float(rect.get_y())
+                x1 = x0 + float(rect.get_width())
+                y1 = y0 + float(rect.get_height())
+                if all(np.isfinite(v) for v in (x0, x1, y0, y1)):
+                    half_extent = max(
+                        half_extent,
+                        abs(x0 - cx),
+                        abs(x1 - cx),
+                        abs(y0 - cy),
+                        abs(y1 - cy),
+                    )
+            except Exception:
+                continue
+        if half_extent <= 0.0:
+            return
+        side = max(2.0 * half_extent, 4.0) * float(pad_factor)
+        self._set_view_window(cx, cy, side, side)
 
     def _is_non_earth_display_observer(self) -> bool:
         if self._state is None:
@@ -1058,11 +1996,48 @@ class MapBoxDisplayWidget(QWidget):
         normalized = dict(map_files or {})
         if dict(self._state.map_files or {}) == normalized:
             return
-        self._state.map_files = normalized
+        self.update_refmap_sources(map_files=normalized)
+
+    def set_session_refmaps(self, refmaps: dict[str, dict] | None) -> None:
+        if self._state is None:
+            return
+        normalized = dict(refmaps or {})
+        if dict(self._state.refmaps or {}) == normalized:
+            return
+        self.update_refmap_sources(refmaps=normalized)
+
+    def update_refmap_sources(
+        self,
+        *,
+        map_files: dict[str, str] | None = None,
+        refmaps: dict[str, dict] | None = None,
+    ) -> None:
+        if self._state is None:
+            return
+        files_changed = False
+        refmaps_changed = False
+        if map_files is not None:
+            normalized_files = dict(map_files or {})
+            files_changed = dict(self._state.map_files or {}) != normalized_files
+            if files_changed:
+                self._state.map_files = normalized_files
+        if refmaps is not None:
+            normalized_refmaps = dict(refmaps or {})
+            refmaps_changed = dict(self._state.refmaps or {}) != normalized_refmaps
+            if refmaps_changed:
+                self._state.refmaps = normalized_refmaps
+                self._state.session_input.refmaps = normalized_refmaps
+        if not files_changed and not refmaps_changed:
+            return
         self._map_summary_cache.clear()
         self._invalidate_map_caches()
+        self._schedule_context_prewarm()
         self._refresh_map_info()
-        self._refresh_plot()
+        preserve = (
+            self.__dict__.get("_current_axes") is not None
+            and self.__dict__.get("_current_map") is not None
+        )
+        self._refresh_plot(preserve_current_view=preserve)
 
     def set_map_source_mode(self, mode: str) -> None:
         if self._state is None:
@@ -1074,10 +2049,10 @@ class MapBoxDisplayWidget(QWidget):
             return
         self._state.map_source_mode = mode
         self._map_summary_cache.clear()
-        self._invalidate_map_caches()
+        self._invalidate_display_on_source_mode_change()
         self._refresh_status_text()
         self._refresh_map_info()
-        self._refresh_plot(preserve_current_view=self._should_preserve_pixel_view())
+        self._refresh_plot(preserve_current_view=False)
 
     def set_geometry_edit_enabled(self, enabled: bool) -> None:
         self._geometry_edit_enabled = bool(enabled)
@@ -1768,6 +2743,15 @@ class MapBoxDisplayWidget(QWidget):
     def _should_preserve_pixel_view(self) -> bool:
         return self._current_axes is not None
 
+    def _on_gui_thread(self) -> bool:
+        try:
+            gui_thread = self.thread()
+        except Exception:
+            return True
+        if gui_thread is None:
+            return True
+        return QThread.currentThread() is gui_thread
+
     def _status_text_with_prepare_trace(self, base_text: str) -> str:
         text = str(base_text or "")
         if not self._prep_trace_order:
@@ -1784,6 +2768,8 @@ class MapBoxDisplayWidget(QWidget):
 
     def _emit_status_text(self) -> None:
         self._last_status_text = self._status_text_with_prepare_trace(self._last_status_base_text)
+        if not self._on_gui_thread():
+            return
         if self._status_callback is not None:
             self._status_callback(self._last_status_text)
 
@@ -1792,7 +2778,13 @@ class MapBoxDisplayWidget(QWidget):
         self._prep_trace_order.clear()
 
     def _record_prepare_event(self, label: str) -> None:
+        if not self._on_gui_thread():
+            return
         key = str(label or "").strip()
+        if not key:
+            return
+        if getattr(self, "_context_prewarm_active", False) and not key.startswith("[prewarm]"):
+            key = f"[prewarm] {key}"
         if not key:
             return
         if key not in self._prep_trace_counts:
@@ -1805,6 +2797,8 @@ class MapBoxDisplayWidget(QWidget):
         self._emit_status_text()
 
     def _refresh_status_text(self) -> None:
+        if not self._on_gui_thread():
+            return
         if self._state is None:
             self._last_status_base_text = "Map/box display placeholder (uninitialized)"
             self._emit_status_text()
@@ -1841,6 +2835,8 @@ class MapBoxDisplayWidget(QWidget):
         )
         if self._observer_availability_notice:
             base_text = f"{base_text}\n\n{self._observer_availability_notice}"
+        if self._refmap_display_notices:
+            base_text = f"{base_text}\n\n" + "\n".join(self._refmap_display_notices)
         model_time = str(self._state.session_input.time_iso or "")
         if model_time:
             base_text = f"{base_text}\nmodel_time={model_time}"
@@ -1919,7 +2915,9 @@ class MapBoxDisplayWidget(QWidget):
     def _single_map_summary(self, map_id: Optional[str], role: str, bottom: bool) -> str:
         if not map_id:
             return f"{role} map: <none>"
-        cache_key = f"{role}:{map_id}"
+        source_token = self._map_source_cache_token()
+        view_key = str(self._view_mode or "box_fov")
+        cache_key = f"{role}:{source_token}:{view_key}:{map_id}"
         if cache_key in self._map_summary_cache:
             return self._map_summary_cache[cache_key]
         try:
@@ -1979,103 +2977,149 @@ class MapBoxDisplayWidget(QWidget):
         return self._map_for_id(map_id, purpose="bottom")
 
     def _map_for_id(self, map_id: str, purpose: str):
+        self._ensure_cache_initialized()
         canonical_key = self._canonical_map_key(map_id, purpose=purpose)
-        if purpose == "context":
-            return self._context_map_for_id(map_id, canonical_key)
+        display_key = self._display_prepared_cache_key(canonical_key, purpose)
+        alias_key = (
+            f"__{purpose}__:{self._map_source_cache_token()}:"
+            f"{self._normalize_observer_key(self._state.display_observer_key if self._state else 'earth')}:"
+            f"{self.__dict__.get('_view_mode', 'box_fov') or 'box_fov'}:{map_id}"
+        )
+        display_cache = self.__dict__.setdefault("_display_prepared_cache", {})
+        with self._cache_lock:
+            if alias_key in display_cache:
+                return display_cache[alias_key].get("map")
+            if display_key in display_cache:
+                entry = display_cache[display_key]
+                display_cache[alias_key] = entry
+                return entry.get("map")
+
         smap = self._load_raw_map(canonical_key, purpose=purpose)
         if smap is None:
             return None
-        observer_token = self._display_observer_cache_token(smap)
-        view_key = str(self._view_mode or "box_fov")
-        display_key = f"__{purpose}__:{observer_token}:{view_key}:{canonical_key}"
-        alias_key = f"__{purpose}__:{observer_token}:{view_key}:{map_id}"
+        use_native_crop = None
+        if purpose == "context":
+            use_native_crop = self.__dict__.get("_view_mode", "box_fov") == "box_fov"
+        prepared_map, coverage_fov = self._prepare_map_for_display(
+            canonical_key,
+            smap,
+            purpose=purpose,
+            use_native_crop=use_native_crop,
+        )
+        entry = {"map": prepared_map, "coverage_fov": coverage_fov}
+        loaded_cache = self.__dict__.setdefault("_loaded_map_cache", {})
         with self._cache_lock:
-            if alias_key in self._loaded_map_cache:
-                return self._loaded_map_cache[alias_key]
-            if display_key in self._loaded_map_cache:
-                smap = self._loaded_map_cache[display_key]
-                self._loaded_map_cache[alias_key] = smap
-                return smap
-
-        smap = self._prepare_bottom_map(canonical_key, smap)
-        with self._cache_lock:
-            self._loaded_map_cache[display_key] = smap
-            self._loaded_map_cache[alias_key] = smap
-        return smap
+            display_cache[display_key] = entry
+            display_cache[alias_key] = entry
+            loaded_cache[display_key] = prepared_map
+            loaded_cache[alias_key] = prepared_map
+        return prepared_map
 
     def _context_map_for_id(self, map_id: str, canonical_key: str):
-        smap = self._load_raw_map(canonical_key, purpose="context")
-        if smap is None:
-            return None
-        observer_key = self._normalize_observer_key(
-            self._state.display_observer_key if self._state is not None else "earth"
+        return self._map_for_id(map_id, purpose="context")
+
+    def _ensure_prepared_context_cache(
+        self,
+        canonical_key: str,
+        source_mode: str,
+        *,
+        prepare_variant: str,
+    ) -> None:
+        del source_mode, prepare_variant
+        self._ensure_native_crop_cache(canonical_key)
+
+    def _schedule_context_prewarm(self) -> None:
+        if self._state is None:
+            return
+        map_keys = tuple(self._iter_warmable_context_map_keys())
+        if not map_keys:
+            return
+        with self._cache_lock:
+            self._context_prewarm_generation += 1
+            generation = self._context_prewarm_generation
+        self._set_runtime_status(
+            f"Preparing reference maps in background ({len(map_keys)} map(s))..."
         )
-        observer_token = self._display_observer_cache_token(smap, observer_key)
-        prepared_key = f"__context_prepared__:{observer_token}:{canonical_key}"
-        desired_prepare_fov = self._current_display_prepare_fov(
-            observer_key,
-            obstime=self._obstime_for_map(
-                smap,
-                self._state.session_input.time_iso if self._state is not None else None,
-            ),
+        thread = threading.Thread(
+            target=self._context_prewarm_worker,
+            args=(generation, map_keys),
+            daemon=True,
         )
         with self._cache_lock:
-            cache_entry = self._prepared_context_map_cache.get(prepared_key)
-        prepared_map = None
-        coverage_fov = None
-        if isinstance(cache_entry, dict):
-            prepared_map = cache_entry.get("map")
-            coverage_fov = cache_entry.get("coverage_fov")
-        else:
-            prepared_map = cache_entry
-        if prepared_map is None or (desired_prepare_fov is None and coverage_fov is not None) or (
-            desired_prepare_fov is not None and coverage_fov is not None and not self._fov_contains(coverage_fov, desired_prepare_fov)
-        ):
-            self._record_prepare_event(f"context prepare: {canonical_key} @ {observer_key}")
-            prepared_map, coverage_fov = self._prepare_context_map(canonical_key, smap, target_fov=desired_prepare_fov)
-            with self._cache_lock:
-                self._prepared_context_map_cache[prepared_key] = {
-                    "map": prepared_map,
-                    "coverage_fov": coverage_fov,
-                }
+            self._context_prewarm_thread = thread
+        thread.start()
 
-        if self._view_mode == "box_fov":
-            display_bounds = self._display_window_pixel_bounds(prepared_map)
-            if display_bounds is not None:
-                return self._submap_to_pixel_bounds(prepared_map, display_bounds)
-            display_fov = self._display_window_fov_selection(prepared_map)
-            if display_fov is not None:
-                return self._submap_to_explicit_fov(prepared_map, fov_override=display_fov, pad_factor=1.0)
-            box = self._build_legacy_box(prepared_map)
-            if box is not None:
-                return self._submap_to_box_bounds(prepared_map, box)
-        return prepared_map
+    def _context_prewarm_worker(self, generation: int, map_keys: tuple[str, ...]) -> None:
+        self._context_prewarm_active = True
+        prepared = 0
+        try:
+            for canonical_key in map_keys:
+                with self._cache_lock:
+                    if generation != self._context_prewarm_generation:
+                        return
+                try:
+                    self._ensure_native_crop_cache(canonical_key)
+                    prepared += 1
+                except Exception:
+                    continue
+        finally:
+            self._context_prewarm_active = False
+        QTimer.singleShot(
+            0,
+            lambda: self._on_context_prewarm_finished(generation, prepared, len(map_keys)),
+        )
+
+    def _on_context_prewarm_finished(self, generation: int, prepared: int, total: int) -> None:
+        with self._cache_lock:
+            if generation != self._context_prewarm_generation:
+                return
+        if prepared >= total:
+            self._set_runtime_status(f"Reference map cache ready ({prepared} map(s)).")
+        else:
+            self._set_runtime_status(
+                f"Reference map cache partially ready ({prepared}/{total} map(s))."
+            )
+        self._refresh_status_text()
+
+    def _invalidate_display_prepared_cache(self) -> None:
+        self._ensure_cache_initialized()
+        with self._cache_lock:
+            self._display_prepared_cache.clear()
+            self._loaded_map_cache.clear()
+            self._background_cache_generation += 1
+
+    def _invalidate_native_crop_cache(self) -> None:
+        with self._cache_lock:
+            self._native_crop_cache.clear()
+            self._context_prewarm_generation += 1
+
+    def _invalidate_display_on_source_mode_change(self) -> None:
+        with self._cache_lock:
+            self._display_prepared_cache.clear()
+            self._loaded_map_cache.clear()
+            self._native_crop_cache.clear()
+            self._raw_map_cache.clear()
+            self._background_cache_generation += 1
+            self._context_prewarm_generation += 1
 
     def _invalidate_map_caches(self) -> None:
         with self._cache_lock:
+            self._context_prewarm_generation += 1
+            self._display_prepared_cache.clear()
             self._loaded_map_cache.clear()
-            self._prepared_context_map_cache.clear()
+            self._native_crop_cache.clear()
             self._raw_map_cache.clear()
             self._background_cache_generation += 1
 
     def _invalidate_display_map_cache(self) -> None:
-        with self._cache_lock:
-            self._loaded_map_cache.clear()
-            self._background_cache_generation += 1
+        self._invalidate_display_prepared_cache()
 
     def _invalidate_geometry_dependent_display_maps(self) -> None:
         with self._cache_lock:
-            keys_to_drop = [
-                key for key in self._loaded_map_cache.keys()
-                if key.startswith("__bottom__:")
-            ]
-            if self._is_non_earth_display_observer() and self._view_mode == "box_fov":
-                keys_to_drop.extend(
-                    key for key in self._loaded_map_cache.keys()
-                    if key.startswith("__context__:")
-                )
-            for key in set(keys_to_drop):
-                self._loaded_map_cache.pop(key, None)
+            self._native_crop_cache.clear()
+            self._context_prewarm_generation += 1
+            self._display_prepared_cache.clear()
+            self._loaded_map_cache.clear()
             self._background_cache_generation += 1
 
     def _start_background_cache_build(self) -> None:
@@ -2194,11 +3238,18 @@ class MapBoxDisplayWidget(QWidget):
             return None
         return arr
 
-    def _load_embedded_base_map(self, map_key: str, purpose: str = "context"):
+    def _load_embedded_base_map(
+        self,
+        map_key: str,
+        purpose: str = "context",
+        *,
+        source_token: str | None = None,
+    ):
         if self._state is None:
             return None
+        source_token = source_token or self._map_source_cache_token()
         with self._cache_lock:
-            cache_key = f"__base__:{purpose}:{map_key}"
+            cache_key = f"__base__:{source_token}:{purpose}:{map_key}"
             if cache_key in self._raw_map_cache:
                 return self._raw_map_cache[cache_key]
         data = self._embedded_base_array(map_key, purpose=purpose)
@@ -2277,11 +3328,18 @@ class MapBoxDisplayWidget(QWidget):
             return f"AIA_{key}"
         return key
 
-    def _load_embedded_refmap(self, ref_key: str, purpose: str = "context"):
+    def _load_embedded_refmap(
+        self,
+        ref_key: str,
+        purpose: str = "context",
+        *,
+        source_token: str | None = None,
+    ):
         if self._state is None:
             return None
+        source_token = source_token or self._map_source_cache_token()
         with self._cache_lock:
-            cache_key = f"__embedded__:{purpose}:{ref_key}"
+            cache_key = f"__embedded__:{source_token}:{purpose}:{ref_key}"
             if cache_key in self._raw_map_cache:
                 return self._raw_map_cache[cache_key]
         payload = self._embedded_payload_for_key(ref_key, purpose=purpose)
@@ -2295,8 +3353,10 @@ class MapBoxDisplayWidget(QWidget):
             return None
         try:
             header = fits.Header.fromstring(header_text, sep="\n")
-            ref_map = self._reference_context_map()
-            self._copy_observer_cards_from_map(header, ref_map)
+            if bool(header.get("PYALIGN", False)):
+                ref_map = self._reference_context_map()
+                if ref_map is not None:
+                    self._copy_observer_cards_from_map(header, ref_map)
             header[_EMBEDDED_REFMAP_FLAG] = True
             smap = map_from_data_header_compat(np.asarray(data), header)
         except Exception:
@@ -2305,94 +3365,85 @@ class MapBoxDisplayWidget(QWidget):
             self._raw_map_cache[cache_key] = smap
         return smap
 
-    def _load_raw_map(self, map_key: str, purpose: str = "context"):
+    def _load_raw_map_for_source_mode(
+        self,
+        map_key: str,
+        source_mode: str,
+        *,
+        purpose: str = "context",
+    ):
+        source_mode = str(source_mode or "auto").lower()
         with self._cache_lock:
-            raw_cache_key = f"__rawmap__:{purpose}:{map_key}"
+            raw_cache_key = f"__rawmap__:{source_mode}:{purpose}:{map_key}"
             if raw_cache_key in self._raw_map_cache:
                 return self._raw_map_cache[raw_cache_key]
-        path = self._filesystem_path_for_key(map_key, purpose=purpose)
-        if path:
-            smap = load_sunpy_map_compat(path)
-            if map_key in _HMI_VECTOR_SEGMENTS:
-                smap = self._submap_to_geometry_fov(smap)
-        else:
-            smap = self._load_embedded_base_map(map_key, purpose=purpose)
-            if smap is not None:
-                with self._cache_lock:
-                    self._raw_map_cache[raw_cache_key] = smap
-                return smap
-            ref_key = self._embedded_refmap_key(map_key)
-            smap = self._load_embedded_refmap(ref_key, purpose=purpose) if ref_key else None
+        smap = None
+        if source_mode in {"auto", "filesystem"}:
+            path = (self._state.map_files or {}).get(map_key) if self._state is not None else None
+            if path:
+                smap = load_sunpy_map_compat(path)
+                if map_key in _HMI_VECTOR_SEGMENTS:
+                    smap = self._submap_to_geometry_fov(smap)
+        if smap is None and (source_mode in {"auto", "embedded"} or purpose == "bottom"):
+            smap = self._load_embedded_base_map(
+                map_key,
+                purpose=purpose,
+                source_token=source_mode,
+            )
             if smap is None:
-                return None
+                ref_key = self._embedded_refmap_key(map_key)
+                smap = (
+                    self._load_embedded_refmap(ref_key, purpose=purpose, source_token=source_mode)
+                    if ref_key
+                    else None
+                )
+        if smap is None:
+            return None
         with self._cache_lock:
             self._raw_map_cache[raw_cache_key] = smap
         return smap
+
+    def _load_raw_map(self, map_key: str, purpose: str = "context"):
+        return self._load_raw_map_for_source_mode(
+            map_key,
+            self._map_source_cache_token(),
+            purpose=purpose,
+        )
 
     def _prepare_context_map(
         self,
         map_key: str,
         smap,
         *,
-        target_fov: DisplayFovSelection | None = None,
+        prepare_variant: str = _CONTEXT_PREPARE_VARIANT_FULL_DISK,
     ):
-        display_map = smap
-        if map_key in _HMI_DISPLAY_KEYS:
-            try:
-                display_map = display_map.rotate(order=3)
-            except Exception:
-                pass
-            ref_map = self._reference_context_map()
-            if ref_map is not None:
-                try:
-                    self._record_prepare_event(f"context reproj: {map_key} -> ref_wcs")
-                    display_map = self._with_matching_rsun(display_map, ref_map)
-                    display_map = display_map.reproject_to(ref_map.wcs)
-                except Exception:
-                    pass
-        display_map, coverage_fov = self._reproject_map_for_display_observer(display_map, fov_override=target_fov)
-        self._apply_display_scaling(display_map, map_key)
-        return display_map, coverage_fov
+        use_native_crop = prepare_variant == _CONTEXT_PREPARE_VARIANT_FOV_CROP
+        return self._prepare_map_for_display(
+            map_key,
+            smap,
+            purpose="context",
+            use_native_crop=use_native_crop,
+        )
 
     def _prepare_bottom_map(self, map_key: str, smap):
-        display_map = smap
-        box = self._build_legacy_box(display_map)
-        if box is not None:
-            if self._view_mode == "box_fov":
-                display_bounds = self._display_window_pixel_bounds(display_map)
-                if display_bounds is not None:
-                    display_map = self._submap_to_pixel_bounds(display_map, display_bounds)
-                else:
-                    display_fov = self._display_window_fov_selection(display_map)
-                    if display_fov is not None:
-                        display_map = self._submap_to_explicit_fov(display_map, fov_override=display_fov, pad_factor=1.0)
-                    else:
-                        display_map = self._submap_to_box_bounds(display_map, box)
-            if not self._is_non_earth_display_observer() and self._view_mode == "box_fov":
-                try:
-                    self._record_prepare_event(f"bottom reproj: {map_key} -> base_cea")
-                    display_map = self._with_matching_rsun(display_map, box.bottom_cea_header)
-                    display_map = display_map.reproject_to(
-                        box.bottom_cea_header,
-                        algorithm="adaptive",
-                        roundtrip_coords=False,
-                    )
-                except Exception:
-                    pass
-        # Keep bottom maps in their native/base WCS and let SunPy autoalign
-        # handle observer-frame plotting on the current axes.
-        self._apply_display_scaling(display_map, map_key)
-        return display_map
+        prepared, _coverage = self._prepare_map_for_display(
+            map_key,
+            smap,
+            purpose="bottom",
+            use_native_crop=False,
+        )
+        return prepared
 
     def _reference_context_map(self):
         if self._state is None:
             return None
+        source_token = self._map_source_cache_token()
         for map_id in _AIA_REFERENCE_IDS:
-            path = self._filesystem_path_for_key(map_id)
-            cache_key = f"__ref__:{map_id}"
+            cache_key = f"__ref__:{source_token}:{map_id}"
             with self._cache_lock:
                 if cache_key in self._raw_map_cache:
                     return self._raw_map_cache[cache_key]
+            path = self._filesystem_path_for_key(map_id)
             try:
                 if path:
                     ref_map = load_sunpy_map_compat(path)
@@ -2566,12 +3617,36 @@ class MapBoxDisplayWidget(QWidget):
             height_arcsec=float(max(fov.height_arcsec, 1e-3) * 1.10),
         )
 
+    def _submap_to_fov_selection_pixels(
+        self,
+        smap,
+        fov: DisplayFovSelection,
+        *,
+        use_display_observer: bool = False,
+    ):
+        rect = self._fov_selection_to_pixel_rect(
+            smap,
+            fov,
+            use_display_observer=use_display_observer,
+        )
+        if rect is None:
+            return smap
+        x0 = float(rect.get_x())
+        y0 = float(rect.get_y())
+        x1 = x0 + float(rect.get_width())
+        y1 = y0 + float(rect.get_height())
+        cropped = self._submap_to_pixel_bounds(smap, (x0, x1, y0, y1))
+        if not self._valid_map_array(cropped):
+            return smap
+        return cropped
+
     def _submap_to_explicit_fov(
         self,
         smap,
         pad_factor: float = 1.10,
         *,
         fov_override: DisplayFovSelection | None = None,
+        prefer_display_observer: bool = False,
     ):
         fov = fov_override if fov_override is not None else (self._state.fov if (self._state and self._state.fov) else None)
         if fov is None:
@@ -2580,10 +3655,17 @@ class MapBoxDisplayWidget(QWidget):
             if box is None:
                 return smap
             fov = self._box_bounds_to_fov_selection(box, smap)
+        if self._state is not None and not prefer_display_observer:
+            return self._submap_to_fov_selection_pixels(
+                smap,
+                self._padded_fov_selection(fov, pad_factor) if float(pad_factor) != 1.0 else fov,
+            )
         half_w = 0.5 * max(float(fov.width_arcsec), 1e-3) * float(pad_factor)
         half_h = 0.5 * max(float(fov.height_arcsec), 1e-3) * float(pad_factor)
-        observer = getattr(smap, "observer_coordinate", None) or "earth"
-        obstime = getattr(smap, "date", None)
+        observer, obstime = self._fov_observer_coord_for_submap(
+            smap,
+            prefer_display_observer=prefer_display_observer,
+        )
         bottom_left = SkyCoord(
             Tx=(float(fov.center_x_arcsec) - half_w) * u.arcsec,
             Ty=(float(fov.center_y_arcsec) - half_h) * u.arcsec,
@@ -2595,7 +3677,10 @@ class MapBoxDisplayWidget(QWidget):
             frame=Helioprojective(observer=observer, obstime=obstime),
         )
         try:
-            return smap.submap(bottom_left, top_right=top_right)
+            cropped = _submap_with_fov_safe(smap, bottom_left, top_right)
+            if not self._valid_map_array(cropped):
+                return smap
+            return cropped
         except Exception:
             return smap
 
@@ -2616,7 +3701,10 @@ class MapBoxDisplayWidget(QWidget):
         try:
             bottom_left = smap.wcs.pixel_to_world(x_lo, y_lo)
             top_right = smap.wcs.pixel_to_world(x_hi, y_hi)
-            return smap.submap(bottom_left, top_right=top_right)
+            cropped = smap.submap(bottom_left, top_right=top_right)
+            if not MapBoxDisplayWidget._valid_map_array(cropped):
+                return smap
+            return cropped
         except Exception:
             return smap
 
@@ -2663,14 +3751,13 @@ class MapBoxDisplayWidget(QWidget):
         vals = data[finite]
         try:
             if map_key in _AIA_COLOR_KEYS:
-                if bool(getattr(smap, "meta", {}).get(_EMBEDDED_REFMAP_FLAG, False)):
-                    cmap = sunpy_colormaps.cm.cmlist.get(f"sdoaia{map_key}")
-                    if cmap is not None:
-                        smap.plot_settings["cmap"] = cmap
-                    lo = float(np.nanpercentile(vals, 0.5))
-                    hi = float(np.nanpercentile(vals, 99.8))
-                    if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-                        smap.plot_settings["norm"] = mcolors.Normalize(vmin=lo, vmax=hi)
+                cmap = sunpy_colormaps.cm.cmlist.get(f"sdoaia{map_key}")
+                if cmap is not None:
+                    smap.plot_settings["cmap"] = cmap
+                lo = float(np.nanpercentile(vals, 0.5))
+                hi = float(np.nanpercentile(vals, 99.8))
+                if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                    smap.plot_settings["norm"] = mcolors.Normalize(vmin=lo, vmax=hi)
             if map_key in _SIGNED_MAGNETIC_KEYS:
                 if map_key in _TRANSVERSE_MAGNETIC_KEYS:
                     pct = 92.5
@@ -2787,6 +3874,10 @@ class MapBoxDisplayWidget(QWidget):
                 ax.set_aspect("equal", adjustable="box")
             except Exception:
                 pass
+            if preserve_current_view and prev_xlim is not None and prev_ylim is not None:
+                restore_after_draw = (prev_xlim, prev_ylim)
+            else:
+                restore_after_draw = None
             try:
                 if self._state is not None and self._state.selected_context_id is None:
                     # Keep correct context-map extents even when context display is hidden.
@@ -2836,15 +3927,19 @@ class MapBoxDisplayWidget(QWidget):
             self._fig.text(0.02, 0.992, title, ha="left", va="top", fontsize=10)
             if context_xlim is not None and context_ylim is not None:
                 self._full_view_limits = (context_xlim, context_ylim)
-                if self._view_mode == "full_sun":
-                    ax.set_xlim(context_xlim)
-                    ax.set_ylim(context_ylim)
             else:
                 self._full_view_limits = (ax.get_xlim(), ax.get_ylim())
-            if preserve_current_view and prev_xlim is not None and prev_ylim is not None:
+            if restore_after_draw is not None:
+                prev_xlim, prev_ylim = restore_after_draw
                 self._restore_preserved_view(prev_xlim, prev_ylim)
             elif self._view_mode == "box_fov":
                 self._set_view_to_projected_fov(pad_factor=1.10)
+            elif self._view_mode == "full_sun":
+                self._set_view_to_full_sun_disk()
+                try:
+                    self._full_view_limits = (ax.get_xlim(), ax.get_ylim())
+                except Exception:
+                    pass
         except Exception as exc:
             ax = self._fig.add_subplot(111)
             ax.text(0.5, 0.5, f"Plot failed:\n{exc}", ha="center", va="center")
@@ -2953,13 +4048,7 @@ class MapBoxDisplayWidget(QWidget):
         bottom_key = str(bottom_key or "")
         if not context_key or not bottom_key:
             return False
-        if context_key == bottom_key:
-            return False
-        # Bottom overlay is useful for image-like context maps, but it obscures
-        # signed diagnostic maps such as Vert_current almost completely.
-        if context_key.startswith(_EOVSA_REFMAP_PREFIX):
-            return True
-        return context_key in _BOTTOM_OVERLAY_CONTEXT_KEYS
+        return context_key != bottom_key
 
     def plot_fieldlines(self, streamlines, z_base=0.0) -> None:
         self._fieldline_streamlines = list(streamlines or [])
@@ -3129,6 +4218,73 @@ class MapBoxDisplayWidget(QWidget):
         if not self._observers_share_los(self._state.fov_definition_observer_key, observer_key, compare_time):
             return None
         return self._padded_fov_selection(self._state.fov, pad_factor)
+
+    def _project_fov_between_observers(
+        self,
+        fov: DisplayFovSelection,
+        from_observer_key: str,
+        to_observer_key: str,
+        obstime,
+    ) -> DisplayFovSelection | None:
+        if self._state is None:
+            return None
+        from_key = self._normalize_observer_key(from_observer_key)
+        to_key = self._normalize_observer_key(to_observer_key)
+        compare_time = obstime if obstime is not None else self._state.session_input.time_iso
+        if self._observers_share_los(from_key, to_key, compare_time):
+            return fov
+        target_context = self._observer_context(to_key, compare_time)
+        target_observer = getattr(target_context, "observer_coordinate", None)
+        if target_observer is None:
+            return None
+        target_frame = Helioprojective(observer=target_observer, obstime=compare_time)
+        source_context = self._observer_context(from_key, compare_time)
+        source_observer = getattr(source_context, "observer_coordinate", None) or "earth"
+        source_obstime = getattr(source_context, "date", None) or compare_time
+        base_corners = observer_rectangle_to_hpc_corners(
+            xc_arcsec=float(fov.center_x_arcsec),
+            yc_arcsec=float(fov.center_y_arcsec),
+            xsize_arcsec=float(fov.width_arcsec),
+            ysize_arcsec=float(fov.height_arcsec),
+            observer=source_observer,
+            obstime=source_obstime,
+        )
+        if base_corners is None:
+            return None
+        try:
+            projected = base_corners.transform_to(target_frame)
+            tx = np.asarray(projected.Tx.to_value(u.arcsec), dtype=float).ravel()
+            ty = np.asarray(projected.Ty.to_value(u.arcsec), dtype=float).ravel()
+            finite = np.isfinite(tx) & np.isfinite(ty)
+            if not np.any(finite):
+                return None
+            tx = tx[finite]
+            ty = ty[finite]
+            xmin, xmax = float(np.min(tx)), float(np.max(tx))
+            ymin, ymax = float(np.min(ty)), float(np.max(ty))
+            return DisplayFovSelection(
+                center_x_arcsec=0.5 * (xmin + xmax),
+                center_y_arcsec=0.5 * (ymin + ymax),
+                width_arcsec=max(xmax - xmin, 4.0),
+                height_arcsec=max(ymax - ymin, 4.0),
+            )
+        except Exception:
+            return None
+
+    def _fov_selection_projected_to_display_observer(
+        self,
+        fov: DisplayFovSelection,
+        obstime,
+    ) -> DisplayFovSelection | None:
+        """Express a FOV rectangle from ``fov_definition_observer_key`` in display HPC."""
+        if self._state is None:
+            return None
+        return self._project_fov_between_observers(
+            fov,
+            self._state.fov_definition_observer_key,
+            self._state.display_observer_key,
+            obstime,
+        )
 
     def _display_observer_reproject_header_for_fov(self, smap, observer, obstime, pad_factor: float = 1.10):
         if self._state is None or self._state.fov is None:
@@ -3440,13 +4596,48 @@ class MapBoxDisplayWidget(QWidget):
 
     def show_full_sun_view(self) -> None:
         self._view_mode = "full_sun"
+        self._map_summary_cache.clear()
+        self._refresh_map_info()
         self._refresh_plot()
 
     def show_box_fov_view(self, pad_factor: float | None = None) -> None:
         # `pad_factor` is handled by the display-crop helper; keep the method
         # signature stable for existing button hookups.
         self._view_mode = "box_fov"
+        self._map_summary_cache.clear()
+        self._refresh_map_info()
         self._refresh_plot()
+
+    def _clamp_view_to_limits(self, limits: tuple) -> None:
+        if self._current_axes is None or limits is None:
+            return
+        try:
+            ref_xlim, ref_ylim = limits
+            xlim = self._current_axes.get_xlim()
+            ylim = self._current_axes.get_ylim()
+            ref_xw = abs(float(ref_xlim[1] - ref_xlim[0]))
+            ref_yh = abs(float(ref_ylim[1] - ref_ylim[0]))
+            cur_xw = abs(float(xlim[1] - xlim[0]))
+            cur_yh = abs(float(ylim[1] - ylim[0]))
+            if ref_xw <= 0 or ref_yh <= 0:
+                return
+            if cur_xw <= ref_xw + 1e-6 and cur_yh <= ref_yh + 1e-6:
+                return
+            cx = 0.5 * (float(xlim[0]) + float(xlim[1]))
+            cy = 0.5 * (float(ylim[0]) + float(ylim[1]))
+            x_dir = 1.0 if xlim[1] >= xlim[0] else -1.0
+            y_dir = 1.0 if ylim[1] >= ylim[0] else -1.0
+            half_w = 0.5 * ref_xw
+            half_h = 0.5 * ref_yh
+            self._current_axes.set_xlim(
+                (cx - half_w, cx + half_w) if x_dir > 0 else (cx + half_w, cx - half_w)
+            )
+            self._current_axes.set_ylim(
+                (cy - half_h, cy + half_h) if y_dir > 0 else (cy + half_h, cy - half_h)
+            )
+            self._canvas.draw_idle()
+        except Exception:
+            return
 
     def _set_view_window(self, cx: float, cy: float, width: float, height: float) -> None:
         if self._current_axes is None:
@@ -3961,7 +5152,13 @@ class MapBoxDisplayWidget(QWidget):
             (float(cpx), float(cpy)),
         )
 
-    def _fov_selection_to_pixel_rect(self, smap, fov: DisplayFovSelection | None) -> Rectangle:
+    def _fov_selection_to_pixel_rect(
+        self,
+        smap,
+        fov: DisplayFovSelection | None,
+        *,
+        use_display_observer: bool = False,
+    ) -> Rectangle | None:
         if fov is None:
             if self._projected_box_bbox_rect is not None:
                 return Rectangle(
@@ -3971,7 +5168,10 @@ class MapBoxDisplayWidget(QWidget):
                     visible=False,
                 )
             return Rectangle((0.0, 0.0), 10.0, 10.0, visible=False)
-        observer_key = self._state.fov_definition_observer_key if self._state is not None else "earth"
+        if use_display_observer and self._state is not None:
+            observer_key = self._state.display_observer_key
+        else:
+            observer_key = self._state.fov_definition_observer_key if self._state is not None else "earth"
         source_context = self._observer_context(observer_key, getattr(smap, "date", None))
         observer = getattr(source_context, "observer_coordinate", None) or "earth"
         obstime = getattr(source_context, "date", None) or getattr(smap, "date", None)
@@ -4000,6 +5200,8 @@ class MapBoxDisplayWidget(QWidget):
                 return Rectangle((x0, y0), max(1e-6, x1 - x0), max(1e-6, y1 - y0), visible=False)
         except Exception:
             pass
+        if use_display_observer:
+            return None
         # Fallback to projected-box bounds if corner projection fails.
         if self._projected_box_bbox_rect is not None:
             return Rectangle(

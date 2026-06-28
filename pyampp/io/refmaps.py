@@ -30,6 +30,13 @@ class AddedRefmap:
     data_dtype: str
 
 
+@dataclass(frozen=True)
+class RemovedRefmap:
+    """Summary for one embedded refmap removed from a model HDF5 file."""
+
+    map_id: str
+
+
 PathLike = str | Path
 MapIdFactory = Callable[[Path, object], str]
 
@@ -169,6 +176,90 @@ def add_fits_refmaps_from_dir_to_h5(
         map_ids=map_ids,
         overwrite=overwrite,
     )
+
+
+def list_embedded_refmap_ids(h5_path: PathLike) -> list[str]:
+    """Return sorted ``refmaps/<map_id>`` group names stored in a model HDF5 file."""
+
+    h5_path = Path(h5_path)
+    with h5py.File(h5_path, "r") as h5f:
+        refmaps = h5f.get("refmaps")
+        if not isinstance(refmaps, h5py.Group):
+            return []
+        return sorted(str(name) for name in refmaps.keys())
+
+
+def remove_refmaps_from_h5(
+    h5_path: PathLike,
+    map_ids: Iterable[str] | None = None,
+    *,
+    remove_all: bool = False,
+    telescope: str | None = None,
+    missing_ok: bool = True,
+) -> list[RemovedRefmap]:
+    """Remove embedded refmaps from ``refmaps/`` of a model HDF5 file.
+
+    Exactly one selection mode must be provided:
+
+    - ``map_ids``: remove the listed ``refmaps/<map_id>`` groups
+    - ``telescope``: remove refmaps whose FITS ``TELESCOP`` header contains the
+      token (case-insensitive), e.g. ``\"STEREO\"`` for STEREO/STEREO-A maps
+    - ``remove_all=True``: remove every embedded refmap
+
+    Parameters
+    ----------
+    h5_path
+        pyAMPP model HDF5 file to modify in place.
+    map_ids
+        Explicit refmap ids to delete.
+    remove_all
+        Delete all groups under ``refmaps/`` when true.
+    telescope
+        Delete refmaps whose embedded WCS header matches this telescope token.
+    missing_ok
+        When false, raise ``KeyError`` if a requested refmap id is absent or if
+        ``refmaps/`` does not exist.
+
+    Returns
+    -------
+    list[RemovedRefmap]
+        One summary entry per deleted refmap, in sorted map-id order.
+    """
+
+    if sum(bool(x) for x in (map_ids is not None, remove_all, telescope is not None)) != 1:
+        raise ValueError("Provide exactly one of map_ids, telescope=..., or remove_all=True")
+
+    h5_path = Path(h5_path)
+    with h5py.File(h5_path, "r+") as h5f:
+        refmaps = h5f.get("refmaps")
+        if not isinstance(refmaps, h5py.Group):
+            if missing_ok:
+                return []
+            raise KeyError("refmaps group not found")
+
+        if remove_all:
+            ids_to_remove = sorted(str(name) for name in refmaps.keys())
+        elif telescope is not None:
+            token = str(telescope).strip().upper()
+            ids_to_remove = []
+            for name in refmaps:
+                header = _refmap_header_from_group(refmaps[name])
+                tele = str(header.get("TELESCOP") or "").upper() if header is not None else ""
+                if token in tele:
+                    ids_to_remove.append(str(name))
+            ids_to_remove.sort()
+        else:
+            ids_to_remove = sorted({_sanitize_map_id(item) for item in map_ids or ()})
+
+        removed: list[RemovedRefmap] = []
+        for map_id in ids_to_remove:
+            if map_id not in refmaps:
+                if not missing_ok:
+                    raise KeyError(f"refmap not found: refmaps/{map_id}")
+                continue
+            del refmaps[map_id]
+            removed.append(RemovedRefmap(map_id=map_id))
+    return removed
 
 
 def discover_fits_refmap_paths(paths: Iterable[PathLike], *, recursive: bool = False) -> list[Path]:
@@ -591,3 +682,13 @@ def _decode_h5_string(value) -> str:
     if isinstance(value, np.bytes_):
         return bytes(value).decode(errors="replace")
     return str(value)
+
+
+def _refmap_header_from_group(group: h5py.Group) -> fits.Header | None:
+    if "wcs_header" not in group:
+        return None
+    try:
+        text = _decode_h5_string(group["wcs_header"][()]).replace("\\n", "\n")
+        return fits.Header.fromstring(text, sep="\n")
+    except Exception:
+        return None

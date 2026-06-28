@@ -67,6 +67,7 @@ class SelectorSessionInput:
     allow_geometry_edit: bool = True
     map_ids: tuple[str, ...] = ()
     map_files: dict[str, str] | None = None
+    external_ref_map_paths: tuple[str, ...] = ()
     refmaps: dict[str, dict[str, Any]] | None = None
     base_maps: dict[str, Any] | None = None
     base_wcs_header: str | None = None

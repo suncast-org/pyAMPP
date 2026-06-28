@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from astropy.time import Time
 from PyQt5.QtCore import QEvent, QObject, Qt, QThread, QTimer, pyqtSignal
@@ -157,6 +157,7 @@ class FovBoxSelectorDialog(QDialog):
         self._suspend_status_updates = False
         self._availability_thread: Optional[QThread] = None
         self._availability_worker: Optional[_ObserverAvailabilityWorker] = None
+        self._external_ref_map_paths: list[str] = list(session_input.external_ref_map_paths or ())
         self.setWindowTitle("FOV / Box Selector")
         self.resize(1320, 760)
 
@@ -468,10 +469,13 @@ class FovBoxSelectorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         self._open_3d_button = QPushButton("Open 3D Viewer")
         self._open_3d_button.clicked.connect(self.map_box_widget.open_live_3d_viewer)
+        self._add_refmaps_button = QPushButton("Add Reference Maps to Model")
+        self._add_refmaps_button.clicked.connect(self._on_add_refmaps_clicked)
         self._save_as_button = QPushButton("Save As && Close")
         self._save_as_button.hide()
         button_row = QHBoxLayout()
         button_row.addWidget(self._open_3d_button)
+        button_row.addWidget(self._add_refmaps_button)
         button_row.addWidget(self._save_as_button)
         button_row.addStretch()
         button_row.addWidget(buttons)
@@ -626,6 +630,111 @@ class FovBoxSelectorDialog(QDialog):
 
     def _on_map_action_state_changed(self, can_open_3d: bool, _can_clear_lines: bool) -> None:
         self._open_3d_button.setEnabled(bool(can_open_3d))
+
+    def external_ref_map_paths(self) -> tuple[str, ...]:
+        return tuple(self._external_ref_map_paths)
+
+    def current_session_refmaps(self) -> dict[str, dict]:
+        return dict(self._session_input.refmaps or {})
+
+    def _on_add_refmaps_clicked(self) -> None:
+        start_dir = ""
+        if self._external_ref_map_paths:
+            start_dir = self._external_ref_map_paths[-1]
+        elif self._session_input.data_dir:
+            start_dir = self._session_input.data_dir
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Add Reference Maps Directory",
+            start_dir,
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+        )
+        if not selected:
+            return
+        path = str(Path(selected).expanduser().resolve())
+        if path in self._external_ref_map_paths:
+            if self._refresh_external_ref_map_files():
+                QMessageBox.information(
+                    self,
+                    "Reference Maps Added",
+                    "External FITS maps from this directory are now embedded in the in-memory "
+                    "model and available under both Filesystem and Embedded map sources.\n\n"
+                    "Apply & Close or Save As writes them to disk; closing without saving leaves "
+                    "the on-disk model unchanged.",
+                )
+            return
+        if self._refresh_external_ref_map_files(new_path=path):
+            self._external_ref_map_paths.append(path)
+            QMessageBox.information(
+                self,
+                "Reference Maps Added",
+                "External FITS maps from this directory are now embedded in the in-memory "
+                "model and available under both Filesystem and Embedded map sources.\n\n"
+                "Apply & Close or Save As writes them to disk; closing without saving leaves "
+                "the on-disk model unchanged.",
+            )
+
+    def _refresh_external_ref_map_files(self, *, new_path: str | None = None) -> bool:
+        from pyampp.gxbox.gxbox_selector_view import (
+            _available_map_ids_from_sources,
+            _discover_external_ref_map_files,
+            _embed_external_refmaps_into_session,
+        )
+
+        embed_paths = list(self._external_ref_map_paths)
+        if new_path and new_path not in embed_paths:
+            embed_paths.append(new_path)
+        if not embed_paths:
+            return False
+
+        discovered = _discover_external_ref_map_files(embed_paths)
+        if not discovered:
+            QMessageBox.warning(
+                self,
+                "No Reference Maps Found",
+                "No supported FITS reference maps were found in the selected directory.",
+            )
+            return False
+        try:
+            _embed_external_refmaps_into_session(
+                self._session_input,
+                embed_paths,
+                entry_path=self._entry_box_path,
+                overwrite=True,
+            )
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Reference Map Embed Failed",
+                f"Failed to embed reference maps into the in-memory model:\n{exc}",
+            )
+            return False
+        map_files = dict(self._session_input.map_files or {})
+        map_files.update(discovered)
+        self._session_input.map_files = map_files
+        refmaps = dict(self._session_input.refmaps or {})
+        base_maps = dict(self._session_input.base_maps or {})
+        map_ids = _available_map_ids_from_sources(map_files, refmaps, base_maps)
+        self._session_input.map_ids = tuple(map_ids)
+        self.map_box_widget.update_refmap_sources(map_files=map_files, refmaps=refmaps)
+        self.map_box_widget.set_available_maps(map_ids)
+
+        context_ids = self._context_map_ids(self._session_input)
+        self.context_map_combo.blockSignals(True)
+        self.context_map_combo.clear()
+        self.context_map_combo.addItem("none", None)
+        for map_id in context_ids:
+            self.context_map_combo.addItem(self._context_display_text(map_id), map_id)
+        if context_ids:
+            self.context_map_combo.setCurrentIndex(1)
+        self.context_map_combo.blockSignals(False)
+
+        if self.map_source_combo.findData("filesystem") >= 0:
+            self.map_source_combo.blockSignals(True)
+            self.map_source_combo.setCurrentIndex(self.map_source_combo.findData("filesystem"))
+            self.map_source_combo.blockSignals(False)
+            self.map_box_widget.set_map_source_mode("filesystem")
+        return True
 
     @staticmethod
     def _context_map_ids(session_input: SelectorSessionInput) -> list[str]:

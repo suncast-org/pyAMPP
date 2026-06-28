@@ -1,5 +1,6 @@
 import h5py
 import numpy as np
+import pytest
 from astropy.io import fits
 
 from pyampp.io import (
@@ -8,7 +9,9 @@ from pyampp.io import (
     build_fits_refmaps_for_model,
     discover_fits_refmap_map_ids,
     discover_fits_refmap_paths,
+    list_embedded_refmap_ids,
     model_obstime_from_base_index,
+    remove_refmaps_from_h5,
 )
 from pyampp.tests._fits_header import canonical_base_index_header
 
@@ -210,3 +213,72 @@ def test_add_fits_refmaps_to_h5_requires_overwrite_for_existing_id(tmp_path):
     add_fits_refmaps_to_h5(model, [source], overwrite=True)
     with h5py.File(model, "r") as h5f:
         assert "AIA_171" in h5f["refmaps"]
+
+
+def _write_stereo_refmap_group(refmaps, map_id, *, shape=(8, 8)):
+    header = _hpc_header(shape=shape, crpix=(shape[1] / 2.0, shape[0] / 2.0))
+    header["TELESCOP"] = "STEREO"
+    header["INSTRUME"] = "SECCHI"
+    group = refmaps.create_group(map_id, track_order=True)
+    group.attrs["order_index"] = np.int64(len(refmaps) - 1)
+    group.create_dataset("data", data=np.ones(shape, dtype=np.float32))
+    group.create_dataset("wcs_header", data=np.bytes_(header.tostring(sep="\n", endcard=True)))
+
+
+def test_list_embedded_refmap_ids(tmp_path):
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+    with h5py.File(model, "r+") as h5f:
+        refmaps = h5f["refmaps"]
+        _write_stereo_refmap_group(refmaps, "stereo304")
+
+    assert list_embedded_refmap_ids(model) == ["Bz_reference", "stereo304"]
+
+
+def test_remove_refmaps_from_h5_by_map_ids(tmp_path):
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+    with h5py.File(model, "r+") as h5f:
+        _write_stereo_refmap_group(h5f["refmaps"], "stereo304")
+
+    removed = remove_refmaps_from_h5(model, ["stereo304"])
+
+    assert [item.map_id for item in removed] == ["stereo304"]
+    assert list_embedded_refmap_ids(model) == ["Bz_reference"]
+
+
+def test_remove_refmaps_from_h5_by_telescope(tmp_path):
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+    with h5py.File(model, "r+") as h5f:
+        refmaps = h5f["refmaps"]
+        _write_stereo_refmap_group(refmaps, "stereo304")
+        _write_stereo_refmap_group(refmaps, "stereo171")
+
+    removed = remove_refmaps_from_h5(model, telescope="STEREO")
+
+    assert [item.map_id for item in removed] == ["stereo171", "stereo304"]
+    assert list_embedded_refmap_ids(model) == ["Bz_reference"]
+
+
+def test_remove_refmaps_from_h5_remove_all(tmp_path):
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+    with h5py.File(model, "r+") as h5f:
+        _write_stereo_refmap_group(h5f["refmaps"], "stereo304")
+
+    removed = remove_refmaps_from_h5(model, remove_all=True)
+
+    assert [item.map_id for item in removed] == ["Bz_reference", "stereo304"]
+    assert list_embedded_refmap_ids(model) == []
+
+
+def test_remove_refmaps_from_h5_missing_ok(tmp_path):
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+
+    removed = remove_refmaps_from_h5(model, ["missing"], missing_ok=True)
+    assert removed == []
+
+    with pytest.raises(KeyError, match="refmap not found"):
+        remove_refmaps_from_h5(model, ["missing"], missing_ok=False)
