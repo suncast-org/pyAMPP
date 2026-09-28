@@ -1,6 +1,8 @@
 # Refmap embed + display time anchor — implementation plan
 
-Checkpoint branch: `feat/stereo-refmap-display` @ `00058cd`.
+Branch: `feat/stereo-refmap-display`.
+
+`00058cd` is the historical pre-plan checkpoint (before embed wiring). The display rules below are the current branch behaviour: observer LOS canvas, native-grid base overlays.
 
 ## Goals
 
@@ -14,7 +16,7 @@ Checkpoint branch: `feat/stereo-refmap-display` @ `00058cd`.
 
 ---
 
-## Phase 1 — Display time anchor + UI (this cycle)
+## Phase 1 — Display time anchor + UI (completed)
 
 ### 1.1 Time anchor policy
 
@@ -100,12 +102,15 @@ Replace model-time reprojection in `pyampp/io/refmaps.py`:
 
 ## Phase 3 — Display reprojection alignment (completed)
 
+The selector canvas is the **display observer's helioprojective line of sight**. Every context map and the model boxes are drawn on that frame. The Carrington `base/index` header is stored model geometry (CEA). It is not the context axes and not the empty-canvas WCS.
+
 With native-time embeds:
 
-- **Native LOS** (map observer = display observer): show embedded crop; overlays at anchor.
-- **Cross-observer**: `reproject_refmap_to_observer` / `reproject_map_to_target_observer_fov` at **display anchor time** with `mask_off_limb=True` via `mask_pixels_not_visible_from_source`.
-- **Base map overlay**: cross-observer bottom maps reproject through the same masked pipeline at anchor.
-- **Geometry scaffold (Context = none)**: build target canvas with `make_empty_observer_fov_map` at model time (no costly `reproject_to` on empty data).
+- **Native LOS** (helioprojective map whose observer matches the display observer): show the embedded crop; overlays at the display anchor.
+- **HMI context products** (magnetogram, continuum, field, inclination, azimuth, disambig): rotate for display (`rotate(order=3)`). Do not resample them onto `base/index`. Observer LOS reprojection, when a map is not already helioprojective, is `_reproject_map_for_display_observer`.
+- **Cross-observer helioprojective maps**: `reproject_refmap_to_observer` / `reproject_map_to_target_observer_fov` at **display anchor time** with `mask_off_limb=True` via `mask_pixels_not_visible_from_source`.
+- **Model-grid base overlays** (Carrington CEA and any other identified non-helioprojective base map): leave the pixels on their **native WCS** after display scaling. `plot(..., autoalign=True)` warps that grid onto the observer LOS context axes. Do not send them through `display_observer_reproject_header_for_fov`: that path reads plate scale as helioprojective arcsec per pixel, so a CEA degree-per-pixel scale collapses the overlay onto a 32-pixel canvas and tears it into quadrants. Helioprojective bottom maps still crop or reproject in the display observer frame.
+- **Geometry scaffold (Context = none)**: empty canvas is an observer helioprojective map at model time (`make_empty_observer_fov_map`, or the geometry header when that header is already helioprojective and the observers share a line of sight). A Carrington / CEA header is rejected as the drawing frame (`_is_known_non_los_map`). Model boxes follow those axes, so they stay in the observer LOS.
 
 Cache: `_display_prepared_cache_key` includes `(context_id, display_obstime, display_observer, view_mode, purpose)`.
 
@@ -129,9 +134,11 @@ API exports: `reproject_refmap_to_observer`, `reproject_map_to_target_observer_f
 
 ## Rollback
 
+Historical only. `00058cd` is the checkpoint from before embed wiring and before the observer-LOS display rules. Resetting there drops the current canvas behaviour.
+
 ```bash
 git checkout feat/stereo-refmap-display
-git reset --hard 00058cd   # pre-plan checkpoint; update hash if needed
+git reset --hard 00058cd   # pre-plan checkpoint; not the current display rules
 ```
 
 ---
@@ -145,3 +152,5 @@ git reset --hard 00058cd   # pre-plan checkpoint; update hash if needed
 | SDO LOS selector | Remove |
 | Map vs model Δt warnings | Remove |
 | Model-time display for cache efficiency | Rejected — correctness over cache hits |
+| Context canvas | Display observer helioprojective LOS. Carrington `base/index` is model geometry, not the drawing frame |
+| Model-grid base overlay | Stay on native WCS; `autoalign` onto the observer LOS context |

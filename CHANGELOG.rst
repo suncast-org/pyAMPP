@@ -4,6 +4,27 @@ Changelog
 Unreleased
 ----------
 
+- Anchor ``gxbox-view2d`` display time to the selected context refmap
+  ``DATE-OBS`` (fallback: model time). The figure banner shows that
+  observation time and Δt versus the model. The SDO display-LOS option is
+  removed; Earth covers SDO/AIA/HMI.
+- Embed reference maps, including STEREO, with a spatial crop
+  (``pyampp.io.refmap_crop``) that keeps each map's native ``DATE-OBS`` and
+  observer metadata (``PYALIGN=False``).
+- Reproject cross-observer helioprojective maps through the masked display
+  pipeline at that time anchor.
+- Keep the session FOV fixed when the display observer changes. Save / Apply
+  asks whether to recompute the FOV for the current observer, save without an
+  FOV, or cancel.
+- Draw every selector map and the model boxes in the display observer's
+  helioprojective line of sight. An empty context canvas uses that same
+  observer frame. The Carrington ``base/index`` header remains model geometry
+  and is not the context axes.
+- Keep model-grid base overlays on their native WCS (Carrington CEA) and draw
+  them with ``autoalign`` on the observer LOS context. Treating that
+  heliographic plate scale as sky arcsec built a 32-pixel canvas and tore the
+  overlay.
+
 1.0.6
 -----
 
