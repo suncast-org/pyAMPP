@@ -207,6 +207,24 @@ def test_carrington_map_reprojects_to_observer_instead_of_staying_on_grid():
     reproj_mock.assert_called_once()
 
 
+def test_carrington_base_overlay_keeps_native_grid_for_autoalign():
+    """CEA base pixels must not be resampled with heliographic degrees as arcsec."""
+    widget = _make_widget(display_observer_key="earth")
+    widget._view_mode = "box_fov"
+    widget._apply_display_scaling = lambda _map, _key: None
+    native = SimpleNamespace(
+        coordinate_frame=SimpleNamespace(name="heliographic_carrington"),
+        meta={"ctype1": "CRLN-CEA", "CTYPE1": "CRLN-CEA"},
+        data=np.ones((168, 240)),
+    )
+    with patch.object(MapBoxDisplayWidget, "_reproject_map_for_display_observer") as reproj_mock:
+        out, _coverage = widget._prepare_bottom_for_display("ic", native)
+
+    assert out is native
+    assert tuple(np.asarray(out.data).shape) == (168, 240)
+    reproj_mock.assert_not_called()
+
+
 def test_carrington_base_scaffold_is_not_the_display_canvas():
     widget = _make_widget(display_observer_key="earth")
     carrington = SimpleNamespace(

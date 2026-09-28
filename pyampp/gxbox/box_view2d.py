@@ -1487,7 +1487,16 @@ class MapBoxDisplayWidget(QWidget):
         return use_native_crop is not False
 
     def _prepare_bottom_for_display(self, map_key: str, smap):
-        """Embedded/model base maps reproject to display observer at anchor when needed."""
+        """Model-grid base maps stay on their native WCS and are autoaligned.
+
+        Those pixels live on the Carrington CEA grid. Resampling them with that
+        plate scale treated as helioprojective arcsec builds a 32-pixel canvas
+        and tears the overlay into quadrants. ``plot(..., autoalign=True)``
+        warps the native grid onto the observer-LOS context axes.
+        """
+        if self._is_known_non_los_map(smap):
+            self._apply_display_scaling(smap, map_key)
+            return smap, None
         display_key = self._normalize_observer_key(
             self._state.display_observer_key if self._state is not None else "earth"
         )
