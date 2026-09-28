@@ -1369,24 +1369,24 @@ class MapBoxDisplayWidget(QWidget):
         return cropped
 
     def _apply_hmi_context_adjustments(self, map_key: str, smap):
+        """Rotate HMI products for display. Do not resample them onto the model grid.
+
+        The Carrington ``base/index`` WCS is the model CEA frame. Reprojecting
+        the context magnetogram onto it is what drew Carrington longitude and
+        latitude in the selector. Observer LOS reprojection, when the map is
+        not already helioprojective, happens in
+        ``_reproject_map_for_display_observer``.
+        """
         if map_key not in _HMI_DISPLAY_KEYS:
             return smap
-        display_map = smap
         try:
-            display_map = display_map.rotate(order=3)
+            return smap.rotate(order=3)
         except Exception:
-            pass
-        ref_map = self._earth_geometry_reference_map()
-        if ref_map is None:
-            return display_map
-        try:
-            self._record_prepare_event(f"context reproj: {map_key} -> ref_wcs")
-            display_map = self._with_matching_rsun(display_map, ref_map)
-            return display_map.reproject_to(ref_map.wcs)
-        except Exception:
-            return display_map
+            return smap
 
     def _map_display_los_matches(self, smap, display_key: str) -> bool:
+        if not self._is_helioprojective_map(smap):
+            return False
         display_key = self._normalize_observer_key(display_key)
         if self._map_matches_display_observer_native_los(smap, display_key):
             return True
@@ -1495,29 +1495,17 @@ class MapBoxDisplayWidget(QWidget):
         display_map = smap
         if self.__dict__.get("_view_mode", "box_fov") == "box_fov":
             if los_matches:
-                box = self._build_legacy_box(display_map)
-                if box is not None:
-                    try:
-                        self._record_prepare_event(f"bottom reproj: {map_key} -> base_cea")
-                        display_map = self._with_matching_rsun(display_map, box.bottom_cea_header)
-                        display_map = display_map.reproject_to(
-                            box.bottom_cea_header,
-                            algorithm="adaptive",
-                            roundtrip_coords=False,
-                        )
-                    except Exception:
-                        pass
                 display_map = self._crop_bottom_to_display_window(map_key, display_map)
             else:
                 anchor = self._display_obstime_anchor()
                 base_fov = self._state.fov if self._state is not None and self._state.fov is not None else self.projected_box_fov()
+                fov_override = None
                 if base_fov is not None and anchor is not None:
                     fov_override = self._fov_selection_projected_to_display_observer(base_fov, anchor)
-                    if fov_override is not None:
-                        display_map, _ = self._reproject_map_for_display_observer(
-                            display_map,
-                            fov_override=fov_override,
-                        )
+                display_map, _ = self._reproject_map_for_display_observer(
+                    display_map,
+                    fov_override=fov_override,
+                )
         self._apply_display_scaling(display_map, map_key)
         return display_map, None
 
@@ -1639,7 +1627,8 @@ class MapBoxDisplayWidget(QWidget):
         if self._state is None:
             return smap, None
         display_key = self._normalize_observer_key(self._state.display_observer_key)
-        if display_key == "earth" and fov_override is None:
+        los_frame = self._is_helioprojective_map(smap)
+        if display_key == "earth" and fov_override is None and los_frame:
             cross_observer_native = (
                 self._is_native_spacecraft_payload(smap)
                 and not self._map_matches_display_observer_native_los(smap, display_key)
@@ -1680,7 +1669,7 @@ class MapBoxDisplayWidget(QWidget):
                     rtol=0.0,
                     atol=0.01,
                 )
-                if same_lon and same_lat:
+                if same_lon and same_lat and los_frame:
                     return smap, None
         except Exception:
             pass
@@ -3846,15 +3835,64 @@ class MapBoxDisplayWidget(QWidget):
         display_key = self._normalize_observer_key(self._state.display_observer_key)
         geometry_key = self._normalize_observer_key(self._state.geometry_definition_observer_key)
         obstime = self._model_obstime_for_geometry()
-        if obstime is not None and self._observers_share_los(display_key, geometry_key, obstime):
+        # A shared LOS still has to be helioprojective. CEA / Carrington
+        # base headers are the model grid; drawing boxes on them shows
+        # Carrington longitude and latitude instead of the observer LOS.
+        share_los = obstime is not None and self._observers_share_los(
+            display_key, geometry_key, obstime
+        )
+        if share_los and not self._is_known_non_los_map(earth_map):
             scaffold = earth_map
         else:
             scaffold = self._empty_observer_scaffold_from_geometry(earth_map, display_key, obstime)
-            if scaffold is None:
+            if scaffold is None or self._is_known_non_los_map(scaffold):
+                when = obstime or self._model_obstime_for_geometry()
+                try:
+                    scaffold = self._geometry_stub_map(when, display_key) if when is not None else None
+                except Exception:
+                    scaffold = None
+            if (scaffold is None or self._is_known_non_los_map(scaffold)) and not self._is_known_non_los_map(earth_map):
                 scaffold = earth_map
+        if scaffold is None:
+            return None
         with self._cache_lock:
             self._raw_map_cache[cache_key] = scaffold
         return scaffold
+
+    @staticmethod
+    def _is_helioprojective_map(smap) -> bool:
+        try:
+            frame = smap.coordinate_frame
+        except Exception:
+            frame = None
+        name = str(getattr(frame, "name", "") or "").lower()
+        if "helioprojective" in name:
+            return True
+        meta = getattr(smap, "meta", {}) or {}
+        ctype = str(meta.get("ctype1") or meta.get("CTYPE1") or "").upper()
+        return ctype.startswith("HPLN")
+
+    @staticmethod
+    def _is_known_non_los_map(smap) -> bool:
+        """True when the map frame is identified and is not helioprojective.
+
+        Unidentified test doubles are left alone. Carrington / CEA headers are
+        rejected so they cannot become the selector axes.
+        """
+        try:
+            frame = smap.coordinate_frame
+        except Exception:
+            frame = None
+        name = str(getattr(frame, "name", "") or "").lower()
+        if "helioprojective" in name:
+            return False
+        if name:
+            return True
+        meta = getattr(smap, "meta", {}) or {}
+        ctype = str(meta.get("ctype1") or meta.get("CTYPE1") or "").upper()
+        if ctype.startswith("HPLN"):
+            return False
+        return bool(ctype)
 
     def _earth_geometry_reference_map(self):
         header = self._model_geometry_earth_wcs_header()

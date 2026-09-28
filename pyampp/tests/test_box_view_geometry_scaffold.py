@@ -153,6 +153,83 @@ def test_uses_geometry_scaffold_when_none_selected_or_no_context_maps():
     selected_mock.assert_not_called()
 
 
+def test_hmi_context_adjustment_does_not_reproject_onto_model_wcs():
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+
+    class _LosMap:
+        def rotate(self, order=3):
+            return self
+
+        def reproject_to(self, _wcs):
+            raise AssertionError("HMI context must stay off the Carrington base WCS")
+
+    smap = _LosMap()
+    assert widget._apply_hmi_context_adjustments("magnetogram", smap) is smap
+    assert widget._apply_hmi_context_adjustments("171", smap) is smap
+
+
+def test_carrington_map_is_not_treated_as_observer_los():
+    widget = _make_widget(display_observer_key="earth")
+    carrington = SimpleNamespace(
+        coordinate_frame=SimpleNamespace(name="heliographic_carrington"),
+        meta={"ctype1": "CRLN-CEA", "CTYPE1": "CRLN-CEA"},
+    )
+    assert widget._is_helioprojective_map(carrington) is False
+    assert widget._map_display_los_matches(carrington, "earth") is False
+
+
+def test_carrington_map_reprojects_to_observer_instead_of_staying_on_grid():
+    widget = _make_widget(display_observer_key="earth")
+    earth = widget._observer_coord_cache["earth"]
+    carrington = SimpleNamespace(
+        coordinate_frame=SimpleNamespace(name="heliographic_carrington"),
+        meta={"ctype1": "CRLN-CEA"},
+        observer_coordinate=earth,
+        date=Time(_MODEL_TIME),
+        detector="HMI",
+        observatory=None,
+        nickname=None,
+        data=np.zeros((4, 4)),
+    )
+    los = SimpleNamespace(
+        coordinate_frame=SimpleNamespace(name="helioprojective"),
+        meta={"ctype1": "HPLN-TAN"},
+    )
+    widget._record_prepare_event = lambda _msg: None
+    with patch.object(
+        MapBoxDisplayWidget, "_resolve_display_observer_coord", return_value=earth
+    ), patch(
+        "pyampp.io.refmap_crop.reproject_refmap_to_observer", return_value=los
+    ) as reproj_mock:
+        out, _coverage = widget._reproject_map_for_display_observer(carrington)
+
+    assert out is los
+    reproj_mock.assert_called_once()
+
+
+def test_carrington_base_scaffold_is_not_the_display_canvas():
+    widget = _make_widget(display_observer_key="earth")
+    carrington = SimpleNamespace(
+        coordinate_frame=SimpleNamespace(name="heliographic_carrington"),
+        meta={"ctype1": "CRLN-CEA"},
+    )
+    los = SimpleNamespace(
+        coordinate_frame=SimpleNamespace(name="helioprojective"),
+        meta={"ctype1": "HPLN-TAN"},
+    )
+    with patch.object(
+        MapBoxDisplayWidget, "_model_geometry_earth_wcs_header", return_value=fits.Header()
+    ), patch.object(
+        MapBoxDisplayWidget, "_header_only_map_from_wcs", return_value=carrington
+    ), patch.object(
+        MapBoxDisplayWidget, "_empty_observer_scaffold_from_geometry", return_value=los
+    ) as scaffold_mock:
+        out = widget._model_geometry_scaffold_map()
+
+    assert out is los
+    scaffold_mock.assert_called_once()
+
+
 def test_model_geometry_scaffold_returns_none_without_geometry():
     widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
     widget._state = SimpleNamespace(
