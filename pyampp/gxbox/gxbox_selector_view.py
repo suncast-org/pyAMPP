@@ -718,6 +718,13 @@ def _build_session_input(entry_path: Path, ref_map_paths: Optional[Sequence[str]
     observer_meta = entry_loaded.get("observer") if isinstance(entry_loaded, dict) else None
     observer_name = observer_meta.get("name", "earth") if isinstance(observer_meta, dict) else "earth"
     display_observer_key = _normalize_observer_key(observer_name)
+    fov_definition_observer_key = display_observer_key
+    if isinstance(explicit_fov_box, DisplayFovBoxSelection):
+        fov_definition_observer_key = _normalize_observer_key(explicit_fov_box.observer_key)
+    elif isinstance(observer_meta, dict):
+        fov_meta = observer_meta.get("fov")
+        if isinstance(fov_meta, dict) and fov_meta.get("observer_key"):
+            fov_definition_observer_key = _normalize_observer_key(fov_meta.get("observer_key"))
     custom_observer_ephemeris = None
     custom_observer_label = None
     custom_observer_source = None
@@ -788,6 +795,7 @@ def _build_session_input(entry_path: Path, ref_map_paths: Optional[Sequence[str]
         base_geometry=geometry,
         map_source_mode=map_source_mode,
         display_observer_key=display_observer_key,
+        fov_definition_observer_key=fov_definition_observer_key,
         custom_observer_ephemeris=custom_observer_ephemeris,
         custom_observer_label=custom_observer_label,
         custom_observer_source=custom_observer_source,
@@ -1009,6 +1017,11 @@ def _persist_selector_result_to_entry(
         observer.pop("fov_box", None)
         fov_observer_key = display_observer_key
     else:
+        fov_observer_key = (
+            str(fov_box.observer_key)
+            if isinstance(fov_box, DisplayFovBoxSelection)
+            else _normalize_observer_key(display_observer_key)
+        )
         fov = {
             "frame": "helioprojective",
             "xc_arcsec": float(result.fov.center_x_arcsec),
@@ -1016,6 +1029,8 @@ def _persist_selector_result_to_entry(
             "xsize_arcsec": float(result.fov.width_arcsec),
             "ysize_arcsec": float(result.fov.height_arcsec),
             "square": bool(result.square_fov),
+            # Persist even without fov_box so reload does not fall back to Earth.
+            "observer_key": _normalize_observer_key(fov_observer_key),
         }
         if display_fov_obstime:
             fov["obstime"] = str(display_fov_obstime)
@@ -1024,12 +1039,6 @@ def _persist_selector_result_to_entry(
             observer["fov_box"] = fov_box.as_observer_metadata(square=bool(result.square_fov))
         else:
             observer.pop("fov_box", None)
-        persisted_fov_meta = observer.get("fov_box", {}) if isinstance(observer.get("fov_box"), dict) else {}
-        fov_observer_key = (
-            str(fov_box.observer_key)
-            if isinstance(fov_box, DisplayFovBoxSelection)
-            else _normalize_observer_key(persisted_fov_meta.get("observer_key", observer["name"]))
-        )
     needs_custom_ephemeris = (
         display_observer_key == "custom"
         or _normalize_observer_key(fov_observer_key) == "custom"

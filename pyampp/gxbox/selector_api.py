@@ -74,6 +74,9 @@ class SelectorSessionInput:
     base_geometry: "BoxGeometrySelection | None" = None
     map_source_mode: str = "auto"
     display_observer_key: str = "earth"
+    # Observer frame that defined the 2D FOV when no fov_box was persisted.
+    # Prefer fov_box.observer_key when present; otherwise this (or display_observer_key).
+    fov_definition_observer_key: str | None = None
     custom_observer_ephemeris: dict[str, Any] | None = None
     custom_observer_label: str | None = None
     custom_observer_source: str | None = None

@@ -2049,7 +2049,10 @@ class MapBoxDisplayWidget(QWidget):
             ),
             geometry_definition_observer_key="earth",
             fov_definition_observer_key=self._normalize_observer_key(
-                getattr(session_input.fov_box, "observer_key", "earth")
+                getattr(session_input.fov_box, "observer_key", None)
+                or getattr(session_input, "fov_definition_observer_key", None)
+                or getattr(session_input, "display_observer_key", "earth")
+                or "earth"
             ),
             custom_observer_ephemeris=copy.deepcopy(
                 getattr(session_input, "custom_observer_ephemeris", None)
@@ -2317,6 +2320,12 @@ class MapBoxDisplayWidget(QWidget):
                     "xsize_arcsec": float(self._state.fov.width_arcsec),
                     "ysize_arcsec": float(self._state.fov.height_arcsec),
                     "square": bool(self._state.square_fov),
+                    "observer_key": self._normalize_observer_key(
+                        getattr(self._state.fov_box, "observer_key", None)
+                        or self._state.fov_definition_observer_key
+                        or self._state.display_observer_key
+                        or "earth"
+                    ),
                 }
             if self._state.fov_box is not None:
                 observer_meta["fov_box"] = self._state.fov_box.as_observer_metadata(

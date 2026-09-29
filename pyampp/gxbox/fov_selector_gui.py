@@ -81,6 +81,7 @@ class _ObserverAvailabilityWorker(QObject):
         saved_keys = {
             normalize_observer_key(getattr(self._session_input, "display_observer_key", "earth")),
             normalize_observer_key(getattr(getattr(self._session_input, "fov_box", None), "observer_key", None)),
+            normalize_observer_key(getattr(self._session_input, "fov_definition_observer_key", None)),
         }
         saved_keys.discard("earth")
         saved_keys.discard("")

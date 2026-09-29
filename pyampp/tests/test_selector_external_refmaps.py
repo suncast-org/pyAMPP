@@ -1447,3 +1447,126 @@ def test_persist_selector_result_can_clear_observer_fov(tmp_path):
     assert saved["observer"]["name"] == "stereo-a"
     assert "fov" not in saved["observer"]
     assert "fov_box" not in saved["observer"]
+
+
+def test_persist_2d_fov_without_box_writes_observer_key(tmp_path):
+    """2D FOV-only saves must stamp observer_key so reload does not default to Earth."""
+    from pyampp.gxbox.gxbox_selector_view import _persist_selector_result_to_entry
+    from pyampp.gxbox.selector_api import BoxGeometrySelection, CoordMode, DisplayFovSelection, SelectorDialogResult
+
+    entry = tmp_path / "model.h5"
+    result = SelectorDialogResult(
+        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
+        fov=DisplayFovSelection(10.0, 20.0, 100.0, 80.0),
+        square_fov=False,
+    )
+    box_data = {"observer": {"name": "earth"}, "refmaps": {}}
+
+    with patch("pyampp.gxbox.gxbox_selector_view.load_model", return_value=box_data), patch(
+        "pyampp.gxbox.gxbox_selector_view.save_model"
+    ) as save_model:
+        ok = _persist_selector_result_to_entry(
+            entry,
+            result,
+            observer_state={
+                "display_observer_key": "stereo-a",
+                "display_fov_obstime": "2026-04-03T19:46:37.800",
+            },
+            fov_box=None,
+            output_path=tmp_path / "out.h5",
+        )
+
+    assert ok is True
+    saved = save_model.call_args[0][0]
+    assert "fov_box" not in saved["observer"]
+    fov = saved["observer"]["fov"]
+    assert fov["observer_key"] == "stereo-a"
+    assert saved["observer"]["name"] == "stereo-a"
+
+
+def test_initialize_uses_display_observer_when_fov_box_missing():
+    """Without fov_box, FOV definition observer must not silently become Earth."""
+    from pyampp.gxbox.box_view2d import MapBoxDisplayWidget
+    from pyampp.gxbox.selector_api import (
+        BoxGeometrySelection,
+        CoordMode,
+        DisplayFovSelection,
+        SelectorSessionInput,
+    )
+
+    session = SelectorSessionInput(
+        time_iso="2026-04-03T19:46:37.800",
+        data_dir="",
+        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
+        fov=DisplayFovSelection(10.0, 20.0, 100.0, 80.0),
+        fov_box=None,
+        display_observer_key="stereo-a",
+        fov_definition_observer_key="stereo-a",
+        map_ids=("171",),
+        initial_map_id="171",
+    )
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._default_context_id = lambda _s: "171"
+    widget._default_bottom_id = lambda _s: None
+    widget._map_summary_cache = {}
+    widget._observer_coord_cache = {}
+    widget._observer_metadata_cache = {}
+    widget._observer_warning_cache = {}
+    widget._clear_prepare_trace = lambda: None
+    widget._invalidate_map_caches = lambda: None
+    widget._apply_embedded_source_preference = lambda _id: None
+    widget._normalize_display_observer_state = lambda: None
+    widget._refresh_status_text = lambda: None
+    widget._refresh_map_info = lambda: None
+    widget._emit_observer_info = lambda: None
+    widget._update_fov_control_enabled_state = lambda: None
+    widget._normalize_observer_key = staticmethod(MapBoxDisplayWidget._normalize_observer_key).__get__(widget, MapBoxDisplayWidget)
+
+    widget.initialize(session)
+
+    assert widget._state.display_observer_key == "stereo-a"
+    assert widget._state.fov_definition_observer_key == "stereo-a"
+    assert widget._state.fov_box is None
+
+
+def test_initialize_falls_back_to_display_observer_without_fov_def_key():
+    """Legacy 2D FOV entries with only observer.name still restore the FOV frame."""
+    from pyampp.gxbox.box_view2d import MapBoxDisplayWidget
+    from pyampp.gxbox.selector_api import (
+        BoxGeometrySelection,
+        CoordMode,
+        DisplayFovSelection,
+        SelectorSessionInput,
+    )
+
+    session = SelectorSessionInput(
+        time_iso="2026-04-03T19:46:37.800",
+        data_dir="",
+        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
+        fov=DisplayFovSelection(10.0, 20.0, 100.0, 80.0),
+        fov_box=None,
+        display_observer_key="stereo-a",
+        fov_definition_observer_key=None,
+        map_ids=("171",),
+        initial_map_id="171",
+    )
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._default_context_id = lambda _s: "171"
+    widget._default_bottom_id = lambda _s: None
+    widget._map_summary_cache = {}
+    widget._observer_coord_cache = {}
+    widget._observer_metadata_cache = {}
+    widget._observer_warning_cache = {}
+    widget._clear_prepare_trace = lambda: None
+    widget._invalidate_map_caches = lambda: None
+    widget._apply_embedded_source_preference = lambda _id: None
+    widget._normalize_display_observer_state = lambda: None
+    widget._refresh_status_text = lambda: None
+    widget._refresh_map_info = lambda: None
+    widget._emit_observer_info = lambda: None
+    widget._update_fov_control_enabled_state = lambda: None
+    widget._normalize_observer_key = staticmethod(MapBoxDisplayWidget._normalize_observer_key).__get__(widget, MapBoxDisplayWidget)
+
+    widget.initialize(session)
+
+    assert widget._state.fov_definition_observer_key == "stereo-a"
