@@ -506,6 +506,29 @@ def _resolve_box_corners_world_for_embed(
     return _box_corners_world_from_selector_geometry(geom, obstime_iso=obstime)
 
 
+def _refmap_source_roots(
+    box_data: dict[str, Any],
+    *,
+    session_input: SelectorSessionInput | None = None,
+    model_path: Path | str | None = None,
+) -> tuple[str | None, Path | None, str | None]:
+    """Return ``(data_dir, model_dir, gxmodel_dir)`` for source-card stamping."""
+
+    data_dir = None
+    gxmodel_dir = None
+    if session_input is not None:
+        data_dir = str(getattr(session_input, "data_dir", "") or "").strip() or None
+        gxmodel_dir = str(getattr(session_input, "gxmodel_dir", "") or "").strip() or None
+    meta = box_data.get("metadata") if isinstance(box_data, dict) else None
+    execute = _decode_id_text(meta.get("execute", "")) if isinstance(meta, dict) else ""
+    if execute:
+        exec_data, exec_model = _extract_execute_paths(execute)
+        data_dir = data_dir or exec_data
+        gxmodel_dir = gxmodel_dir or exec_model
+    model_dir = Path(model_path).expanduser().resolve().parent if model_path else None
+    return data_dir, model_dir, gxmodel_dir
+
+
 def _embed_external_refmaps_into_box_data(
     box_data: dict[str, Any],
     external_ref_map_paths: Optional[Sequence[str]],
@@ -513,6 +536,7 @@ def _embed_external_refmaps_into_box_data(
     session_input: SelectorSessionInput | None = None,
     geometry: BoxGeometrySelection | None = None,
     overwrite: bool = True,
+    model_path: Path | str | None = None,
 ) -> tuple[list[str], list[str]]:
     """Embed FITS refmaps from explicit external paths into in-memory box_data.
 
@@ -537,11 +561,19 @@ def _embed_external_refmaps_into_box_data(
         session_input=session_input,
         geometry=geometry,
     )
+    data_dir, model_dir, gxmodel_dir = _refmap_source_roots(
+        box_data,
+        session_input=session_input,
+        model_path=model_path,
+    )
     payloads = build_fits_refmaps_for_model(
         paths,
         model_obstime=model_obstime,
         box_corners_world=box_corners_world,
         generic=True,
+        data_dir=data_dir,
+        model_dir=model_dir,
+        gxmodel_dir=gxmodel_dir,
     )
 
     embedded: list[str] = []
@@ -570,6 +602,7 @@ def _embed_external_refmaps_into_session(
         external_ref_map_paths,
         session_input=session_input,
         overwrite=overwrite,
+        model_path=entry_path,
     )
     session_input.refmaps = dict(box_data.get("refmaps") or {})
     return embedded, skipped
@@ -668,7 +701,7 @@ def _build_session_input(entry_path: Path, ref_map_paths: Optional[Sequence[str]
     time_iso, geometry = _geometry_from_entry(entry_loaded, entry_path)
     meta = entry_loaded.get("metadata", {}) if isinstance(entry_loaded, dict) else {}
     execute_text = _decode_id_text(meta.get("execute", "")) if isinstance(meta, dict) else ""
-    data_dir, _gxmodel_dir = _extract_execute_paths(execute_text)
+    data_dir, gxmodel_dir = _extract_execute_paths(execute_text)
     execute_ref_map_paths = _parse_execute_refmap_paths(execute_text)
     all_ref_map_paths = _merge_ref_map_paths(execute_ref_map_paths, ref_map_paths)
     external_ref_map_paths = all_ref_map_paths
@@ -751,6 +784,7 @@ def _build_session_input(entry_path: Path, ref_map_paths: Optional[Sequence[str]
         custom_observer_source=custom_observer_source,
         initial_map_id=initial_map,
         pad_frac=0.10,
+        gxmodel_dir=gxmodel_dir,
     )
 
 
@@ -1101,6 +1135,7 @@ def _persist_selector_result_to_entry(
         external_ref_map_paths,
         geometry=result.geometry,
         overwrite=True,
+        model_path=dest,
     )
 
     # Save with contract persistence via centralized model.io loader

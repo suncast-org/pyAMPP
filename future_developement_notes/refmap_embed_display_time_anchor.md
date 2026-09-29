@@ -80,6 +80,11 @@ Replace model-time reprojection in `pyampp/io/refmaps.py`:
 - Output: cropped `data` + `wcs_header` at **native map observer/time**.
 - Set `PYALIGN=False` (or document new semantics: native embed, not model-aligned).
 - Preserve audit headers: `SRC_DATE`, `MODELT`, `PYEMBED`.
+- Source-FITS cards on embed (Add Reference Maps, `--refmaps-path`, and Save):
+  - `SRC_PATH`: absolute path of the source FITS.
+  - `SRC_RELPATH` + `SRC_ROOT` when the file is inside a known root. `SRC_ROOT=data-dir` is the JSOC / `--data-dir` cache. `SRC_ROOT=model-dir` is the model file's directory or `--gxmodel-dir`. The longer matching root wins. `SRC_RELPATH` is stored as a HIERARCH card.
+- Filesystem reload order for that map id: recorded cache or `--refmaps-path` file, then `SRC_RELPATH` under the current matching root, then `SRC_PATH`, then the embedded crop. A context id that exists only under `refmaps/` (no cache file and no resolvable source) selects Map Source Embedded.
+- Embeds saved before these cards still display the crop until the same FITS is embedded again.
 
 ### 2.2 Wire entry points
 

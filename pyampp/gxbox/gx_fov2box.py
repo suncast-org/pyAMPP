@@ -1079,6 +1079,9 @@ def _prepare_observation_state(
                 box_corners_world=box_corners_world,
                 map_ids=cache_map_ids,
                 generic=False,
+                data_dir=data_dir_path,
+                model_dir=cfg.gxmodel_dir,
+                gxmodel_dir=cfg.gxmodel_dir,
             )
             for key, payload in missing_cache_refmaps.items():
                 refmaps[key] = payload
@@ -1094,6 +1097,9 @@ def _prepare_observation_state(
                 model_obstime=refmap_model_time,
                 box_corners_world=box_corners_world,
                 generic=True,
+                data_dir=data_dir_path,
+                model_dir=cfg.gxmodel_dir,
+                gxmodel_dir=cfg.gxmodel_dir,
             )
             for key, payload in external_refmaps.items():
                 refmaps[key] = payload

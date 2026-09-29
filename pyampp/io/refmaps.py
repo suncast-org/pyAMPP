@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import warnings
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import h5py
 import numpy as np
 from astropy.io import fits
+from astropy.io.fits.verify import VerifyWarning
 from astropy.time import Time
 import astropy.units as u
 from astropy.coordinates import SkyCoord
@@ -71,6 +73,16 @@ _SOURCE_HEADER_KEYS = (
     "CTYPE4",
 )
 
+# Source-FITS audit cards stored in an embedded refmap ``wcs_header``.
+# ``SRC_RELPATH`` is longer than 8 characters, so Astropy writes it as a
+# HIERARCH card. ``SRC_ROOT`` is ``data-dir`` (JSOC / ``--data-dir`` cache)
+# or ``model-dir`` (the model file's directory, or ``--gxmodel-dir``).
+REFMAP_SRC_PATH_KEY = "SRC_PATH"
+REFMAP_SRC_RELPATH_KEY = "SRC_RELPATH"
+REFMAP_SRC_ROOT_KEY = "SRC_ROOT"
+REFMAP_SRC_ROOT_DATA_DIR = "data-dir"
+REFMAP_SRC_ROOT_MODEL_DIR = "model-dir"
+
 
 def add_fits_refmaps_to_h5(
     h5_path: PathLike,
@@ -114,6 +126,7 @@ def add_fits_refmaps_to_h5(
         model_ctx = _model_context_from_open_h5(h5f)
         model_obstime = model_obstime_from_base_index(model_ctx)
         box_corners_world = box_corners_world_from_model(model_ctx)
+        data_dir, gxmodel_dir = _source_roots_from_model_context(model_ctx)
         refmaps = h5f.require_group("refmaps")
 
         next_order = _next_refmap_order(refmaps)
@@ -126,6 +139,9 @@ def add_fits_refmaps_to_h5(
                 model_obstime=model_obstime,
                 box_corners_world=box_corners_world,
                 source_path=path,
+                data_dir=data_dir,
+                model_dir=h5_path.parent,
+                gxmodel_dir=gxmodel_dir,
             )
 
             if map_id in refmaps:
@@ -376,6 +392,9 @@ def build_fits_refmaps_for_model(
     pangle_policy: str = "auto",
     recursive: bool = False,
     generic: bool = True,
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
     # Deprecated legacy kwargs kept for call-site compatibility during migration.
     target_fov: tuple[SkyCoord, SkyCoord] | None = None,
     target_template=None,
@@ -415,6 +434,9 @@ def build_fits_refmaps_for_model(
             source_path=path,
             pad=pad,
             pangle_policy=pangle_policy,
+            data_dir=data_dir,
+            model_dir=model_dir,
+            gxmodel_dir=gxmodel_dir,
         )
     return out
 
@@ -530,6 +552,9 @@ def build_refmap_payload_for_model(
     source_path: Path | None = None,
     pad: float = 1.1,
     pangle_policy: str = "auto",
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
     # Deprecated legacy kwargs kept for call-site compatibility during migration.
     target_template=None,
     target_fov: tuple[SkyCoord, SkyCoord] | None = None,
@@ -562,8 +587,168 @@ def build_refmap_payload_for_model(
         model_obstime=model_obstime or result.model_obstime,
         source_obstime=source_obstime,
         aligned_to_model=False,
+        data_dir=data_dir,
+        model_dir=model_dir,
+        gxmodel_dir=gxmodel_dir,
     )
     return {"data": np.asarray(cropped.data), "wcs_header": header_text}
+
+
+def apply_refmap_source_cards(
+    header: fits.Header,
+    source_path: PathLike,
+    *,
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
+) -> None:
+    """Write ``SRC_PATH`` and, when the file is under a known root, relative cards.
+
+    ``SRC_ROOT=data-dir`` means ``SRC_RELPATH`` is relative to ``--data-dir``
+    (the JSOC cache root). ``SRC_ROOT=model-dir`` means it is relative to the
+    model file's directory or ``--gxmodel-dir``. When the file is inside more
+    than one root, the longer root wins.
+    """
+
+    source = _as_directory(source_path)
+    if source is None:
+        return
+    header[REFMAP_SRC_PATH_KEY] = str(source)
+    roots: list[tuple[str, Path]] = []
+    data_root = _as_directory(data_dir)
+    if data_root is not None:
+        roots.append((REFMAP_SRC_ROOT_DATA_DIR, data_root))
+    for candidate in (model_dir, gxmodel_dir):
+        model_root = _as_directory(candidate)
+        if model_root is not None:
+            roots.append((REFMAP_SRC_ROOT_MODEL_DIR, model_root))
+    best: tuple[int, str, str] | None = None
+    for label, root in roots:
+        relative = _relative_posix_under(source, root)
+        if relative is None:
+            continue
+        rank = len(str(root))
+        if best is None or rank > best[0]:
+            best = (rank, label, relative)
+    if best is None:
+        header.pop(REFMAP_SRC_RELPATH_KEY, None)
+        header.pop(REFMAP_SRC_ROOT_KEY, None)
+        return
+    _label, root_name, relative = best
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", VerifyWarning)
+        header[REFMAP_SRC_RELPATH_KEY] = relative
+    header[REFMAP_SRC_ROOT_KEY] = root_name
+
+
+def resolve_embedded_refmap_source(
+    header: fits.Header | str,
+    *,
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
+) -> Path | None:
+    """Resolve an embedded refmap's source FITS, or return None.
+
+    Order: ``SRC_RELPATH`` under the current root named by ``SRC_ROOT``,
+    then ``SRC_PATH``. A missing file is skipped.
+    """
+
+    parsed = _header_for_source_cards(header)
+    if parsed is None:
+        return None
+    relative = _header_card_text(parsed, REFMAP_SRC_RELPATH_KEY)
+    root_name = _header_card_text(parsed, REFMAP_SRC_ROOT_KEY)
+    if relative and root_name == REFMAP_SRC_ROOT_DATA_DIR:
+        found = _existing_file_under(data_dir, relative)
+        if found is not None:
+            return found
+    elif relative and root_name == REFMAP_SRC_ROOT_MODEL_DIR:
+        for root in (model_dir, gxmodel_dir):
+            found = _existing_file_under(root, relative)
+            if found is not None:
+                return found
+    absolute = _header_card_text(parsed, REFMAP_SRC_PATH_KEY)
+    if absolute:
+        try:
+            candidate = Path(absolute).expanduser()
+        except Exception:
+            candidate = None
+        if candidate is not None and candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _source_roots_from_model_context(model_ctx: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    metadata = model_ctx.get("metadata") if isinstance(model_ctx, Mapping) else None
+    execute = ""
+    if isinstance(metadata, Mapping):
+        execute = metadata.get("execute") or ""
+        if isinstance(execute, (bytes, np.bytes_)):
+            execute = _decode_h5_string(execute)
+    if not str(execute).strip():
+        return None, None
+    from pyampp.gxbox.gx_fov2box import _extract_execute_paths
+
+    data_dir, gxmodel_dir = _extract_execute_paths(str(execute))
+    return data_dir, gxmodel_dir
+
+
+def _as_directory(value: PathLike | None) -> Path | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return Path(text).expanduser().resolve()
+    except Exception:
+        return None
+
+
+def _relative_posix_under(source: Path, root: Path) -> str | None:
+    try:
+        relative = source.resolve().relative_to(root.resolve())
+    except Exception:
+        return None
+    if relative == Path("."):
+        return None
+    return relative.as_posix()
+
+
+def _existing_file_under(root: PathLike | None, relative: str) -> Path | None:
+    base = _as_directory(root)
+    if base is None or not str(relative).strip():
+        return None
+    try:
+        candidate = (base / relative).resolve()
+    except Exception:
+        return None
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def _header_for_source_cards(header: fits.Header | str) -> fits.Header | None:
+    if isinstance(header, fits.Header):
+        return header
+    text = str(header or "").replace("\\n", "\n")
+    if not text.strip():
+        return None
+    try:
+        return fits.Header.fromstring(text, sep="\n")
+    except Exception:
+        return None
+
+
+def _header_card_text(header: fits.Header, key: str) -> str | None:
+    try:
+        value = header.get(key)
+    except Exception:
+        return None
+    if value in (None, ""):
+        return None
+    return str(value).strip() or None
 
 
 def _refmap_wcs_header(
@@ -573,6 +758,9 @@ def _refmap_wcs_header(
     model_obstime: str | Time | None = None,
     source_obstime: str | None = None,
     aligned_to_model: bool = False,
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
 ) -> str:
     try:
         header = smap.wcs.to_header()
@@ -613,6 +801,13 @@ def _refmap_wcs_header(
         pass
     if source_path is not None:
         header["HISTORY"] = f"Embedded by pyampp.io.refmaps from {source_path}"
+        apply_refmap_source_cards(
+            header,
+            source_path,
+            data_dir=data_dir,
+            model_dir=model_dir,
+            gxmodel_dir=gxmodel_dir,
+        )
     if source_obstime:
         header["SRC_DATE"] = source_obstime
     if model_obstime is not None:

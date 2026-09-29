@@ -209,6 +209,8 @@ def test_persist_selector_result_embeds_external_refmaps(mock_build, tmp_path):
     save_model.assert_called_once()
     saved = save_model.call_args[0][0]
     assert "stereo304" in saved["refmaps"]
+    from pathlib import Path
+    assert Path(mock_build.call_args.kwargs["model_dir"]) == out.resolve().parent
 
 
 def test_reproject_without_fov_override_uses_full_disk_not_roi():
@@ -764,6 +766,106 @@ def test_context_map_falls_back_to_embedded_refmap_in_filesystem_mode():
 
     assert out is loaded
     embed_mock.assert_called_once()
+
+
+def test_filesystem_mode_loads_src_relpath_before_embedded_crop(tmp_path):
+    from types import SimpleNamespace
+    from astropy.io import fits
+
+    from pyampp.io.refmaps import apply_refmap_source_cards
+
+    model = tmp_path / "model.h5"
+    source = tmp_path / "stereo_a_euvi" / "20120712_044615_n4euA.fts"
+    source.parent.mkdir()
+    source.write_bytes(b"fits")
+    header = fits.Header()
+    apply_refmap_source_cards(header, source, model_dir=tmp_path)
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._state = SimpleNamespace(
+        map_source_mode="filesystem",
+        map_files={"171": str(tmp_path / "missing-aia.fits")},
+        base_maps={},
+        refmaps={
+            "20120712_044615_n4euA": {
+                "data": np.ones((2, 2)),
+                "wcs_header": header.tostring(sep="\n", endcard=True),
+            }
+        },
+        session_input=SimpleNamespace(data_dir=str(tmp_path / "jsoc"), gxmodel_dir=None),
+    )
+    widget._entry_box_path = model
+    widget._cache_lock = __import__("threading").Lock()
+    widget._raw_map_cache = {}
+    loaded = SimpleNamespace(data=np.zeros((2, 2)))
+
+    with patch("pyampp.gxbox.box_view2d.load_sunpy_map_compat", return_value=loaded) as load_mock, patch.object(
+        MapBoxDisplayWidget, "_load_embedded_refmap"
+    ) as embed_mock:
+        out = widget._load_raw_map_for_source_mode(
+            "20120712_044615_n4euA",
+            "filesystem",
+            purpose="context",
+        )
+
+    assert out is loaded
+    load_mock.assert_called_once_with(str(source.resolve()))
+    embed_mock.assert_not_called()
+
+
+def test_filesystem_mode_uses_src_path_when_relative_root_misses(tmp_path):
+    from types import SimpleNamespace
+    from astropy.io import fits
+
+    from pyampp.io.refmaps import apply_refmap_source_cards
+
+    source = tmp_path / "stereo_a_euvi" / "euvi.fts"
+    source.parent.mkdir()
+    source.write_bytes(b"fits")
+    header = fits.Header()
+    apply_refmap_source_cards(header, source, model_dir=tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._state = SimpleNamespace(
+        map_files={},
+        refmaps={"euvi": {"data": np.ones((2, 2)), "wcs_header": header.tostring(sep="\n", endcard=True)}},
+        session_input=SimpleNamespace(data_dir=None, gxmodel_dir=None),
+    )
+    widget._entry_box_path = other / "model.h5"
+    widget._cache_lock = __import__("threading").Lock()
+    widget._raw_map_cache = {}
+    loaded = SimpleNamespace(data=np.zeros((2, 2)))
+
+    with patch("pyampp.gxbox.box_view2d.load_sunpy_map_compat", return_value=loaded) as load_mock:
+        out = widget._load_raw_map_for_source_mode("euvi", "filesystem", purpose="context")
+
+    assert out is loaded
+    load_mock.assert_called_once_with(str(source.resolve()))
+
+
+def test_embedded_only_context_selects_embedded_then_restores_filesystem():
+    from types import SimpleNamespace
+
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._auto_embedded_source = False
+    widget._default_map_source_mode = "filesystem"
+    session = SimpleNamespace(map_source_mode="filesystem", data_dir="", gxmodel_dir=None)
+    widget._state = SimpleNamespace(
+        map_source_mode="filesystem",
+        map_files={"171": "/tmp/aia171.fits"},
+        refmaps={"20120712_044615_n4euA": {"data": np.ones((2, 2))}},
+        session_input=session,
+    )
+    widget._entry_box_path = None
+
+    widget._apply_embedded_source_preference("20120712_044615_n4euA")
+    assert widget._state.map_source_mode == "embedded"
+    assert session.map_source_mode == "embedded"
+
+    widget._apply_embedded_source_preference("171")
+    assert widget._state.map_source_mode == "filesystem"
+    assert session.map_source_mode == "filesystem"
+    assert widget._auto_embedded_source is False
 
 
 def test_context_map_change_recomputes_view_instead_of_preserving_pixels():

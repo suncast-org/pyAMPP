@@ -606,6 +606,7 @@ class FovBoxSelectorDialog(QDialog):
         idx = self.map_source_combo.findData(str(session_input.map_source_mode or "auto"))
         self.map_source_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self.map_source_combo.blockSignals(False)
+        self._sync_map_source_combo_from_widget()
 
         self._apply_selection_to_form(session_input.geometry)
         if state is not None and state.fov is not None:
@@ -787,9 +788,22 @@ class FovBoxSelectorDialog(QDialog):
     def _context_display_text(map_id: str) -> str:
         return "Blos" if map_id == "Bz" else map_id
 
+    def _sync_map_source_combo_from_widget(self) -> None:
+        state = self.map_box_widget.state()
+        if state is None:
+            return
+        mode = str(state.map_source_mode or "auto")
+        idx = self.map_source_combo.findData(mode)
+        if idx < 0 or self.map_source_combo.currentIndex() == idx:
+            return
+        self.map_source_combo.blockSignals(True)
+        self.map_source_combo.setCurrentIndex(idx)
+        self.map_source_combo.blockSignals(False)
+
     def _on_context_map_changed(self, _index: int) -> None:
         map_id = self.context_map_combo.currentData()
         self.map_box_widget.set_context_map_id(str(map_id) if map_id else None)
+        self._sync_map_source_combo_from_widget()
 
     def _on_bottom_map_changed(self, _index: int) -> None:
         map_id = self.bottom_map_combo.currentData()

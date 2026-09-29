@@ -11,6 +11,15 @@ Unreleased
 - Embed reference maps, including STEREO, with a spatial crop
   (``pyampp.io.refmap_crop``) that keeps each map's native ``DATE-OBS`` and
   observer metadata (``PYALIGN=False``).
+- Record the source FITS on an embedded refmap as ``SRC_PATH``. When that
+  file sits under the JSOC cache (``--data-dir``) or the model directory
+  (the model file's folder or ``--gxmodel-dir``), also record
+  ``SRC_RELPATH`` and ``SRC_ROOT`` (``data-dir`` or ``model-dir``).
+  Filesystem mode opens ``SRC_RELPATH`` under the current root, then
+  ``SRC_PATH``, then the embedded crop. A context map that exists only as
+  that crop selects Map Source Embedded. Older embeds without ``SRC_PATH``
+  keep the crop until Add Reference Maps or ``--refmaps-path`` re-embeds
+  them on save.
 - Reproject cross-observer helioprojective maps through the masked display
   pipeline at that time anchor.
 - Keep the session FOV fixed when the display observer changes. Save / Apply

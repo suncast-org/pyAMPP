@@ -317,3 +317,53 @@ def test_remove_refmaps_from_h5_missing_ok(tmp_path):
 
     with pytest.raises(KeyError, match="refmap not found"):
         remove_refmaps_from_h5(model, ["missing"], missing_ok=False)
+
+
+def test_refmap_source_cards_record_relative_root_and_absolute_fallback(tmp_path):
+    from pyampp.io.refmaps import (
+        REFMAP_SRC_ROOT_DATA_DIR,
+        REFMAP_SRC_ROOT_MODEL_DIR,
+        apply_refmap_source_cards,
+        resolve_embedded_refmap_source,
+    )
+
+    model_dir = tmp_path / "model"
+    data_dir = tmp_path / "jsoc"
+    model_dir.mkdir()
+    data_dir.mkdir()
+    source = model_dir / "stereo_a_euvi" / "euvi.fts"
+    source.parent.mkdir()
+    source.write_bytes(b"fits")
+    header = fits.Header()
+    apply_refmap_source_cards(header, source, data_dir=data_dir, model_dir=model_dir)
+
+    assert header["SRC_PATH"] == str(source.resolve())
+    assert header["SRC_ROOT"] == REFMAP_SRC_ROOT_MODEL_DIR
+    assert header["SRC_RELPATH"] == "stereo_a_euvi/euvi.fts"
+    text = header.tostring(sep="\n", endcard=True)
+
+    moved = tmp_path / "moved_model"
+    moved_source = moved / "stereo_a_euvi" / "euvi.fts"
+    moved_source.parent.mkdir(parents=True)
+    moved_source.write_bytes(b"fits")
+    assert resolve_embedded_refmap_source(text, model_dir=moved) == moved_source.resolve()
+
+    cache = data_dir / "2012-07-12" / "aia.fits"
+    cache.parent.mkdir()
+    cache.write_bytes(b"fits")
+    cache_header = fits.Header()
+    apply_refmap_source_cards(cache_header, cache, data_dir=data_dir, model_dir=model_dir)
+    assert cache_header["SRC_ROOT"] == REFMAP_SRC_ROOT_DATA_DIR
+    assert cache_header["SRC_RELPATH"] == "2012-07-12/aia.fits"
+
+    orphan = tmp_path / "elsewhere" / "euvi.fts"
+    orphan.parent.mkdir()
+    orphan.write_bytes(b"fits")
+    orphan_header = fits.Header()
+    apply_refmap_source_cards(orphan_header, orphan, data_dir=data_dir, model_dir=model_dir)
+    assert "SRC_RELPATH" not in orphan_header
+    assert resolve_embedded_refmap_source(
+        orphan_header,
+        data_dir=data_dir,
+        model_dir=model_dir,
+    ) == orphan.resolve()

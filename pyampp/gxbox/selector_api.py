@@ -81,6 +81,7 @@ class SelectorSessionInput:
     observer_availability_notice: str | None = None
     initial_map_id: str | None = None
     pad_frac: float | None = None
+    gxmodel_dir: str | None = None
 
 
 @dataclass(slots=True)

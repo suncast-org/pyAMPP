@@ -55,6 +55,7 @@ from pyampp.geometry import (
     project_world_to_pixel,
 )
 from .box import Box
+from pyampp.io.refmaps import resolve_embedded_refmap_source
 from .boxutils import load_sunpy_map_compat, map_from_data_header_compat
 from .observer_restore import (
     build_ephemeris_from_pb0r,
@@ -244,6 +245,8 @@ class MapBoxDisplayWidget(QWidget):
         super().__init__(parent)
         self._svg_dir = self._resolve_svg_dir()
         self._state: Optional[MapBoxViewState] = None
+        self._auto_embedded_source = False
+        self._default_map_source_mode = "auto"
         self._geometry_change_callback = None
         self._map_summary_cache: dict[str, str] = {}
         self._loaded_map_cache = {}
@@ -2010,6 +2013,8 @@ class MapBoxDisplayWidget(QWidget):
     def initialize(self, session_input: SelectorSessionInput) -> None:
         selected_context_id = self._default_context_id(session_input)
         selected_bottom_id = self._default_bottom_id(session_input)
+        self._default_map_source_mode = str(session_input.map_source_mode or "auto")
+        self._auto_embedded_source = False
         self._clear_prepare_trace()
         self._map_summary_cache.clear()
         self._observer_coord_cache.clear()
@@ -2052,6 +2057,7 @@ class MapBoxDisplayWidget(QWidget):
             custom_observer_label=str(getattr(session_input, "custom_observer_label", "") or "").strip() or None,
             custom_observer_source=str(getattr(session_input, "custom_observer_source", "") or "").strip() or None,
         )
+        self._apply_embedded_source_preference(selected_context_id)
         self._normalize_display_observer_state()
         self._refresh_status_text()
         self._refresh_map_info()
@@ -2089,6 +2095,7 @@ class MapBoxDisplayWidget(QWidget):
         if self._state.selected_context_id == map_id:
             return
         self._state.selected_context_id = map_id
+        self._apply_embedded_source_preference(map_id)
         self._invalidate_display_prepared_cache()
         self._invalidate_geometry_dependent_display_maps()
         self._refresh_status_text()
@@ -3430,7 +3437,115 @@ class MapBoxDisplayWidget(QWidget):
     def _filesystem_path_for_key(self, map_key: str, purpose: str = "context") -> str | None:
         if not self._filesystem_enabled(purpose=purpose):
             return None
-        return (self._state.map_files or {}).get(map_key) if self._state is not None else None
+        recorded = (self._state.map_files or {}).get(map_key) if self._state is not None else None
+        if recorded:
+            return recorded
+        resolved = self._resolve_embedded_source_path(map_key)
+        return str(resolved) if resolved is not None else None
+
+    def _filesystem_load_candidates(self, map_key: str) -> list[str]:
+        """Filesystem paths to try before the embedded crop.
+
+        A recorded cache or ``--refmaps-path`` file comes first. Otherwise
+        resolve ``SRC_RELPATH`` under the current root, then ``SRC_PATH``.
+        """
+
+        if self._state is None:
+            return []
+        candidates: list[str] = []
+        recorded = (self._state.map_files or {}).get(map_key)
+        recorded_exists = False
+        if recorded:
+            candidates.append(str(recorded))
+            try:
+                recorded_exists = Path(recorded).expanduser().is_file()
+            except Exception:
+                recorded_exists = False
+        if not recorded_exists:
+            resolved = self._resolve_embedded_source_path(map_key)
+            if resolved is not None:
+                text = str(resolved)
+                if text not in candidates:
+                    candidates.append(text)
+        return candidates
+
+    def _resolve_embedded_source_path(self, map_key: str) -> Path | None:
+        if self._state is None:
+            return None
+        ref_key = self._embedded_refmap_key(map_key)
+        if not ref_key:
+            return None
+        payload = (getattr(self._state, "refmaps", None) or {}).get(ref_key)
+        if not isinstance(payload, dict):
+            return None
+        header_text = self._normalize_embedded_header_text(
+            self._header_text_from_value(payload.get("wcs_header"))
+        )
+        if not header_text.strip():
+            return None
+        session = getattr(self._state, "session_input", None)
+        data_dir = getattr(session, "data_dir", None) if session is not None else None
+        gxmodel_dir = getattr(session, "gxmodel_dir", None) if session is not None else None
+        entry = getattr(self, "_entry_box_path", None)
+        model_dir = entry.parent if isinstance(entry, Path) else None
+        try:
+            return resolve_embedded_refmap_source(
+                header_text,
+                data_dir=data_dir,
+                model_dir=model_dir,
+                gxmodel_dir=gxmodel_dir,
+            )
+        except Exception:
+            return None
+
+    def _context_is_embedded_only(self, map_id: str | None) -> bool:
+        """True when this context id has an embedded crop and no on-disk source."""
+
+        if not map_id or self._state is None:
+            return False
+        key = self._canonical_map_key(str(map_id), purpose="context")
+        if (getattr(self._state, "map_files", None) or {}).get(key):
+            return False
+        if self._resolve_embedded_source_path(key) is not None:
+            return False
+        ref_key = self._embedded_refmap_key(key)
+        payload = (getattr(self._state, "refmaps", None) or {}).get(ref_key) if ref_key else None
+        return isinstance(payload, dict) and payload.get("data") is not None
+
+    def _context_has_recorded_filesystem_map(self, map_id: str | None) -> bool:
+        if not map_id or self._state is None:
+            return False
+        key = self._canonical_map_key(str(map_id), purpose="context")
+        return bool((getattr(self._state, "map_files", None) or {}).get(key))
+
+    def _set_map_source_mode_value(self, mode: str) -> None:
+        if self._state is None or not hasattr(self._state, "map_source_mode"):
+            return
+        if self._state.map_source_mode == mode:
+            return
+        self._state.map_source_mode = mode
+        session = getattr(self._state, "session_input", None)
+        if session is not None and hasattr(session, "map_source_mode"):
+            session.map_source_mode = mode
+
+    def _apply_embedded_source_preference(self, map_id: str | None) -> None:
+        """Use Embedded for a context map that exists only as a saved crop.
+
+        A map with a cache file, ``--refmaps-path`` hit, or resolvable
+        ``SRC_RELPATH`` / ``SRC_PATH`` stays on the session's filesystem mode.
+        """
+
+        if self._state is None or not hasattr(self._state, "map_source_mode"):
+            return
+        if self._context_is_embedded_only(map_id):
+            self._auto_embedded_source = True
+            self._set_map_source_mode_value("embedded")
+            return
+        if getattr(self, "_auto_embedded_source", False) and self._context_has_recorded_filesystem_map(map_id):
+            self._auto_embedded_source = False
+            default_mode = getattr(self, "_default_map_source_mode", None)
+            if default_mode in {"auto", "filesystem", "embedded"}:
+                self._set_map_source_mode_value(str(default_mode))
 
     def _embedded_payload_for_key(self, ref_key: str, purpose: str = "context"):
         if not self._embedded_enabled(purpose=purpose) or self._state is None:
@@ -3608,13 +3723,17 @@ class MapBoxDisplayWidget(QWidget):
                 return self._raw_map_cache[raw_cache_key]
         smap = None
         if source_mode in {"auto", "filesystem"}:
-            path = (self._state.map_files or {}).get(map_key) if self._state is not None else None
-            if path:
-                smap = load_sunpy_map_compat(path)
-                if map_key in _HMI_VECTOR_SEGMENTS:
-                    smap = self._submap_to_geometry_fov(smap)
-        # Filesystem mode still falls back to embedded products when this map
-        # id has no on-disk path (external refmaps saved into the model).
+            for path in self._filesystem_load_candidates(map_key):
+                try:
+                    smap = load_sunpy_map_compat(path)
+                except Exception:
+                    smap = None
+                if smap is not None:
+                    break
+            if smap is not None and map_key in _HMI_VECTOR_SEGMENTS:
+                smap = self._submap_to_geometry_fov(smap)
+        # Filesystem mode still falls back to the embedded crop when no source
+        # FITS resolves (external refmaps saved into the model).
         if smap is None and (source_mode in {"auto", "embedded", "filesystem"} or purpose == "bottom"):
             smap = self._load_embedded_base_map(
                 map_key,
