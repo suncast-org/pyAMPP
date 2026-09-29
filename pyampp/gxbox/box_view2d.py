@@ -3613,7 +3613,9 @@ class MapBoxDisplayWidget(QWidget):
                 smap = load_sunpy_map_compat(path)
                 if map_key in _HMI_VECTOR_SEGMENTS:
                     smap = self._submap_to_geometry_fov(smap)
-        if smap is None and (source_mode in {"auto", "embedded"} or purpose == "bottom"):
+        # Filesystem mode still falls back to embedded products when this map
+        # id has no on-disk path (external refmaps saved into the model).
+        if smap is None and (source_mode in {"auto", "embedded", "filesystem"} or purpose == "bottom"):
             smap = self._load_embedded_base_map(
                 map_key,
                 purpose=purpose,

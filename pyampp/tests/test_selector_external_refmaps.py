@@ -739,6 +739,33 @@ def test_bottom_map_loads_from_embedded_base_maps_in_filesystem_mode():
     embed_mock.assert_called_once()
 
 
+def test_context_map_falls_back_to_embedded_refmap_in_filesystem_mode():
+    from types import SimpleNamespace
+
+    widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
+    widget._state = SimpleNamespace(
+        map_source_mode="filesystem",
+        map_files={"171": "/tmp/aia171.fits"},
+        base_maps={},
+        refmaps={"20120712_044615_n4euA": {"data": np.ones((2, 2))}},
+        base_geometry=None,
+        geometry=None,
+    )
+    widget._cache_lock = __import__("threading").Lock()
+    widget._raw_map_cache = {}
+    loaded = SimpleNamespace(data=np.zeros((2, 2)))
+
+    with patch.object(MapBoxDisplayWidget, "_load_embedded_refmap", return_value=loaded) as embed_mock:
+        out = widget._load_raw_map_for_source_mode(
+            "20120712_044615_n4euA",
+            "filesystem",
+            purpose="context",
+        )
+
+    assert out is loaded
+    embed_mock.assert_called_once()
+
+
 def test_context_map_change_recomputes_view_instead_of_preserving_pixels():
     widget = MapBoxDisplayWidget.__new__(MapBoxDisplayWidget)
     widget._state = SimpleNamespace(selected_context_id="171")
