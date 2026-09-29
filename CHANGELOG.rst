@@ -20,6 +20,13 @@ Unreleased
   that crop selects Map Source Embedded. Older embeds without ``SRC_PATH``
   keep the crop until Add Reference Maps or ``--refmaps-path`` re-embeds
   them on save.
+- ``target_fov`` and ``target_template`` on ``build_fits_refmaps_for_model``
+  and ``build_refmap_payload_for_model`` now raise. Callers must use
+  ``box_corners_world``.
+- ``SRC_PATH`` and ``SRC_ROOT`` are ordinary 8-character FITS keys.
+  ``SRC_RELPATH`` is stored as a HIERARCH card.
+- The combined embed AIA + STEREO, reload H5, display-at-context-anchor
+  check remains a manual GUI exercise. Unit tests cover the pieces.
 - Reproject cross-observer helioprojective maps through the masked display
   pipeline at that time anchor.
 - Keep the session FOV fixed when the display observer changes. Save / Apply
