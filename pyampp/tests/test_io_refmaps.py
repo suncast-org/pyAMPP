@@ -372,6 +372,20 @@ def test_remove_refmaps_from_h5_missing_ok(tmp_path):
         remove_refmaps_from_h5(model, ["missing"], missing_ok=False)
 
 
+def test_remove_refmaps_from_h5_strict_is_atomic(tmp_path):
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+    with h5py.File(model, "r+") as h5f:
+        _write_stereo_refmap_group(h5f["refmaps"], "stereo304")
+
+    # Existing id sorts before the missing one; a non-atomic loop would delete
+    # stereo304 before raising.
+    with pytest.raises(KeyError, match="refmap not found"):
+        remove_refmaps_from_h5(model, ["stereo304", "missing"], missing_ok=False)
+
+    assert list_embedded_refmap_ids(model) == ["Bz_reference", "stereo304"]
+
+
 def test_refmap_source_cards_record_relative_root_and_absolute_fallback(tmp_path):
     from pyampp.io.refmaps import (
         REFMAP_SRC_ROOT_DATA_DIR,

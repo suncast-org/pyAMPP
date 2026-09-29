@@ -242,7 +242,8 @@ def remove_refmaps_from_h5(
         Delete refmaps whose embedded WCS header matches this telescope token.
     missing_ok
         When false, raise ``KeyError`` if a requested refmap id is absent or if
-        ``refmaps/`` does not exist.
+        ``refmaps/`` does not exist. Validation runs before any deletion so a
+        strict miss leaves the file unchanged.
 
     Returns
     -------
@@ -277,11 +278,14 @@ def remove_refmaps_from_h5(
         else:
             ids_to_remove = sorted({_sanitize_map_id(item) for item in map_ids or ()})
 
+        if not missing_ok:
+            missing = [map_id for map_id in ids_to_remove if map_id not in refmaps]
+            if missing:
+                raise KeyError(f"refmap not found: refmaps/{missing[0]}")
+
         removed: list[RemovedRefmap] = []
         for map_id in ids_to_remove:
             if map_id not in refmaps:
-                if not missing_ok:
-                    raise KeyError(f"refmap not found: refmaps/{map_id}")
                 continue
             del refmaps[map_id]
             removed.append(RemovedRefmap(map_id=map_id))

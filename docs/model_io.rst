@@ -94,7 +94,7 @@ Reference-Map Import API
 ------------------------
 
 External FITS context maps should be imported through ``pyampp.io.refmaps``.
-This keeps instrument identification, model-time alignment, and HDF5 layout in
+This keeps instrument identification, spatial embed cropping, and HDF5 layout in
 one public API used by both ``gx-fov2box`` and the viewer tools.
 
 Typical in-place HDF5 import:
@@ -122,9 +122,10 @@ Policy:
   receive sanitized filename-based ids.
 - The model time is inferred from ``base/index`` via
   ``model_obstime_from_base_index``.
-- Earth/SDO line-of-sight maps are time-aligned and reprojected to the selected
-  model reference-map footprint. Non-Earth maps are stored with their native
-  WCS footprint.
+- Every embed is a spatial crop at the map's native observer and ``DATE-OBS``
+  (``PYALIGN=False``). Callers pass ``box_corners_world`` (or ``model=...``);
+  ``target_fov`` / ``target_template`` raise. Display-time alignment and
+  cross-observer reprojection happen in the viewer, not at embed time.
 
 Runtime Enforcement Policy
 --------------------------

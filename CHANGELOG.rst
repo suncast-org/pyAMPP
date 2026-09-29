@@ -28,6 +28,10 @@ Unreleased
   height above the surface origin, matching the viewer box.
 - ``remove_refmaps_from_h5(telescope=...)`` rejects an empty telescope token
   instead of deleting every embedded refmap.
+- ``remove_refmaps_from_h5(..., missing_ok=False)`` validates all requested
+  ids before deleting any group, so a strict miss leaves the HDF5 unchanged.
+- ``pyampp.io`` loads ``refmap_crop`` lazily so importing ``gx_fov2box`` (or
+  ``from pyampp.io import load_model``) no longer hits a circular import.
 - ``SRC_PATH`` and ``SRC_ROOT`` are ordinary 8-character FITS keys.
   ``SRC_RELPATH`` is stored as a HIERARCH card.
 - The combined embed AIA + STEREO, reload H5, display-at-context-anchor
