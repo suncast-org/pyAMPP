@@ -179,12 +179,24 @@ _patch_pyamafil_mag_field_wrapper_for_legacy_libraries()
 
 
 def _spherical_screen_context_for_observer(observer):
+    """Screen for off-disk HPC points only.
+
+    On-disk coordinates stay on the solar surface. A screen centered on the
+    other spacecraft otherwise maps an Earth-disk pixel to a huge Tx/Ty and
+    the cross-observer limb mask blanks the whole image.
+    """
     if hasattr(Helioprojective, "assume_spherical_screen"):
-        return Helioprojective.assume_spherical_screen(observer)
+        try:
+            return Helioprojective.assume_spherical_screen(observer, only_off_disk=True)
+        except TypeError:
+            return Helioprojective.assume_spherical_screen(observer)
     try:
         from sunpy.coordinates.screens import SphericalScreen
 
-        return SphericalScreen(observer)
+        try:
+            return SphericalScreen(observer, only_off_disk=True)
+        except TypeError:
+            return SphericalScreen(observer)
     except Exception:
         return contextlib.nullcontext()
 

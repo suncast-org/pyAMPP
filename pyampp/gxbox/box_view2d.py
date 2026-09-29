@@ -5153,6 +5153,19 @@ class MapBoxDisplayWidget(QWidget):
         ax.set_ylim((cy - half_h, cy + half_h) if y_dir > 0 else (cy + half_h, cy - half_h))
         self._canvas.draw_idle()
 
+    def _pixel_center_is_near_map(self, cx: float, cy: float) -> bool:
+        smap = getattr(self, "_current_map", None)
+        if smap is None:
+            return True
+        try:
+            ny, nx = np.asarray(smap.data).shape[:2]
+        except Exception:
+            return True
+        if nx <= 0 or ny <= 0:
+            return True
+        margin = 0.5 * float(max(nx, ny))
+        return (-margin <= float(cx) <= float(nx) + margin) and (-margin <= float(cy) <= float(ny) + margin)
+
     def _set_view_to_projected_fov(self, pad_factor: float = 1.10) -> None:
         if self._current_axes is None:
             return
@@ -5165,11 +5178,21 @@ class MapBoxDisplayWidget(QWidget):
         height = float(rect.get_height())
         if not (np.isfinite(x0) and np.isfinite(y0) and np.isfinite(width) and np.isfinite(height)):
             return
+        # A far-side or off-limb corner cluster is only a pixel or two, often
+        # outside the array. Expanding that to the 4-pixel floor zooms the
+        # axes to a couple of arcsec of black sky (seen near -1045" for the
+        # 2012-07-12 STEREO-A EUVI). Keep the plotted map extent instead.
+        if width < 4.0 or height < 4.0:
+            return
+        cx = x0 + 0.5 * float(rect.get_width())
+        cy = y0 + 0.5 * float(rect.get_height())
+        if not self._pixel_center_is_near_map(cx, cy):
+            return
         width = max(width * float(pad_factor), 4.0)
         height = max(height * float(pad_factor), 4.0)
         self._set_view_window(
-            cx=x0 + 0.5 * float(rect.get_width()),
-            cy=y0 + 0.5 * float(rect.get_height()),
+            cx=cx,
+            cy=cy,
             width=width,
             height=height,
         )

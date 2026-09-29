@@ -385,6 +385,34 @@ def test_reproject_map_to_display_observer_fov_uses_roi_header():
     assert reprojected.data.shape[1] >= 8
 
 
+def test_cross_observer_limb_mask_keeps_ondisk_earth_fov():
+    """STEREO-A pixels that land on the Earth disk must survive the limb mask.
+
+    A spherical screen centered on the source spacecraft and applied to on-disk
+    coordinates maps those pixels to Tx/Ty of order 1e5 arcsec, so the mask
+    blanks the whole Earth FOV.
+    """
+    date_obs = "2012-07-12T04:46:15.006"
+    smap = _stereo_map(size=64, scale=40.0, date_obs=date_obs)
+    earth = get_earth(Time(date_obs))
+    fov = {
+        "xc_arcsec": 0.0,
+        "yc_arcsec": 0.0,
+        "xsize_arcsec": 400.0,
+        "ysize_arcsec": 400.0,
+    }
+    masked = reproject_map_to_target_observer_fov(
+        smap,
+        target_fov=fov,
+        target_observer=earth,
+        target_obstime=smap.date,
+        mask_off_limb=True,
+        algorithm="interpolation",
+    )
+    finite = np.isfinite(np.asarray(masked.data, dtype=float))
+    assert float(finite.mean()) > 0.5
+
+
 def test_reproject_map_to_target_observer_fov_masks_off_limb_pixels():
     box, model_time, earth = _make_model_box()
     world = box.model_box_corners_world()
