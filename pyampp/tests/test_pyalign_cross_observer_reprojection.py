@@ -37,16 +37,17 @@ from pyampp.gxbox.selector_api import DisplayFovSelection
 _OBS_TIME = "2026-04-03T19:46:37.800"
 _MODEL_FOV = DisplayFovSelection(-0.0, 225.83, 665.20, 665.20)
 # Fixed STEREO-A ephemeris (matches selector regression FITS headers; no Horizons).
+# DSUN_OBS in those headers is meters, the FITS convention.
 _STEREO_A_HGLN_DEG = 54.3710463167
 _STEREO_A_HGLT_DEG = -0.875478602937
-_STEREO_A_DSUN_CM = 1.496e11
+_STEREO_A_DSUN_M = 1.496e11
 
 
 def _stereo_a_observer(when: Time) -> SkyCoord:
     return SkyCoord(
         lon=_STEREO_A_HGLN_DEG * u.deg,
         lat=_STEREO_A_HGLT_DEG * u.deg,
-        radius=_STEREO_A_DSUN_CM * u.cm,
+        radius=_STEREO_A_DSUN_M * u.m,
         frame=HeliographicStonyhurst(obstime=when),
     )
 

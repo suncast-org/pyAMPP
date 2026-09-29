@@ -82,13 +82,14 @@ REFMAP_SRC_RELPATH_KEY = "SRC_RELPATH"
 REFMAP_SRC_ROOT_KEY = "SRC_ROOT"
 REFMAP_SRC_ROOT_DATA_DIR = "data-dir"
 REFMAP_SRC_ROOT_MODEL_DIR = "model-dir"
+_CROP_REFMAP_IGNORED = object()
 
 
 def add_fits_refmaps_to_h5(
     h5_path: PathLike,
     fits_paths: Iterable[PathLike],
     *,
-    crop_refmap: str | None = "Bz_reference",
+    crop_refmap: str | None = _CROP_REFMAP_IGNORED,
     map_ids: Mapping[PathLike, str] | Sequence[str] | MapIdFactory | None = None,
     overwrite: bool = False,
 ) -> list[AddedRefmap]:
@@ -101,9 +102,8 @@ def add_fits_refmaps_to_h5(
     fits_paths
         External FITS file paths to add.
     crop_refmap
-        Existing refmap whose WCS footprint is used as the alignment target
-        for Earth-line-of-sight maps. Use ``None`` to embed maps without a
-        model-FOV target.
+        Deprecated and ignored. Embeds are cropped from model box corners.
+        Passing this argument emits ``DeprecationWarning``.
     map_ids
         Optional map-id source. This can be a mapping from path to id, a
         sequence aligned with ``fits_paths``, or a callable ``(path, sunpy_map)
@@ -116,6 +116,14 @@ def add_fits_refmaps_to_h5(
     list[AddedRefmap]
         One summary entry per embedded FITS file.
     """
+
+    if crop_refmap is not _CROP_REFMAP_IGNORED:
+        warnings.warn(
+            "crop_refmap is ignored; refmaps are cropped from model box corners. "
+            "Stop passing crop_refmap.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     h5_path = Path(h5_path)
     paths = [Path(p) for p in fits_paths]
@@ -172,7 +180,7 @@ def add_fits_refmaps_from_dir_to_h5(
     *,
     pattern: str | None = None,
     recursive: bool = False,
-    crop_refmap: str | None = "Bz_reference",
+    crop_refmap: str | None = _CROP_REFMAP_IGNORED,
     map_ids: Mapping[PathLike, str] | Sequence[str] | MapIdFactory | None = None,
     overwrite: bool = False,
 ) -> list[AddedRefmap]:
@@ -188,13 +196,10 @@ def add_fits_refmaps_from_dir_to_h5(
     else:
         globber = fits_dir.rglob if recursive else fits_dir.glob
         paths = sorted(p for p in globber(pattern) if p.is_file())
-    return add_fits_refmaps_to_h5(
-        h5_path,
-        paths,
-        crop_refmap=crop_refmap,
-        map_ids=map_ids,
-        overwrite=overwrite,
-    )
+    kwargs: dict[str, Any] = {"map_ids": map_ids, "overwrite": overwrite}
+    if crop_refmap is not _CROP_REFMAP_IGNORED:
+        kwargs["crop_refmap"] = crop_refmap
+    return add_fits_refmaps_to_h5(h5_path, paths, **kwargs)
 
 
 def list_embedded_refmap_ids(h5_path: PathLike) -> list[str]:
@@ -260,6 +265,8 @@ def remove_refmaps_from_h5(
             ids_to_remove = sorted(str(name) for name in refmaps.keys())
         elif telescope is not None:
             token = str(telescope).strip().upper()
+            if not token:
+                raise ValueError("telescope token must be non-empty")
             ids_to_remove = []
             for name in refmaps:
                 header = _refmap_header_from_group(refmaps[name])
@@ -526,18 +533,18 @@ def _model_context_from_open_h5(h5f: h5py.Group) -> dict[str, Any]:
     metadata = h5f.get("metadata")
     if isinstance(metadata, h5py.Group):
         ctx["metadata"] = {}
-        contract = metadata.get("geometry_contract")
-        if isinstance(contract, h5py.Group):
-            contract_data = {}
-            for key in contract.keys():
-                value = contract[key][()]
-                if isinstance(value, (bytes, np.bytes_)):
-                    value = value.decode("utf-8", "ignore")
-                contract_data[key] = value
-            ctx["metadata"]["geometry_contract"] = contract_data
-        else:
-            for key in metadata.keys():
-                value = metadata[key][()]
+        for key in metadata.keys():
+            item = metadata[key]
+            if isinstance(item, h5py.Group):
+                group_data = {}
+                for subkey in item.keys():
+                    value = item[subkey][()]
+                    if isinstance(value, (bytes, np.bytes_)):
+                        value = value.decode("utf-8", "ignore")
+                    group_data[subkey] = value
+                ctx["metadata"][key] = group_data
+            else:
+                value = item[()]
                 if isinstance(value, (bytes, np.bytes_)):
                     value = value.decode("utf-8", "ignore")
                 ctx["metadata"][key] = value

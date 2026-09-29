@@ -12,7 +12,13 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
-from sunpy.coordinates import Heliocentric, HeliographicStonyhurst, Helioprojective, get_earth
+from sunpy.coordinates import (
+    Heliocentric,
+    HeliographicCarrington,
+    HeliographicStonyhurst,
+    Helioprojective,
+    get_earth,
+)
 from astropy.time import Time
 from PyQt5.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox, QWidget
 
@@ -473,7 +479,10 @@ def _box_corners_world_from_selector_geometry(
     box_res = geometry.dx_km * u.km
     frame_hcc = Heliocentric(observer=box_origin, obstime=when)
     box_center = box_origin.transform_to(frame_hcc)
-    center_z = box_center.z + (box_dims[2] / u.pix * box_res.to(u.Mm))
+    # Box treats box_center as the geometric center, so lift the surface
+    # origin by half the model height (same construction as the viewer).
+    box_height = (box_dims[2] / u.pix) * box_res.to(u.Mm)
+    center_z = box_center.z + box_height / 2
     box_center = SkyCoord(
         x=box_center.x,
         y=box_center.y,

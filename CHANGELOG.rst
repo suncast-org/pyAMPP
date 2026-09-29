@@ -22,7 +22,12 @@ Unreleased
   them on save.
 - ``target_fov`` and ``target_template`` on ``build_fits_refmaps_for_model``
   and ``build_refmap_payload_for_model`` now raise. Callers must use
-  ``box_corners_world``.
+  ``box_corners_world``. ``crop_refmap`` on ``add_fits_refmaps_to_h5`` is
+  ignored and warns; embeds crop from model box corners.
+- Selector fallback box corners place the geometric center half a model
+  height above the surface origin, matching the viewer box.
+- ``remove_refmaps_from_h5(telescope=...)`` rejects an empty telescope token
+  instead of deleting every embedded refmap.
 - ``SRC_PATH`` and ``SRC_ROOT`` are ordinary 8-character FITS keys.
   ``SRC_RELPATH`` is stored as a HIERARCH card.
 - The combined embed AIA + STEREO, reload H5, display-at-context-anchor

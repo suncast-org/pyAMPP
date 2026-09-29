@@ -729,7 +729,11 @@ class FovBoxSelectorDialog(QDialog):
             self.context_map_combo.addItem(self._context_display_text(map_id), map_id)
         if context_ids:
             self.context_map_combo.setCurrentIndex(1)
+        selected_context = self.context_map_combo.currentData()
         self.context_map_combo.blockSignals(False)
+        self.map_box_widget.set_context_map_id(
+            str(selected_context) if selected_context else None
+        )
 
         if self.map_source_combo.findData("filesystem") >= 0:
             self.map_source_combo.blockSignals(True)

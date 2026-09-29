@@ -308,6 +308,59 @@ def test_remove_refmaps_from_h5_remove_all(tmp_path):
     assert list_embedded_refmap_ids(model) == []
 
 
+def test_remove_refmaps_from_h5_empty_telescope_raises(tmp_path):
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+    with h5py.File(model, "r+") as h5f:
+        _write_stereo_refmap_group(h5f["refmaps"], "stereo304")
+
+    with pytest.raises(ValueError, match="non-empty"):
+        remove_refmaps_from_h5(model, telescope="")
+    with pytest.raises(ValueError, match="non-empty"):
+        remove_refmaps_from_h5(model, telescope="   ")
+
+    assert list_embedded_refmap_ids(model) == ["Bz_reference", "stereo304"]
+
+
+def test_crop_refmap_argument_warns_and_default_is_silent(tmp_path):
+    import warnings
+
+    model = tmp_path / "model.h5"
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        assert add_fits_refmaps_to_h5(model, []) == []
+        assert add_fits_refmaps_from_dir_to_h5(model, empty_dir) == []
+
+    with pytest.warns(DeprecationWarning, match="crop_refmap is ignored"):
+        assert add_fits_refmaps_to_h5(model, [], crop_refmap="Bz_reference") == []
+    with pytest.warns(DeprecationWarning, match="crop_refmap is ignored"):
+        assert add_fits_refmaps_from_dir_to_h5(model, empty_dir, crop_refmap=None) == []
+
+
+def test_model_context_keeps_execute_beside_geometry_contract(tmp_path):
+    from pyampp.io.refmaps import _model_context_from_open_h5, _source_roots_from_model_context
+
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+    with h5py.File(model, "r+") as h5f:
+        meta = h5f.create_group("metadata")
+        meta.create_dataset(
+            "execute",
+            data=np.bytes_("gx-fov2box --data-dir /cache --gxmodel-dir /models"),
+        )
+        contract = meta.create_group("geometry_contract")
+        contract.create_dataset("obstime", data=np.bytes_("2026-04-03T19:46:37.800"))
+        ctx = _model_context_from_open_h5(h5f)
+
+    data_dir, gxmodel_dir = _source_roots_from_model_context(ctx)
+    assert data_dir == "/cache"
+    assert gxmodel_dir == "/models"
+    assert ctx["metadata"]["geometry_contract"]["obstime"] == "2026-04-03T19:46:37.800"
+
+
 def test_remove_refmaps_from_h5_missing_ok(tmp_path):
     model = tmp_path / "model.h5"
     _write_refmap_model(model)
