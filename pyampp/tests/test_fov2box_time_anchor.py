@@ -430,6 +430,9 @@ def test_prepare_observation_state_builds_expected_prepared_payload() -> None:
         def bounds_coords_bl_tr(self, pad_frac=0.1):
             return (None, None)
 
+        def model_box_corners_world(self):
+            return "corners"
+
     maps = {
         "field": _MiniMap([[1, 2], [3, 4]]),
         "inclination": _MiniMap([[0, 0], [0, 0]]),
@@ -457,6 +460,13 @@ def test_prepare_observation_state_builds_expected_prepared_payload() -> None:
         gx_fov2box, "_format_coord_tag", return_value="TAG"
     ), patch.object(
         gx_fov2box, "_observer_metadata_from_source_map", return_value={"observer": "earth"}
+    ), patch.object(
+        gx_fov2box,
+        "build_refmap_payload_for_model",
+        side_effect=lambda smap, **_kwargs: {
+            "data": np.asarray(smap.data),
+            "wcs_header": "SIMPLE  = T\n",
+        },
     ):
         prepared = gx_fov2box._prepare_observation_state(
             cfg,
@@ -534,6 +544,9 @@ def test_refmaps_path_external_refmaps_saved_in_none_stage_h5(tmp_path) -> None:
         def bounds_coords_bl_tr(self, pad_frac=0.1):
             return (None, None)
 
+        def model_box_corners_world(self):
+            return "corners"
+
     maps = {
         "field": _MiniMap([[1, 2], [3, 4]]),
         "inclination": _MiniMap([[0, 0], [0, 0]]),
@@ -576,6 +589,13 @@ def test_refmaps_path_external_refmaps_saved_in_none_stage_h5(tmp_path) -> None:
         gx_fov2box, "_format_coord_tag", return_value="TAG"
     ), patch.object(
         gx_fov2box, "_observer_metadata_from_source_map", return_value={"observer": "earth"}
+    ), patch.object(
+        gx_fov2box,
+        "build_refmap_payload_for_model",
+        side_effect=lambda smap, **_kwargs: {
+            "data": np.asarray(smap.data),
+            "wcs_header": "SIMPLE  = T\n",
+        },
     ), patch.object(
         gx_fov2box,
         "build_fits_refmaps_for_model",

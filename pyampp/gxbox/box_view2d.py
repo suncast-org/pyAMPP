@@ -5275,7 +5275,9 @@ class MapBoxDisplayWidget(QWidget):
         self._canvas.draw_idle()
 
     def _pixel_center_is_near_map(self, cx: float, cy: float) -> bool:
-        smap = getattr(self, "_current_map", None)
+        # Read the instance dict. getattr() on a QWidget constructed with
+        # __new__ (unit tests) raises before __init__ has run.
+        smap = self.__dict__.get("_current_map")
         if smap is None:
             return True
         try:
