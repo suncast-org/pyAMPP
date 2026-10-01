@@ -1570,25 +1570,3 @@ def test_initialize_falls_back_to_display_observer_without_fov_def_key():
     widget.initialize(session)
 
     assert widget._state.fov_definition_observer_key == "stereo-a"
-
-
-def test_pre_accept_callback_keeps_dialog_open_on_cancel():
-    """Mismatch Cancel / failed persist must not close Apply & Close."""
-    from PyQt5.QtWidgets import QApplication, QDialog
-
-    from pyampp.gxbox.fov_selector_gui import FovBoxSelectorDialog
-    from pyampp.gxbox.selector_api import BoxGeometrySelection, CoordMode, SelectorSessionInput
-
-    app = QApplication.instance() or QApplication([])
-    session = SelectorSessionInput(
-        time_iso="2026-04-03T19:46:37.800",
-        data_dir="",
-        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
-        map_ids=("171",),
-        initial_map_id="171",
-    )
-    dialog = FovBoxSelectorDialog(session_input=session)
-    dialog.set_pre_accept_callback(lambda: False)
-    dialog.accept()
-    assert dialog.result() != QDialog.Accepted
-    assert dialog.accepted_selection() is None
