@@ -32,7 +32,13 @@ from pyampp.io.refmap_crop import (
     project_inscribing_xy_to_observer,
     reproject_map_to_target_observer_fov,
 )
-from pyampp.io.refmap_crop_plots import plot_refmap_crop_diagnostics
+from pyampp.io.refmap_crop_plots import (
+    _compute_viewport,
+    _finer_plate_scale_arcsec_per_pix,
+    _rsun_arcsec_from_map,
+    _viewport_sun_centered,
+    plot_refmap_crop_diagnostics,
+)
 
 
 def _make_model_box() -> tuple[Box, Time, object]:
@@ -53,14 +59,23 @@ def _make_model_box() -> tuple[Box, Time, object]:
     return box, obs_time, observer
 
 
-def _earth_aia_map(*, size: int = 256, scale: float = 4.0, date_obs: str) -> Map:
+def _earth_aia_map(
+    *,
+    size: int = 256,
+    scale: float | tuple[float, float] = 4.0,
+    date_obs: str,
+) -> Map:
     obstime = Time(date_obs)
     earth = get_earth(obstime)
     center = SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=Helioprojective(observer=earth, obstime=obstime))
+    if isinstance(scale, (tuple, list)):
+        sx, sy = float(scale[0]), float(scale[1])
+    else:
+        sx = sy = float(scale)
     header = make_fitswcs_header(
         np.ones((size, size), dtype=np.float32),
         center,
-        scale=u.Quantity([scale, scale], u.arcsec / u.pix),
+        scale=u.Quantity([sx, sy], u.arcsec / u.pix),
         instrument="AIA",
         observatory="SDO",
     )
@@ -373,6 +388,44 @@ def test_plot_refmap_crop_diagnostics_keeps_caller_fits(tmp_path):
     plt = pytest.importorskip("matplotlib.pyplot")
     plt.close(fig)
     assert caller_fits.exists()
+
+
+def test_finer_plate_scale_selects_smaller_axis():
+    smap = _earth_aia_map(date_obs="2026-04-03T19:46:37.800", scale=(2.0, 5.0))
+    assert _finer_plate_scale_arcsec_per_pix(smap) == pytest.approx(2.0)
+
+
+def test_viewport_sun_centered_covers_disk_on_anisotropic_scale():
+    smap = _earth_aia_map(date_obs="2026-04-03T19:46:37.800", scale=(2.0, 5.0), size=2048)
+    rsun = _rsun_arcsec_from_map(smap) or 960.0
+    disk_pad = 1.05
+    half_arcsec = rsun * disk_pad
+    (x0, x1), (y0, y1) = _viewport_sun_centered(smap, disk_pad=disk_pad)
+    half_pix = 0.5 * abs(x1 - x0)
+    # Finer axis is 2"/pix: using coarser 5"/pix would under-size by 2.5×.
+    assert half_pix == pytest.approx(half_arcsec / 2.0, rel=1e-6)
+    assert 0.5 * abs(y1 - y0) == pytest.approx(half_pix, rel=1e-6)
+
+
+def test_compute_viewport_covers_disk_on_anisotropic_scale():
+    smap = _earth_aia_map(date_obs="2026-04-03T19:46:37.800", scale=(2.0, 5.0), size=2048)
+    rsun = _rsun_arcsec_from_map(smap) or 960.0
+    disk_pad = 1.05
+    half_arcsec = rsun * disk_pad
+    box, model_time, earth = _make_model_box()
+    world = box.model_box_corners_world()
+    assert world is not None
+    scene = {
+        "observer": earth,
+        "obstime": model_time,
+        "box_corners_world": world,
+    }
+    (x0, x1), (y0, y1) = _compute_viewport(smap, scene=scene, disk_pad=disk_pad)
+    half_pix = 0.5 * abs(x1 - x0)
+    # Disk half-extent (finer scale) is a lower bound; overlays may expand further.
+    assert half_pix >= half_arcsec / 2.0 - 1e-6
+    assert half_pix > half_arcsec / 5.0
+    assert 0.5 * abs(y1 - y0) == pytest.approx(half_pix, rel=1e-6)
 
 
 def test_compute_crop_fov_uses_map_time_not_model_time_for_stereo():

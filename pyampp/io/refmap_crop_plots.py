@@ -312,6 +312,19 @@ def _reference_frame_legend_labels(display_map: Map, obstime) -> list[str]:
     return labels
 
 
+def _finer_plate_scale_arcsec_per_pix(display_map: Map) -> float:
+    """Smaller positive plate scale so a square angular viewport covers both axes."""
+    try:
+        sx = abs(float(display_map.scale.axis1.to_value(u.arcsec / u.pix)))
+        sy = abs(float(display_map.scale.axis2.to_value(u.arcsec / u.pix)))
+        positive = [s for s in (sx, sy) if s > 0.0]
+        if positive:
+            return float(min(positive))
+    except Exception:
+        pass
+    return 1.0
+
+
 def _viewport_sun_centered(
     display_map: Map,
     *,
@@ -320,12 +333,7 @@ def _viewport_sun_centered(
     """Viewport symmetric about the helioprojective origin (solar disk center)."""
     rsun_arcsec = _rsun_arcsec_from_map(display_map) or 960.0
     half_arcsec = float(rsun_arcsec) * max(float(disk_pad), 1.0)
-    try:
-        sx = abs(float(display_map.scale.axis1.to_value(u.arcsec / u.pix)))
-        sy = abs(float(display_map.scale.axis2.to_value(u.arcsec / u.pix)))
-        scale = max(sx, sy, 1e-6)
-    except Exception:
-        scale = 1.0
+    scale = _finer_plate_scale_arcsec_per_pix(display_map)
     half_pix = half_arcsec / scale
     origin = SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=display_map.coordinate_frame)
     observer = getattr(display_map.coordinate_frame, "observer", None)
@@ -369,13 +377,14 @@ def _viewport_sun_centered_including_scene(
         try:
             sx = abs(float(display_map.scale.axis1.to_value(u.arcsec / u.pix)))
             sy = abs(float(display_map.scale.axis2.to_value(u.arcsec / u.pix)))
-            scale = max(sx, sy, 1e-6)
+            sx = sx if sx > 0.0 else 1e-6
+            sy = sy if sy > 0.0 else 1e-6
             half_w = 0.5 * float(crop_fov["xsize_arcsec"]) * pad
             half_h = 0.5 * float(crop_fov["ysize_arcsec"]) * pad
             xc_arc = float(crop_fov["xc_arcsec"])
             yc_arc = float(crop_fov["yc_arcsec"])
-            half_x = max(half_x, abs(xc_arc) / scale + half_w / scale)
-            half_y = max(half_y, abs(yc_arc) / scale + half_h / scale)
+            half_x = max(half_x, abs(xc_arc) / sx + half_w / sx)
+            half_y = max(half_y, abs(yc_arc) / sy + half_h / sy)
         except Exception:
             pass
     return (cx - half_x, cx + half_x), (cy - half_y, cy + half_y)
@@ -587,12 +596,7 @@ def _compute_viewport(
     overlay_half_y = float(np.nanmax(np.abs(ty))) * overlay_pad if ty.size else 0.0
     half_arcsec = max(disk_half_arcsec, overlay_half_x, overlay_half_y)
 
-    try:
-        sx = abs(float(display_map.scale.axis1.to_value(u.arcsec / u.pix)))
-        sy = abs(float(display_map.scale.axis2.to_value(u.arcsec / u.pix)))
-        scale = max(sx, sy, 1e-6)
-    except Exception:
-        scale = 1.0
+    scale = _finer_plate_scale_arcsec_per_pix(display_map)
     half_pix = half_arcsec / scale
     cx, cy = _disk_center_pixel(display_map)
     return (cx - half_pix, cx + half_pix), (cy - half_pix, cy + half_pix)
