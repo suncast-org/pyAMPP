@@ -531,34 +531,40 @@ def test_cross_observer_limb_mask_keeps_ondisk_earth_fov():
 
 
 def test_reproject_map_to_target_observer_fov_masks_off_limb_pixels():
-    box, model_time, earth = _make_model_box()
-    world = box.model_box_corners_world()
-    smap = _stereo_map(date_obs=model_time.isot)
-    result = crop_refmap_to_model_box(smap, world, pad=1.1, model_obstime=model_time)
-    earth_crop_fov = project_fov_between_observers(
-        result.crop_fov,
-        source_observer=result.map_observer,
-        source_obstime=result.map_obstime,
-        target_observer=earth,
-        target_obstime=result.map_obstime,
-    )
-    assert earth_crop_fov is not None
+    """mask_off_limb must strictly reduce finite pixels vs the unmasked reproject."""
+    date_obs = "2012-07-12T04:46:15.006"
+    smap = _stereo_map(size=64, scale=40.0, date_obs=date_obs)
+    earth = get_earth(Time(date_obs))
+    # Large Earth FOV so some reprojected pixels land off-limb in the STEREO frame.
+    fov = {
+        "xc_arcsec": 0.0,
+        "yc_arcsec": 0.0,
+        "xsize_arcsec": 2200.0,
+        "ysize_arcsec": 2200.0,
+    }
     unmasked = reproject_map_to_target_observer_fov(
-        result.cropped_map,
-        target_fov=earth_crop_fov,
+        smap,
+        target_fov=fov,
         target_observer=earth,
-        target_obstime=result.map_obstime,
+        target_obstime=smap.date,
         mask_off_limb=False,
+        algorithm="interpolation",
     )
     masked = reproject_map_to_target_observer_fov(
-        result.cropped_map,
-        target_fov=earth_crop_fov,
+        smap,
+        target_fov=fov,
         target_observer=earth,
-        target_obstime=result.map_obstime,
+        target_obstime=smap.date,
         mask_off_limb=True,
+        algorithm="interpolation",
     )
-    assert np.sum(np.isfinite(unmasked.data)) >= np.sum(np.isfinite(masked.data))
+    n_unmasked = int(np.sum(np.isfinite(unmasked.data)))
+    n_masked = int(np.sum(np.isfinite(masked.data)))
+    assert n_unmasked > 0
+    assert n_masked < n_unmasked
     assert np.any(~np.isfinite(masked.data))
+    # On-disk Earth pixels must still survive (companion regression).
+    assert float(np.mean(np.isfinite(masked.data))) > 0.3
 
 
 def test_rotate_refmap_for_display_propagates_rotation_failure(monkeypatch):

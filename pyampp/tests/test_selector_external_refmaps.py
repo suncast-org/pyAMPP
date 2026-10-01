@@ -213,6 +213,64 @@ def test_persist_selector_result_embeds_external_refmaps(mock_build, tmp_path):
     assert Path(mock_build.call_args.kwargs["model_dir"]) == out.resolve().parent
 
 
+@patch("pyampp.gxbox.gxbox_selector_view.build_fits_refmaps_for_model")
+def test_persist_selector_result_passes_session_source_roots(mock_build, tmp_path):
+    """Save-time re-embed must use live session data_dir/gxmodel_dir, not only metadata.execute."""
+    from pyampp.gxbox.gxbox_selector_view import _persist_selector_result_to_entry
+    from pyampp.gxbox.selector_api import (
+        BoxGeometrySelection,
+        CoordMode,
+        DisplayFovSelection,
+        SelectorDialogResult,
+        SelectorSessionInput,
+    )
+
+    entry = tmp_path / "model.h5"
+    out = tmp_path / "saved.h5"
+    data_dir = tmp_path / "jsoc_cache"
+    gxmodel_dir = tmp_path / "gxmodels"
+    data_dir.mkdir()
+    gxmodel_dir.mkdir()
+    # No metadata.execute — roots must come from the live session.
+    box_data = {
+        "base": {"index": canonical_base_index_header(date_obs="2026-04-03T19:46:37.800")},
+        "observer": {
+            "name": "earth",
+            "fov": {"xc_arcsec": 0.0, "yc_arcsec": 0.0, "xsize_arcsec": 100.0, "ysize_arcsec": 100.0},
+        },
+        "refmaps": {},
+        "metadata": {},
+    }
+    mock_build.return_value = {"stereo304": {"data": np.ones((4, 4)), "wcs_header": "SIMPLE  = T"}}
+    result = SelectorDialogResult(
+        geometry=BoxGeometrySelection(CoordMode.HPC, 0.0, 0.0, 4, 3, 2, 1400.0),
+        fov=DisplayFovSelection(0.0, 0.0, 100.0, 100.0),
+        square_fov=True,
+    )
+    session = SelectorSessionInput(
+        time_iso="2026-04-03T19:46:37.800",
+        data_dir=str(data_dir),
+        geometry=result.geometry,
+        gxmodel_dir=str(gxmodel_dir),
+    )
+
+    with patch("pyampp.gxbox.gxbox_selector_view.load_model", return_value=box_data), patch(
+        "pyampp.gxbox.gxbox_selector_view.save_model"
+    ):
+        ok = _persist_selector_result_to_entry(
+            entry,
+            result,
+            output_path=out,
+            external_ref_map_paths=("/tmp/stereo",),
+            session_input=session,
+        )
+
+    assert ok is True
+    mock_build.assert_called_once()
+    assert mock_build.call_args.kwargs["data_dir"] == str(data_dir)
+    assert mock_build.call_args.kwargs["gxmodel_dir"] == str(gxmodel_dir)
+
+
 def test_reproject_without_fov_override_uses_full_disk_not_roi():
     from types import SimpleNamespace
     from pyampp.gxbox.box_view2d import MapBoxDisplayWidget

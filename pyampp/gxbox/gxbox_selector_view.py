@@ -919,6 +919,7 @@ def _try_persist_selector_result_to_entry(
                 output_path=output_path,
                 external_ref_map_paths=dialog.external_ref_map_paths(),
                 session_refmaps=dialog.current_session_refmaps(),
+                session_input=dialog._session_input,
             )
 
         display_observer_key = str(
@@ -939,6 +940,7 @@ def _try_persist_selector_result_to_entry(
                 output_path=output_path,
                 external_ref_map_paths=dialog.external_ref_map_paths(),
                 session_refmaps=dialog.current_session_refmaps(),
+                session_input=dialog._session_input,
                 clear_observer_fov=True,
             )
         if not dialog.recompute_fov_for_display_observer():
@@ -961,6 +963,7 @@ def _persist_selector_result_to_entry(
     output_path: Path | None = None,
     external_ref_map_paths: Optional[Sequence[str]] = None,
     session_refmaps: Optional[dict[str, Any]] = None,
+    session_input: SelectorSessionInput | None = None,
     clear_observer_fov: bool = False,
 ) -> bool:
     dest = output_path or entry_path
@@ -1151,6 +1154,7 @@ def _persist_selector_result_to_entry(
     _embed_external_refmaps_into_box_data(
         box_data,
         external_ref_map_paths,
+        session_input=session_input,
         geometry=result.geometry,
         overwrite=True,
         model_path=dest,
