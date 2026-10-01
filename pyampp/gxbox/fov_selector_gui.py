@@ -146,6 +146,7 @@ class FovBoxSelectorDialog(QDialog):
         super().__init__(parent)
         self._session_input = session_input
         self._accepted_selection: Optional[SelectorDialogResult] = None
+        self._pre_accept_callback = None
         self._entry_box_path = Path(entry_box_path).expanduser().resolve() if entry_box_path else None
         self._pending_session_input: Optional[SelectorSessionInput] = session_input
         self._session_loaded = False
@@ -510,6 +511,14 @@ class FovBoxSelectorDialog(QDialog):
             pass
         if callback is not None:
             self._save_as_button.clicked.connect(callback)
+
+    def set_pre_accept_callback(self, callback) -> None:
+        """Run ``callback()`` before closing; keep the dialog open when it returns False.
+
+        Use this when Apply & Close must persist (and possibly prompt) while the
+        editor is still visible. A false return aborts ``accept()``.
+        """
+        self._pre_accept_callback = callback
 
     def _start_observer_availability_scan(self, session_input: SelectorSessionInput) -> None:
         observer_keys = tuple(key for key, _label in self.map_box_widget.observer_options())
@@ -1218,6 +1227,13 @@ class FovBoxSelectorDialog(QDialog):
         return super().eventFilter(obj, event)
 
     def accept(self) -> None:
+        if callable(self._pre_accept_callback):
+            try:
+                allowed = bool(self._pre_accept_callback())
+            except Exception:
+                allowed = False
+            if not allowed:
+                return
         self._push_form_to_view_state()
         self._commit_pending_observer_state()
         export_fov = self.map_box_widget.exportable_fov_selection()

@@ -434,3 +434,27 @@ def test_refmap_source_cards_record_relative_root_and_absolute_fallback(tmp_path
         data_dir=data_dir,
         model_dir=model_dir,
     ) == orphan.resolve()
+
+
+def test_existing_file_under_rejects_path_escape(tmp_path):
+    from pyampp.io.refmaps import (
+        REFMAP_SRC_ROOT_DATA_DIR,
+        _existing_file_under,
+        resolve_embedded_refmap_source,
+    )
+
+    root = tmp_path / "data"
+    root.mkdir()
+    inside = root / "ok.fits"
+    inside.write_bytes(b"fits")
+    outside = tmp_path / "secret.fits"
+    outside.write_bytes(b"fits")
+
+    assert _existing_file_under(root, "ok.fits") == inside.resolve()
+    assert _existing_file_under(root, "../secret.fits") is None
+    assert _existing_file_under(root, str(outside)) is None
+
+    header = fits.Header()
+    header["SRC_ROOT"] = REFMAP_SRC_ROOT_DATA_DIR
+    header["SRC_RELPATH"] = "../secret.fits"
+    assert resolve_embedded_refmap_source(header, data_dir=root) is None

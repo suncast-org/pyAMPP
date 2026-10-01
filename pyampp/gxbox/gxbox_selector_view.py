@@ -20,7 +20,7 @@ from sunpy.coordinates import (
     get_earth,
 )
 from astropy.time import Time
-from PyQt5.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox, QWidget
+from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox, QWidget
 
 from pyampp.data.downloader import SDOImageDownloader
 from pyampp.gxbox.fov_selector_gui import FovBoxSelectorDialog
@@ -1234,12 +1234,8 @@ def main() -> int:
     dialog.set_save_as_callback(_on_save_as_clicked, text="Save As")
     dialog.set_accept_button_text("Apply && Close")
 
-    def _persist_result_if_needed() -> None:
-        if dialog.result() != QDialog.Accepted:
-            return
-        result = dialog.accepted_selection()
-        if result is None:
-            return
+    def _persist_before_close() -> bool:
+        """Persist while the dialog is still open; False keeps the editor open."""
         if entry_path.suffix.lower() != ".h5":
             btn = QMessageBox.question(
                 dialog,
@@ -1250,49 +1246,49 @@ def main() -> int:
                 QMessageBox.Save,
             )
             if btn != QMessageBox.Save:
-                return
+                # User chose to close without writing; allow accept.
+                return True
             out_path = _pick_save_as_h5_path(
                 dialog,
                 default_stem=entry_path.stem,
             )
             if out_path is None:
-                return
+                return False
             try:
-                ok = _try_persist_selector_result_to_entry(
-                    dialog,
-                    entry_path,
-                    output_path=out_path,
+                return bool(
+                    _try_persist_selector_result_to_entry(
+                        dialog,
+                        entry_path,
+                        output_path=out_path,
+                    )
                 )
-                if not ok:
-                    return
             except Exception as exc:
                 QMessageBox.warning(
                     dialog,
                     "Save Failed",
                     f"Failed to save model to {out_path}:\n{exc}",
                 )
-            return
+                return False
         try:
-            ok = _try_persist_selector_result_to_entry(dialog, entry_path)
-            if not ok:
-                return
+            return bool(_try_persist_selector_result_to_entry(dialog, entry_path))
         except Exception as exc:
             QMessageBox.warning(
                 dialog,
                 "Save Failed",
                 f"Failed to write updated observer FOV metadata:\n{exc}",
             )
+            return False
+
+    dialog.set_pre_accept_callback(_persist_before_close)
 
     if owns_app:
-        dialog.finished.connect(lambda _code: (_persist_result_if_needed(), app.quit()))
+        dialog.finished.connect(lambda _code: app.quit())
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
         app.exec_()
     else:
-        accepted = dialog.exec_() == QDialog.Accepted
-        if accepted:
-            _persist_result_if_needed()
+        dialog.exec_()
     return 0
 
 

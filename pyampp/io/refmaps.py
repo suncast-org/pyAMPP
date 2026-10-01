@@ -735,6 +735,11 @@ def _existing_file_under(root: PathLike | None, relative: str) -> Path | None:
         candidate = (base / relative).resolve()
     except Exception:
         return None
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        # Absolute paths or ``../`` segments must not escape the configured root.
+        return None
     if candidate.is_file():
         return candidate
     return None
