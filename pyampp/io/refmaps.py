@@ -517,6 +517,17 @@ def box_corners_world_from_model(
     return world
 
 
+@dataclass(frozen=True)
+class _ArrayShapeProxy:
+    """Shape-only stand-in for a large array (geometry inference never reads values)."""
+
+    shape: tuple[int, ...]
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+
 def _model_context_from_open_h5(h5f: h5py.Group) -> dict[str, Any]:
     ctx: dict[str, Any] = {}
     base = h5f.get("base")
@@ -532,7 +543,8 @@ def _model_context_from_open_h5(h5f: h5py.Group) -> dict[str, Any]:
             ctx["corona"]["dr"] = np.asarray(corona["dr"])
         for key in ("bx", "by", "bz"):
             if key in corona:
-                ctx["corona"][key] = np.asarray(corona[key])
+                # Keep shape only — do not materialize the magnetic cube.
+                ctx["corona"][key] = _ArrayShapeProxy(tuple(corona[key].shape))
                 break
     metadata = h5f.get("metadata")
     if isinstance(metadata, h5py.Group):

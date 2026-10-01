@@ -20,6 +20,7 @@ from pyampp.io.refmap_crop import (
     compute_inscribing_fov_box_for_observer,
     crop_fov_at_model_times,
     crop_fov_xy_from_inscribing_box,
+    crop_refmap_spatial,
     crop_refmap_to_model_box,
     crop_refmap_to_model_box_after_pangle_rotation,
     display_observer_reproject_header_for_fov,
@@ -463,4 +464,82 @@ def test_rotate_refmap_for_display_propagates_rotation_failure(monkeypatch):
             _make_model_box()[0].model_box_corners_world(),
             pad=1.1,
             model_obstime=Time("2026-04-03T19:46:37.800"),
+        )
+
+
+def test_crop_refmap_spatial_auto_skips_rotate_when_crota_near_zero(monkeypatch):
+    """auto policy must read CROTA2 via meta mapping and honor pangle_rotated."""
+    import pyampp.io.refmap_crop as crop_mod
+
+    smap = _earth_aia_map(date_obs="2026-04-03T19:46:37.800")
+    smap.meta["CROTA2"] = 0.05
+    box, obs_time, _ = _make_model_box()
+    corners = box.model_box_corners_world()
+
+    calls = {"rotate_path": 0, "plain_path": 0}
+    real_plain = crop_mod.crop_refmap_to_model_box
+    real_rot = crop_mod.crop_refmap_to_model_box_after_pangle_rotation
+
+    def _plain(*args, **kwargs):
+        calls["plain_path"] += 1
+        return real_plain(*args, **kwargs)
+
+    def _rot(*args, **kwargs):
+        calls["rotate_path"] += 1
+        return real_rot(*args, **kwargs)
+
+    monkeypatch.setattr(crop_mod, "crop_refmap_to_model_box", _plain)
+    monkeypatch.setattr(crop_mod, "crop_refmap_to_model_box_after_pangle_rotation", _rot)
+
+    result = crop_refmap_spatial(
+        smap=smap,
+        box_corners_world=corners,
+        model_obstime=obs_time,
+        pangle_policy="auto",
+    )
+    assert result.pangle_rotated is False
+    assert result.pangle_value_deg == pytest.approx(0.05)
+    assert calls["plain_path"] == 1
+    assert calls["rotate_path"] == 0
+    assert int(result.cropped_map.meta["pyampp_crop_pangle_rotated"]) == 0
+
+
+def test_crop_refmap_spatial_auto_rotates_when_crota_nonzero(monkeypatch):
+    import pyampp.io.refmap_crop as crop_mod
+
+    smap = _earth_aia_map(date_obs="2026-04-03T19:46:37.800")
+    smap.meta["CROTA2"] = 12.5
+    box, obs_time, _ = _make_model_box()
+    corners = box.model_box_corners_world()
+
+    calls = {"rotate_path": 0}
+    real_rot = crop_mod.crop_refmap_to_model_box_after_pangle_rotation
+
+    def _rot(*args, **kwargs):
+        calls["rotate_path"] += 1
+        return real_rot(*args, **kwargs)
+
+    monkeypatch.setattr(crop_mod, "crop_refmap_to_model_box_after_pangle_rotation", _rot)
+
+    result = crop_refmap_spatial(
+        smap=smap,
+        box_corners_world=corners,
+        model_obstime=obs_time,
+        pangle_policy="auto",
+    )
+    assert result.pangle_rotated is True
+    assert result.pangle_value_deg == pytest.approx(12.5)
+    assert calls["rotate_path"] == 1
+    assert int(result.cropped_map.meta["pyampp_crop_pangle_rotated"]) == 1
+
+
+def test_crop_refmap_spatial_rejects_unknown_pangle_policy():
+    smap = _earth_aia_map(date_obs="2026-04-03T19:46:37.800")
+    box, obs_time, _ = _make_model_box()
+    with pytest.raises(ValueError, match="Unsupported pangle_policy"):
+        crop_refmap_spatial(
+            smap=smap,
+            box_corners_world=box.model_box_corners_world(),
+            model_obstime=obs_time,
+            pangle_policy="sometimes",
         )

@@ -361,6 +361,22 @@ def test_model_context_keeps_execute_beside_geometry_contract(tmp_path):
     assert ctx["metadata"]["geometry_contract"]["obstime"] == "2026-04-03T19:46:37.800"
 
 
+def test_model_context_keeps_field_shape_without_materializing_cube(tmp_path):
+    from pyampp.geometry.contract import infer_box_dims
+    from pyampp.io.refmaps import _ArrayShapeProxy, _model_context_from_open_h5
+
+    model = tmp_path / "model.h5"
+    _write_refmap_model(model)
+    with h5py.File(model, "r") as h5f:
+        ctx = _model_context_from_open_h5(h5f)
+
+    bx = ctx["corona"]["bx"]
+    assert isinstance(bx, _ArrayShapeProxy)
+    assert bx.shape == (32, 32, 16)
+    assert bx.ndim == 3
+    assert infer_box_dims(ctx) == (32, 32, 16)
+
+
 def test_remove_refmaps_from_h5_missing_ok(tmp_path):
     model = tmp_path / "model.h5"
     _write_refmap_model(model)

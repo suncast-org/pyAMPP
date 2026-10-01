@@ -521,6 +521,20 @@ def crop_fov_xy_from_inscribing_box(
     return apply_pad_factor_to_fov(footprint, pad)
 
 
+def _crota2_degrees_from_meta(meta) -> float:
+    """Read CROTA2/CROTA from a FITS-like metadata mapping (not attribute lookup)."""
+    if meta is None:
+        return 0.0
+    for key in ("CROTA2", "crota2", "CROTA", "crota"):
+        if key not in meta:
+            continue
+        try:
+            return float(meta[key] or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
 def rotate_refmap_for_display(smap: Map) -> Map:
     """Rotate a map by P-angle (CROTA2) so solar north aligns with +y.
 
@@ -1464,27 +1478,32 @@ def crop_refmap_spatial(
     model_obstime = Time(model_obstime)
 
     # Stage 1: determine whether the legacy P-angle crop path is active.
+    # MetaDict is mapping-like — attribute lookup does not read FITS cards.
+    policy = str(pangle_policy or "auto").strip().lower()
+    if policy not in ("auto", "always", "never"):
+        raise ValueError(
+            f"Unsupported pangle_policy={pangle_policy!r}; expected 'auto', 'always', or 'never'"
+        )
+
     pangle_rotated = False
     pangle_value_deg = None
-    if pangle_policy in ("auto", "always"):
-        try:
-            crota2 = float(getattr(smap.meta, "crota2", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            crota2 = 0.0
+    if policy in ("auto", "always"):
+        crota2 = _crota2_degrees_from_meta(smap.meta)
         pangle_value_deg = crota2
-        pangle_rotated = pangle_policy == "always" or (pangle_policy == "auto" and abs(crota2) > 0.1)
+        pangle_rotated = policy == "always" or (policy == "auto" and abs(crota2) > 0.1)
 
     # Stage 2-4: use the legacy crop chain so the FITS artifact matches the
-    # older diagnostic output exactly.
-    if pangle_policy == "never":
-        legacy_result = crop_refmap_to_model_box(
+    # older diagnostic output exactly. Dispatch on the computed decision so
+    # ``auto`` with near-zero CROTA2 skips Map.rotate().
+    if pangle_rotated:
+        legacy_result = crop_refmap_to_model_box_after_pangle_rotation(
             smap,
             box_corners_world,
             pad=pad,
             model_obstime=model_obstime,
         )
     else:
-        legacy_result = crop_refmap_to_model_box_after_pangle_rotation(
+        legacy_result = crop_refmap_to_model_box(
             smap,
             box_corners_world,
             pad=pad,
