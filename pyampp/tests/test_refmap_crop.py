@@ -23,6 +23,7 @@ from pyampp.io.refmap_crop import (
     crop_refmap_to_model_box,
     crop_refmap_to_model_box_after_pangle_rotation,
     display_observer_reproject_header_for_fov,
+    rotate_refmap_for_display,
     full_disk_fov_for_map,
     make_empty_observer_fov_map,
     plot_inscribing_fov_box_on_axes,
@@ -442,3 +443,24 @@ def test_reproject_map_to_target_observer_fov_masks_off_limb_pixels():
     )
     assert np.sum(np.isfinite(unmasked.data)) >= np.sum(np.isfinite(masked.data))
     assert np.any(~np.isfinite(masked.data))
+
+
+def test_rotate_refmap_for_display_propagates_rotation_failure(monkeypatch):
+    """Failed rotate must not be swallowed — callers clear CROTA after success."""
+    smap = _earth_aia_map(date_obs="2026-04-03T19:46:37.800")
+    smap.meta["CROTA2"] = 12.5
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("rotate failed")
+
+    monkeypatch.setattr(type(smap), "rotate", _boom)
+    with pytest.raises(RuntimeError, match="rotate failed"):
+        rotate_refmap_for_display(smap)
+
+    with pytest.raises(RuntimeError, match="rotate failed"):
+        crop_refmap_to_model_box_after_pangle_rotation(
+            smap,
+            _make_model_box()[0].model_box_corners_world(),
+            pad=1.1,
+            model_obstime=Time("2026-04-03T19:46:37.800"),
+        )

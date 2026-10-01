@@ -522,15 +522,16 @@ def crop_fov_xy_from_inscribing_box(
 
 
 def rotate_refmap_for_display(smap: Map) -> Map:
-    """Rotate a map by P-angle (CROTA2) so solar north aligns with +y."""
-    try:
-        data = np.asarray(smap.data)
-        if np.issubdtype(data.dtype, np.integer):
-            fill = False if data.dtype == np.bool_ else 0
-            return smap.rotate(order=3, missing=fill, clip=False)
-        return smap.rotate(order=3)
-    except Exception:
-        return smap
+    """Rotate a map by P-angle (CROTA2) so solar north aligns with +y.
+
+    Failures propagate. Callers that clear CROTA/CROTA2 after baking roll into
+    the pixels (``roll_baked_in=True``) must only do so when this returns.
+    """
+    data = np.asarray(smap.data)
+    if np.issubdtype(data.dtype, np.integer):
+        fill = False if data.dtype == np.bool_ else 0
+        return smap.rotate(order=3, missing=fill, clip=False)
+    return smap.rotate(order=3)
 
 
 def crop_refmap_to_model_box_after_pangle_rotation(
