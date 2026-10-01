@@ -313,6 +313,68 @@ def test_plot_refmap_crop_diagnostics_runs_for_earth_and_stereo(tmp_path):
     plt.close(fig2)
 
 
+def test_plot_refmap_crop_diagnostics_unlinks_owned_temp_fits(tmp_path, monkeypatch):
+    pytest.importorskip("matplotlib")
+    import matplotlib
+    import tempfile
+    from pathlib import Path
+
+    matplotlib.use("Agg")
+
+    owned: list[Path] = []
+    real_named_temporary_file = tempfile.NamedTemporaryFile
+
+    def _named_temporary_file(*args, **kwargs):
+        kwargs = dict(kwargs)
+        kwargs["dir"] = str(tmp_path)
+        handle = real_named_temporary_file(*args, **kwargs)
+        owned.append(Path(handle.name))
+        return handle
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", _named_temporary_file)
+
+    box, model_time, _earth = _make_model_box()
+    world = box.model_box_corners_world()
+    assert world is not None
+    earth_map = _earth_aia_map(date_obs=model_time.isot)
+    fig, _result = plot_refmap_crop_diagnostics(
+        earth_map,
+        world,
+        pad=1.1,
+        model_obstime=model_time,
+        save_path=tmp_path / "owned_temp_diag.png",
+    )
+    plt = pytest.importorskip("matplotlib.pyplot")
+    plt.close(fig)
+
+    assert owned
+    assert all(not path.exists() for path in owned)
+
+
+def test_plot_refmap_crop_diagnostics_keeps_caller_fits(tmp_path):
+    pytest.importorskip("matplotlib")
+    import matplotlib
+
+    matplotlib.use("Agg")
+
+    box, model_time, _earth = _make_model_box()
+    world = box.model_box_corners_world()
+    assert world is not None
+    earth_map = _earth_aia_map(date_obs=model_time.isot)
+    caller_fits = tmp_path / "caller_crop.fits"
+    fig, _result = plot_refmap_crop_diagnostics(
+        earth_map,
+        world,
+        pad=1.1,
+        model_obstime=model_time,
+        crop_fits_path=caller_fits,
+        save_path=tmp_path / "caller_fits_diag.png",
+    )
+    plt = pytest.importorskip("matplotlib.pyplot")
+    plt.close(fig)
+    assert caller_fits.exists()
+
+
 def test_compute_crop_fov_uses_map_time_not_model_time_for_stereo():
     box, model_time, _earth = _make_model_box()
     world = box.model_box_corners_world()

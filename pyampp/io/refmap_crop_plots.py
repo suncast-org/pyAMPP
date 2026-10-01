@@ -727,126 +727,136 @@ def plot_refmap_crop_diagnostics(
     )
 
     # Step 3 — FITS round-trip so the middle panel uses a restored Map.
+    # Caller-supplied paths are left intact; owned temps are unlinked in finally.
+    created_temp_fits = False
     if crop_fits_path is None:
         tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
         crop_fits_path = Path(tmp.name)
         tmp.close()
-    _save_crop_map_fits(result.cropped_map, crop_fits_path)
-    cropped_display_map = _load_crop_map_fits(crop_fits_path)
-
-    ref_display = rotate_refmap_for_display(smap)
-    inscribing_box = compute_inscribing_fov_box_for_observer(
-        box_corners_world,
-        observer=result.map_observer,
-        obstime=result.map_obstime,
-    )
-    if inscribing_box is None:
-        raise ValueError("could not compute inscribing FOV box for reference map")
-
-    ref_scene = _scene_geometry(
-        box_corners_world,
-        crop_fov=result.crop_fov,
-        inscribing_box=inscribing_box,
-        observer=result.map_observer,
-        obstime=result.map_obstime,
-        pad=pad,
-    )
-    ref_scene["box_corners_world"] = box_corners_world
-    ref_scene["pad"] = pad
-
-    # Step 4 — restored crop uses the same viewport as the left panel.
-    crop_viewport = None
-
-    # Step 6 — Earth LOS full-disk canvas; map + overlays share this WCS.
-    earth_observer = earth_observer_at(result.map_obstime)
-    earth_canvas_fov = _full_disk_fov(cropped_display_map, pad=viewport_disk_pad)
-    crop_on_earth = reproject_refmap_to_observer(
-        cropped_display_map,
-        observer=earth_observer,
-        obstime=result.map_obstime,
-        reference_smap=cropped_display_map,
-        fov=earth_canvas_fov,
-        algorithm="adaptive",
-        mask_off_limb=True,
-    )
-    earth_scene = _scene_geometry(
-        box_corners_world,
-        crop_fov=result.crop_fov,
-        inscribing_box=inscribing_box,
-        observer=earth_observer,
-        obstime=result.map_obstime,
-        pad=pad,
-    )
-    earth_scene["box_corners_world"] = box_corners_world
-    earth_scene["pad"] = pad
-    earth_scene["geometry_observer"] = result.map_observer
-    earth_scene["geometry_obstime"] = result.map_obstime
-    earth_scene["use_plot_coord"] = True
-    earth_crop_corners = project_padded_crop_bottom_face_corners_between_observers(
-        inscribing_box,
-        pad=pad,
-        source_observer=result.map_observer,
-        source_obstime=result.map_obstime,
-        target_observer=earth_observer,
-        target_obstime=result.map_obstime,
-    )
-    earth_viewport = _viewport_sun_centered_including_scene(
-        crop_on_earth,
-        earth_scene,
-        crop_corners=earth_crop_corners,
-        disk_pad=viewport_disk_pad,
-        overlay_pad=viewport_overlay_pad,
-    )
-
-    ref_viewport = _compute_viewport(
-        ref_display,
-        ref_scene,
-        disk_pad=viewport_disk_pad,
-        overlay_pad=viewport_overlay_pad,
-    )
-    crop_viewport = _compute_viewport(
-        cropped_display_map,
-        ref_scene,
-        disk_pad=viewport_disk_pad,
-        overlay_pad=viewport_overlay_pad,
-    )
-
-    fig = plt.figure(figsize=(18, 6), constrained_layout=True)
-    # Step 1 — illustrate crop on the full reference map.
-    _plot_panel(
-        fig.add_subplot(1, 3, 1, projection=ref_display),
-        ref_display,
-        ref_scene,
-        title="1) Reference map @ map time (P-angle rotated)",
-        draw_grid_mesh=True,
-        viewport=ref_viewport,
-    )
-    # Steps 4–5 — restored crop on full-Sun native grid, identical overlays.
-    _plot_panel(
-        fig.add_subplot(1, 3, 2, projection=cropped_display_map),
-        cropped_display_map,
-        ref_scene,
-        title="2) Cropped map @ map time (restored FITS, native frame)",
-        draw_grid_mesh=True,
-        viewport=crop_viewport,
-        square_box=True,
-    )
-    # Step 6 — Earth LOS @ map time (single canvas WCS for data + overlays).
-    _plot_panel(
-        fig.add_subplot(1, 3, 3, projection=crop_on_earth),
-        crop_on_earth,
-        earth_scene,
-        title="3) Cropped map @ Earth LOS @ map time",
-        crop_corners=earth_crop_corners,
-        draw_grid_mesh=True,
-        viewport=earth_viewport,
-        square_box=True,
-    )
-
-    if save_path is not None:
-        fig.savefig(Path(save_path), dpi=150, bbox_inches="tight")
-    if show:
-        plt.show()
+        created_temp_fits = True
     else:
-        plt.close(fig)
-    return fig, result
+        crop_fits_path = Path(crop_fits_path)
+
+    try:
+        _save_crop_map_fits(result.cropped_map, crop_fits_path)
+        cropped_display_map = _load_crop_map_fits(crop_fits_path)
+
+        ref_display = rotate_refmap_for_display(smap)
+        inscribing_box = compute_inscribing_fov_box_for_observer(
+            box_corners_world,
+            observer=result.map_observer,
+            obstime=result.map_obstime,
+        )
+        if inscribing_box is None:
+            raise ValueError("could not compute inscribing FOV box for reference map")
+
+        ref_scene = _scene_geometry(
+            box_corners_world,
+            crop_fov=result.crop_fov,
+            inscribing_box=inscribing_box,
+            observer=result.map_observer,
+            obstime=result.map_obstime,
+            pad=pad,
+        )
+        ref_scene["box_corners_world"] = box_corners_world
+        ref_scene["pad"] = pad
+
+        # Step 4 — restored crop uses the same viewport as the left panel.
+        crop_viewport = None
+
+        # Step 6 — Earth LOS full-disk canvas; map + overlays share this WCS.
+        earth_observer = earth_observer_at(result.map_obstime)
+        earth_canvas_fov = _full_disk_fov(cropped_display_map, pad=viewport_disk_pad)
+        crop_on_earth = reproject_refmap_to_observer(
+            cropped_display_map,
+            observer=earth_observer,
+            obstime=result.map_obstime,
+            reference_smap=cropped_display_map,
+            fov=earth_canvas_fov,
+            algorithm="adaptive",
+            mask_off_limb=True,
+        )
+        earth_scene = _scene_geometry(
+            box_corners_world,
+            crop_fov=result.crop_fov,
+            inscribing_box=inscribing_box,
+            observer=earth_observer,
+            obstime=result.map_obstime,
+            pad=pad,
+        )
+        earth_scene["box_corners_world"] = box_corners_world
+        earth_scene["pad"] = pad
+        earth_scene["geometry_observer"] = result.map_observer
+        earth_scene["geometry_obstime"] = result.map_obstime
+        earth_scene["use_plot_coord"] = True
+        earth_crop_corners = project_padded_crop_bottom_face_corners_between_observers(
+            inscribing_box,
+            pad=pad,
+            source_observer=result.map_observer,
+            source_obstime=result.map_obstime,
+            target_observer=earth_observer,
+            target_obstime=result.map_obstime,
+        )
+        earth_viewport = _viewport_sun_centered_including_scene(
+            crop_on_earth,
+            earth_scene,
+            crop_corners=earth_crop_corners,
+            disk_pad=viewport_disk_pad,
+            overlay_pad=viewport_overlay_pad,
+        )
+
+        ref_viewport = _compute_viewport(
+            ref_display,
+            ref_scene,
+            disk_pad=viewport_disk_pad,
+            overlay_pad=viewport_overlay_pad,
+        )
+        crop_viewport = _compute_viewport(
+            cropped_display_map,
+            ref_scene,
+            disk_pad=viewport_disk_pad,
+            overlay_pad=viewport_overlay_pad,
+        )
+
+        fig = plt.figure(figsize=(18, 6), constrained_layout=True)
+        # Step 1 — illustrate crop on the full reference map.
+        _plot_panel(
+            fig.add_subplot(1, 3, 1, projection=ref_display),
+            ref_display,
+            ref_scene,
+            title="1) Reference map @ map time (P-angle rotated)",
+            draw_grid_mesh=True,
+            viewport=ref_viewport,
+        )
+        # Steps 4–5 — restored crop on full-Sun native grid, identical overlays.
+        _plot_panel(
+            fig.add_subplot(1, 3, 2, projection=cropped_display_map),
+            cropped_display_map,
+            ref_scene,
+            title="2) Cropped map @ map time (restored FITS, native frame)",
+            draw_grid_mesh=True,
+            viewport=crop_viewport,
+            square_box=True,
+        )
+        # Step 6 — Earth LOS @ map time (single canvas WCS for data + overlays).
+        _plot_panel(
+            fig.add_subplot(1, 3, 3, projection=crop_on_earth),
+            crop_on_earth,
+            earth_scene,
+            title="3) Cropped map @ Earth LOS @ map time",
+            crop_corners=earth_crop_corners,
+            draw_grid_mesh=True,
+            viewport=earth_viewport,
+            square_box=True,
+        )
+
+        if save_path is not None:
+            fig.savefig(Path(save_path), dpi=150, bbox_inches="tight")
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+        return fig, result
+    finally:
+        if created_temp_fits:
+            Path(crop_fits_path).unlink(missing_ok=True)
