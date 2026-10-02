@@ -846,7 +846,11 @@ def reproject_map_to_target_observer_fov(
     algorithm: str = "adaptive",
     mask_off_limb: bool = True,
 ) -> Map:
-    """Reproject ``smap`` into a precomputed target-observer ROI."""
+    """Reproject ``smap`` into a precomputed target-observer ROI.
+
+    Raises on header/reprojection failure so callers do not associate the
+    untouched source map with a target-observer ``fov_override``.
+    """
     header = display_observer_reproject_header_for_fov(
         smap,
         observer=target_observer,
@@ -854,17 +858,14 @@ def reproject_map_to_target_observer_fov(
         fov=target_fov,
     )
     if header is None:
-        return smap
-    try:
-        ny = int(header["NAXIS2"])
-        nx = int(header["NAXIS1"])
-        canvas = Map(np.full((ny, nx), np.nan, dtype=float), header)
-        reprojected = reproject_map_onto_canvas(smap, canvas, algorithm=algorithm)
-        if mask_off_limb:
-            reprojected = mask_pixels_not_visible_from_source(smap, reprojected)
-        return _copy_plot_settings(reprojected, smap)
-    except Exception:
-        return smap
+        raise ValueError("could not build target-observer ROI header for reprojection")
+    ny = int(header["NAXIS2"])
+    nx = int(header["NAXIS1"])
+    canvas = Map(np.full((ny, nx), np.nan, dtype=float), header)
+    reprojected = reproject_map_onto_canvas(smap, canvas, algorithm=algorithm)
+    if mask_off_limb:
+        reprojected = mask_pixels_not_visible_from_source(smap, reprojected)
+    return _copy_plot_settings(reprojected, smap)
 
 
 def project_rectangle_corners_between_observers(
@@ -998,15 +999,17 @@ def reproject_map_to_display_observer_fov(
     )
     if projected_fov is None:
         return smap, None
-    return (
-        reproject_map_to_target_observer_fov(
+    try:
+        reprojected = reproject_map_to_target_observer_fov(
             smap,
             target_fov=projected_fov,
             target_observer=target_observer,
             target_obstime=target_obstime,
-        ),
-        projected_fov,
-    )
+        )
+    except Exception:
+        # Do not claim target-observer coverage for an unreprojected source map.
+        return smap, None
+    return reprojected, projected_fov
 
 
 def _copy_plot_settings(target: Map, source: Map) -> Map:

@@ -588,6 +588,88 @@ def test_rotate_refmap_for_display_propagates_rotation_failure(monkeypatch):
         )
 
 
+def test_reproject_map_to_target_observer_fov_propagates_header_failure(monkeypatch):
+    """Header failure must raise so callers do not keep target FOV coverage."""
+    import pyampp.io.refmap_crop as crop_mod
+
+    date_obs = "2012-07-12T04:46:15.006"
+    smap = _stereo_map(size=32, scale=40.0, date_obs=date_obs)
+    earth = get_earth(Time(date_obs))
+    fov = {
+        "xc_arcsec": 0.0,
+        "yc_arcsec": 0.0,
+        "xsize_arcsec": 400.0,
+        "ysize_arcsec": 400.0,
+    }
+    monkeypatch.setattr(crop_mod, "display_observer_reproject_header_for_fov", lambda *a, **k: None)
+    with pytest.raises(ValueError, match="could not build target-observer ROI header"):
+        reproject_map_to_target_observer_fov(
+            smap,
+            target_fov=fov,
+            target_observer=earth,
+            target_obstime=smap.date,
+        )
+
+
+def test_reproject_map_to_target_observer_fov_propagates_reproject_failure(monkeypatch):
+    """Canvas reprojection failure must raise, not return the source map."""
+    import pyampp.io.refmap_crop as crop_mod
+
+    date_obs = "2012-07-12T04:46:15.006"
+    smap = _stereo_map(size=32, scale=40.0, date_obs=date_obs)
+    earth = get_earth(Time(date_obs))
+    fov = {
+        "xc_arcsec": 0.0,
+        "yc_arcsec": 0.0,
+        "xsize_arcsec": 400.0,
+        "ysize_arcsec": 400.0,
+    }
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("reproject failed")
+
+    monkeypatch.setattr(crop_mod, "reproject_map_onto_canvas", _boom)
+    with pytest.raises(RuntimeError, match="reproject failed"):
+        reproject_map_to_target_observer_fov(
+            smap,
+            target_fov=fov,
+            target_observer=earth,
+            target_obstime=smap.date,
+            algorithm="interpolation",
+        )
+
+
+def test_reproject_map_to_display_observer_fov_drops_coverage_on_failure(monkeypatch):
+    """Compound API must return (smap, None) rather than claim target FOV."""
+    import pyampp.io.refmap_crop as crop_mod
+
+    date_obs = "2012-07-12T04:46:15.006"
+    smap = _stereo_map(size=32, scale=40.0, date_obs=date_obs)
+    earth = get_earth(Time(date_obs))
+    stereo = smap.observer_coordinate
+    fov = {
+        "xc_arcsec": 0.0,
+        "yc_arcsec": 0.0,
+        "xsize_arcsec": 400.0,
+        "ysize_arcsec": 400.0,
+    }
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("reproject failed")
+
+    monkeypatch.setattr(crop_mod, "reproject_map_to_target_observer_fov", _boom)
+    out, coverage = crop_mod.reproject_map_to_display_observer_fov(
+        smap,
+        source_fov=fov,
+        source_observer=stereo,
+        source_obstime=smap.date,
+        target_observer=earth,
+        target_obstime=smap.date,
+    )
+    assert out is smap
+    assert coverage is None
+
+
 def test_crop_refmap_spatial_auto_skips_rotate_when_crota_near_zero(monkeypatch):
     """auto policy must read CROTA2 via meta mapping and honor pangle_rotated."""
     import pyampp.io.refmap_crop as crop_mod
