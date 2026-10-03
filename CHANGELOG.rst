@@ -15,11 +15,12 @@ Unreleased
   file sits under the JSOC cache (``--data-dir``) or the model directory
   (the model file's folder or ``--gxmodel-dir``), also record
   ``SRC_RELPATH`` and ``SRC_ROOT`` (``data-dir`` or ``model-dir``).
-  Filesystem mode opens ``SRC_RELPATH`` under the current root, then
-  ``SRC_PATH``, then the embedded crop. A context map that exists only as
-  that crop selects Map Source Embedded. Older embeds without ``SRC_PATH``
-  keep the crop until Add Reference Maps or ``--refmaps-path`` re-embeds
-  them on save.
+  Filesystem mode prefers an existing recorded ``map_files`` hit (live
+  JSOC cache or ``--refmaps-path``), then ``SRC_RELPATH`` under the current
+  root / ``SRC_PATH``, then the embedded crop. A context map that exists
+  only as that crop selects Map Source Embedded. Older embeds without
+  ``SRC_PATH`` keep the crop until Add Reference Maps or
+  ``--refmaps-path`` re-embeds them on save.
 - ``target_fov`` and ``target_template`` on ``build_fits_refmaps_for_model``
   and ``build_refmap_payload_for_model`` now raise. Callers must use
   ``box_corners_world``. ``crop_refmap`` on ``add_fits_refmaps_to_h5`` is
