@@ -135,6 +135,14 @@ def test_infer_box_dims():
     assert infer_box_dims(model_dict) == (100, 80, 120)
 
 
+def test_infer_box_dims_from_shape_proxy():
+    class _ShapeOnly:
+        shape = (50, 40, 30)
+        ndim = 3
+
+    assert infer_box_dims({"corona": {"bz": _ShapeOnly()}}) == (50, 40, 30)
+
+
 def test_infer_box_dims_respects_zyx_axis_order():
     model_dict = {
         "corona": {"bx": np.zeros((12, 8, 4), dtype=np.float32)},

@@ -152,18 +152,49 @@ def test_load_hmi_maps_anchors_context_downloads_to_continuum_time():
 
 
 def test_refmap_wcs_header_preserves_date_obs():
+    from astropy.coordinates import SkyCoord
+    from sunpy.coordinates import Heliocentric, Helioprojective, get_earth
+    from sunpy.map import Map, make_fitswcs_header
+
+    from pyampp.gxbox.box import Box
     from pyampp.io.refmaps import build_refmap_payload_for_model
 
+    obs_time = Time("2025-11-26T15:34:31.400")
+    observer = get_earth(obs_time)
+    frame_obs = Helioprojective(observer=observer, obstime=obs_time)
+    box_origin = SkyCoord(Tx=0 * u.arcsec, Ty=0 * u.arcsec, distance=observer.radius, frame=frame_obs)
+    frame_hcc = Heliocentric(observer=box_origin, obstime=obs_time)
+    box_center = box_origin.transform_to(frame_hcc)
+    box_center = SkyCoord(
+        x=box_center.x,
+        y=box_center.y,
+        z=box_center.z + 20 * u.Mm,
+        frame=box_center.frame,
+    )
+    box = Box(
+        frame_obs,
+        box_origin,
+        box_center,
+        np.array([8, 6, 4]) * u.pix,
+        np.array([5.0, 5.0, 10.0]) * u.Mm,
+    )
+    center = SkyCoord(0 * u.arcsec, 0 * u.arcsec, frame=frame_obs)
+    header = make_fitswcs_header(
+        np.zeros((64, 64), dtype=np.float32),
+        center,
+        scale=u.Quantity([2.0, 2.0], u.arcsec / u.pix),
+    )
+    smap = Map(np.zeros((64, 64), dtype=np.float32), header)
     payload = build_refmap_payload_for_model(
-        _FakeRefMap("2025-11-26T15:34:31.400"),
-        model_obstime=None,
-        target_fov=None,
+        smap,
+        model_obstime=obs_time,
+        box_corners_world=box.model_box_corners_world(),
     )
     header = fits.Header.fromstring(payload["wcs_header"], sep="\n")
-    assert header["DATE-OBS"] == "2025-11-26T15:34:31.400"
-    assert header["DATE_OBS"] == "2025-11-26T15:34:31.400"
-    assert header["RSUN_OBS"] == 972.3
-    assert header["RSUN_REF"] == 6.96e8
+    assert header["DATE-OBS"] == obs_time.isot
+    assert header["DATE_OBS"] == obs_time.isot
+    assert header["PYALIGN"] is False
+    assert header["PYEMBED"] is True
 
 
 def test_prepare_resume_jump_boxes_none_to_potential_recomputes() -> None:
@@ -399,6 +430,9 @@ def test_prepare_observation_state_builds_expected_prepared_payload() -> None:
         def bounds_coords_bl_tr(self, pad_frac=0.1):
             return (None, None)
 
+        def model_box_corners_world(self):
+            return "corners"
+
     maps = {
         "field": _MiniMap([[1, 2], [3, 4]]),
         "inclination": _MiniMap([[0, 0], [0, 0]]),
@@ -426,6 +460,13 @@ def test_prepare_observation_state_builds_expected_prepared_payload() -> None:
         gx_fov2box, "_format_coord_tag", return_value="TAG"
     ), patch.object(
         gx_fov2box, "_observer_metadata_from_source_map", return_value={"observer": "earth"}
+    ), patch.object(
+        gx_fov2box,
+        "build_refmap_payload_for_model",
+        side_effect=lambda smap, **_kwargs: {
+            "data": np.asarray(smap.data),
+            "wcs_header": "SIMPLE  = T\n",
+        },
     ):
         prepared = gx_fov2box._prepare_observation_state(
             cfg,
@@ -503,6 +544,9 @@ def test_refmaps_path_external_refmaps_saved_in_none_stage_h5(tmp_path) -> None:
         def bounds_coords_bl_tr(self, pad_frac=0.1):
             return (None, None)
 
+        def model_box_corners_world(self):
+            return "corners"
+
     maps = {
         "field": _MiniMap([[1, 2], [3, 4]]),
         "inclination": _MiniMap([[0, 0], [0, 0]]),
@@ -545,6 +589,13 @@ def test_refmaps_path_external_refmaps_saved_in_none_stage_h5(tmp_path) -> None:
         gx_fov2box, "_format_coord_tag", return_value="TAG"
     ), patch.object(
         gx_fov2box, "_observer_metadata_from_source_map", return_value={"observer": "earth"}
+    ), patch.object(
+        gx_fov2box,
+        "build_refmap_payload_for_model",
+        side_effect=lambda smap, **_kwargs: {
+            "data": np.asarray(smap.data),
+            "wcs_header": "SIMPLE  = T\n",
+        },
     ), patch.object(
         gx_fov2box,
         "build_fits_refmaps_for_model",

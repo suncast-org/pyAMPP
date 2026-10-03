@@ -4,6 +4,53 @@ Changelog
 Unreleased
 ----------
 
+- Anchor ``gxbox-view2d`` display time to the selected context refmap
+  ``DATE-OBS`` (fallback: model time). The figure banner shows that
+  observation time and Δt versus the model. The SDO display-LOS option is
+  removed; Earth covers SDO/AIA/HMI.
+- Embed reference maps, including STEREO, with a spatial crop
+  (``pyampp.io.refmap_crop``) that keeps each map's native ``DATE-OBS`` and
+  observer metadata (``PYALIGN=False``).
+- Record the source FITS on an embedded refmap as ``SRC_PATH``. When that
+  file sits under the JSOC cache (``--data-dir``) or the model directory
+  (the model file's folder or ``--gxmodel-dir``), also record
+  ``SRC_RELPATH`` and ``SRC_ROOT`` (``data-dir`` or ``model-dir``).
+  Filesystem mode prefers an existing recorded ``map_files`` hit (live
+  JSOC cache or ``--refmaps-path``), then ``SRC_RELPATH`` under the current
+  root / ``SRC_PATH``, then the embedded crop. A context map that exists
+  only as that crop selects Map Source Embedded. Older embeds without
+  ``SRC_PATH`` keep the crop until Add Reference Maps or
+  ``--refmaps-path`` re-embeds them on save.
+- ``target_fov`` and ``target_template`` on ``build_fits_refmaps_for_model``
+  and ``build_refmap_payload_for_model`` now raise. Callers must use
+  ``box_corners_world``. ``crop_refmap`` on ``add_fits_refmaps_to_h5`` is
+  ignored and warns; embeds crop from model box corners.
+- Selector fallback box corners place the geometric center half a model
+  height above the surface origin, matching the viewer box.
+- ``remove_refmaps_from_h5(telescope=...)`` rejects an empty telescope token
+  instead of deleting every embedded refmap.
+- ``remove_refmaps_from_h5(..., missing_ok=False)`` validates all requested
+  ids before deleting any group, so a strict miss leaves the HDF5 unchanged.
+- ``pyampp.io`` loads ``refmap_crop`` lazily so importing ``gx_fov2box`` (or
+  ``from pyampp.io import load_model``) no longer hits a circular import.
+- ``SRC_PATH`` and ``SRC_ROOT`` are ordinary 8-character FITS keys.
+  ``SRC_RELPATH`` is stored as a HIERARCH card.
+- The combined embed AIA + STEREO, reload H5, display-at-context-anchor
+  check remains a manual GUI exercise. Unit tests cover the pieces.
+- Reproject cross-observer helioprojective maps through the masked display
+  pipeline at that time anchor.
+- Keep the session FOV fixed when the display observer changes. Save / Apply
+  asks whether to recompute the FOV for the current observer, save without an
+  FOV, or cancel.
+- Draw every selector map and the model boxes in the display observer's
+  helioprojective line of sight. An empty context canvas uses that same
+  observer frame. The Carrington ``base/index`` header remains model geometry
+  and is not the context axes.
+- Keep model-grid base overlays on their native WCS (Carrington CEA) and draw
+  them with ``autoalign`` on the observer LOS context. Treating that
+  heliographic plate scale as sky arcsec built a 32-pixel canvas and tore the
+  overlay.
+
 1.0.6
 -----
 

@@ -5,18 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import warnings
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import h5py
 import numpy as np
 from astropy.io import fits
+from astropy.io.fits.verify import VerifyWarning
 from astropy.time import Time
 import astropy.units as u
 from astropy.coordinates import SkyCoord
-from sunpy.coordinates import HeliographicStonyhurst, Helioprojective, propagate_with_solar_surface
-from sunpy.map import Map, make_fitswcs_header
+from sunpy.map import Map
 
-from pyampp.geometry.contract import infer_obstime
+from pyampp.geometry.contract import (
+    GeometryContract,
+    complete_geometry_contract,
+    infer_obstime,
+    world_corners_from_geometry_contract,
+)
 from pyampp.gxbox.boxutils import load_sunpy_map_compat
 
 
@@ -28,6 +34,13 @@ class AddedRefmap:
     source_path: Path
     data_shape: tuple[int, ...]
     data_dtype: str
+
+
+@dataclass(frozen=True)
+class RemovedRefmap:
+    """Summary for one embedded refmap removed from a model HDF5 file."""
+
+    map_id: str
 
 
 PathLike = str | Path
@@ -60,12 +73,23 @@ _SOURCE_HEADER_KEYS = (
     "CTYPE4",
 )
 
+# Source-FITS audit cards stored in an embedded refmap ``wcs_header``.
+# ``SRC_RELPATH`` is longer than 8 characters, so Astropy writes it as a
+# HIERARCH card. ``SRC_ROOT`` is ``data-dir`` (JSOC / ``--data-dir`` cache)
+# or ``model-dir`` (the model file's directory, or ``--gxmodel-dir``).
+REFMAP_SRC_PATH_KEY = "SRC_PATH"
+REFMAP_SRC_RELPATH_KEY = "SRC_RELPATH"
+REFMAP_SRC_ROOT_KEY = "SRC_ROOT"
+REFMAP_SRC_ROOT_DATA_DIR = "data-dir"
+REFMAP_SRC_ROOT_MODEL_DIR = "model-dir"
+_CROP_REFMAP_IGNORED = object()
+
 
 def add_fits_refmaps_to_h5(
     h5_path: PathLike,
     fits_paths: Iterable[PathLike],
     *,
-    crop_refmap: str | None = "Bz_reference",
+    crop_refmap: str | None = _CROP_REFMAP_IGNORED,
     map_ids: Mapping[PathLike, str] | Sequence[str] | MapIdFactory | None = None,
     overwrite: bool = False,
 ) -> list[AddedRefmap]:
@@ -78,9 +102,8 @@ def add_fits_refmaps_to_h5(
     fits_paths
         External FITS file paths to add.
     crop_refmap
-        Existing refmap whose WCS footprint is used as the alignment target
-        for Earth-line-of-sight maps. Use ``None`` to embed maps without a
-        model-FOV target.
+        Deprecated and ignored. Embeds are cropped from model box corners.
+        Passing this argument emits ``DeprecationWarning``.
     map_ids
         Optional map-id source. This can be a mapping from path to id, a
         sequence aligned with ``fits_paths``, or a callable ``(path, sunpy_map)
@@ -94,17 +117,25 @@ def add_fits_refmaps_to_h5(
         One summary entry per embedded FITS file.
     """
 
+    if crop_refmap is not _CROP_REFMAP_IGNORED:
+        warnings.warn(
+            "crop_refmap is ignored; refmaps are cropped from model box corners. "
+            "Stop passing crop_refmap.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     h5_path = Path(h5_path)
     paths = [Path(p) for p in fits_paths]
     if not paths:
         return []
 
-    template = None
     with h5py.File(h5_path, "r+") as h5f:
-        model_obstime = model_obstime_from_base_index(h5f)
+        model_ctx = _model_context_from_open_h5(h5f)
+        model_obstime = model_obstime_from_base_index(model_ctx)
+        box_corners_world = box_corners_world_from_model(model_ctx)
+        data_dir, gxmodel_dir = _source_roots_from_model_context(model_ctx)
         refmaps = h5f.require_group("refmaps")
-        if crop_refmap is not None:
-            template = _load_template_refmap(refmaps, crop_refmap)
 
         next_order = _next_refmap_order(refmaps)
         out: list[AddedRefmap] = []
@@ -114,8 +145,11 @@ def add_fits_refmaps_to_h5(
             payload = build_refmap_payload_for_model(
                 smap,
                 model_obstime=model_obstime,
-                target_template=template,
+                box_corners_world=box_corners_world,
                 source_path=path,
+                data_dir=data_dir,
+                model_dir=h5_path.parent,
+                gxmodel_dir=gxmodel_dir,
             )
 
             if map_id in refmaps:
@@ -146,7 +180,7 @@ def add_fits_refmaps_from_dir_to_h5(
     *,
     pattern: str | None = None,
     recursive: bool = False,
-    crop_refmap: str | None = "Bz_reference",
+    crop_refmap: str | None = _CROP_REFMAP_IGNORED,
     map_ids: Mapping[PathLike, str] | Sequence[str] | MapIdFactory | None = None,
     overwrite: bool = False,
 ) -> list[AddedRefmap]:
@@ -162,13 +196,100 @@ def add_fits_refmaps_from_dir_to_h5(
     else:
         globber = fits_dir.rglob if recursive else fits_dir.glob
         paths = sorted(p for p in globber(pattern) if p.is_file())
-    return add_fits_refmaps_to_h5(
-        h5_path,
-        paths,
-        crop_refmap=crop_refmap,
-        map_ids=map_ids,
-        overwrite=overwrite,
-    )
+    kwargs: dict[str, Any] = {"map_ids": map_ids, "overwrite": overwrite}
+    if crop_refmap is not _CROP_REFMAP_IGNORED:
+        kwargs["crop_refmap"] = crop_refmap
+    return add_fits_refmaps_to_h5(h5_path, paths, **kwargs)
+
+
+def list_embedded_refmap_ids(h5_path: PathLike) -> list[str]:
+    """Return sorted ``refmaps/<map_id>`` group names stored in a model HDF5 file."""
+
+    h5_path = Path(h5_path)
+    with h5py.File(h5_path, "r") as h5f:
+        refmaps = h5f.get("refmaps")
+        if not isinstance(refmaps, h5py.Group):
+            return []
+        return sorted(str(name) for name in refmaps.keys())
+
+
+def remove_refmaps_from_h5(
+    h5_path: PathLike,
+    map_ids: Iterable[str] | None = None,
+    *,
+    remove_all: bool = False,
+    telescope: str | None = None,
+    missing_ok: bool = True,
+) -> list[RemovedRefmap]:
+    """Remove embedded refmaps from ``refmaps/`` of a model HDF5 file.
+
+    Exactly one selection mode must be provided:
+
+    - ``map_ids``: remove the listed ``refmaps/<map_id>`` groups
+    - ``telescope``: remove refmaps whose FITS ``TELESCOP`` header contains the
+      token (case-insensitive), e.g. ``\"STEREO\"`` for STEREO/STEREO-A maps
+    - ``remove_all=True``: remove every embedded refmap
+
+    Parameters
+    ----------
+    h5_path
+        pyAMPP model HDF5 file to modify in place.
+    map_ids
+        Explicit refmap ids to delete.
+    remove_all
+        Delete all groups under ``refmaps/`` when true.
+    telescope
+        Delete refmaps whose embedded WCS header matches this telescope token.
+    missing_ok
+        When false, raise ``KeyError`` if a requested refmap id is absent or if
+        ``refmaps/`` does not exist. Validation runs before any deletion so a
+        strict miss leaves the file unchanged.
+
+    Returns
+    -------
+    list[RemovedRefmap]
+        One summary entry per deleted refmap, in sorted map-id order.
+    """
+
+    if sum(bool(x) for x in (map_ids is not None, remove_all, telescope is not None)) != 1:
+        raise ValueError("Provide exactly one of map_ids, telescope=..., or remove_all=True")
+
+    h5_path = Path(h5_path)
+    with h5py.File(h5_path, "r+") as h5f:
+        refmaps = h5f.get("refmaps")
+        if not isinstance(refmaps, h5py.Group):
+            if missing_ok:
+                return []
+            raise KeyError("refmaps group not found")
+
+        if remove_all:
+            ids_to_remove = sorted(str(name) for name in refmaps.keys())
+        elif telescope is not None:
+            token = str(telescope).strip().upper()
+            if not token:
+                raise ValueError("telescope token must be non-empty")
+            ids_to_remove = []
+            for name in refmaps:
+                header = _refmap_header_from_group(refmaps[name])
+                tele = str(header.get("TELESCOP") or "").upper() if header is not None else ""
+                if token in tele:
+                    ids_to_remove.append(str(name))
+            ids_to_remove.sort()
+        else:
+            ids_to_remove = sorted({_sanitize_map_id(item) for item in map_ids or ()})
+
+        if not missing_ok:
+            missing = [map_id for map_id in ids_to_remove if map_id not in refmaps]
+            if missing:
+                raise KeyError(f"refmap not found: refmaps/{missing[0]}")
+
+        removed: list[RemovedRefmap] = []
+        for map_id in ids_to_remove:
+            if map_id not in refmaps:
+                continue
+            del refmaps[map_id]
+            removed.append(RemovedRefmap(map_id=map_id))
+    return removed
 
 
 def discover_fits_refmap_paths(paths: Iterable[PathLike], *, recursive: bool = False) -> list[Path]:
@@ -275,14 +396,36 @@ def build_fits_refmaps_for_model(
     paths: Iterable[PathLike],
     *,
     model_obstime: str | Time | None,
-    target_fov: tuple[SkyCoord, SkyCoord] | None = None,
-    target_template=None,
+    box_corners_world: SkyCoord | None = None,
+    model: Mapping[str, Any] | None = None,
     map_ids: Mapping[PathLike, str] | Sequence[str] | MapIdFactory | None = None,
-    reproject_algorithm: str = "adaptive",
+    pad: float = 1.1,
+    pangle_policy: str = "auto",
     recursive: bool = False,
     generic: bool = True,
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
+    # Deprecated legacy kwargs kept for call-site compatibility during migration.
+    target_fov: tuple[SkyCoord, SkyCoord] | None = None,
+    target_template=None,
+    reproject_algorithm: str = "adaptive",
 ) -> dict[str, dict[str, Any]]:
-    """Load FITS refmaps from paths and build model-aligned payloads."""
+    """Load FITS refmaps from paths and build spatially cropped embed payloads."""
+
+    if box_corners_world is None:
+        if model is None:
+            raise ValueError(
+                "build_fits_refmaps_for_model requires box_corners_world or model "
+                "with resolvable geometry_contract."
+            )
+        box_corners_world = box_corners_world_from_model(model)
+    if target_fov is not None or target_template is not None:
+        raise ValueError(
+            "target_fov/target_template are no longer supported; pass box_corners_world "
+            "or model geometry instead."
+        )
+    _ = reproject_algorithm
 
     if map_ids is None:
         discovered = discover_fits_refmap_map_ids(paths, recursive=recursive, generic=generic)
@@ -298,10 +441,13 @@ def build_fits_refmaps_for_model(
         out[map_id] = build_refmap_payload_for_model(
             smap,
             model_obstime=model_obstime,
-            target_template=target_template,
-            target_fov=target_fov,
+            box_corners_world=box_corners_world,
             source_path=path,
-            reproject_algorithm=reproject_algorithm,
+            pad=pad,
+            pangle_policy=pangle_policy,
+            data_dir=data_dir,
+            model_dir=model_dir,
+            gxmodel_dir=gxmodel_dir,
         )
     return out
 
@@ -322,123 +468,315 @@ def model_obstime_from_base_index(model_or_h5: Any) -> str | None:
     """Return the model time from canonical ``base/index`` metadata."""
 
     if isinstance(model_or_h5, (h5py.File, h5py.Group)):
-        model = {"base": {}}
-        if "base" in model_or_h5 and "index" in model_or_h5["base"]:
-            model["base"]["index"] = _decode_h5_string(model_or_h5["base/index"][()])
-        elif "base" in model_or_h5 and "index_header" in model_or_h5["base"]:
-            model["base"]["index_header"] = _decode_h5_string(model_or_h5["base/index_header"][()])
-        return infer_obstime(model)
+        model_or_h5 = _model_context_from_open_h5(model_or_h5)
     if isinstance(model_or_h5, Mapping):
         return infer_obstime(dict(model_or_h5))
     return None
 
 
+def _geometry_contract_from_model(model_dict: Mapping[str, Any]) -> GeometryContract | None:
+    metadata = model_dict.get("metadata")
+    if isinstance(metadata, Mapping):
+        contract = metadata.get("geometry_contract")
+        if isinstance(contract, GeometryContract):
+            return contract
+        if isinstance(contract, Mapping):
+            try:
+                return GeometryContract.from_dict(dict(contract))
+            except Exception:
+                pass
+    return complete_geometry_contract(dict(model_dict), strict=False)
+
+
+def box_corners_world_from_model(
+    model_or_h5: Any,
+    *,
+    obstime: str | Time | None = None,
+) -> SkyCoord:
+    """Return model red-box world corners from geometry metadata."""
+
+    if isinstance(model_or_h5, (h5py.File, h5py.Group)):
+        model_dict = _model_context_from_open_h5(model_or_h5)
+    elif isinstance(model_or_h5, Mapping):
+        model_dict = dict(model_or_h5)
+    else:
+        raise TypeError("model_or_h5 must be a mapping or open HDF5 handle")
+
+    contract = _geometry_contract_from_model(model_dict)
+    if contract is None:
+        raise ValueError(
+            "Cannot resolve model red-box corners: geometry_contract is missing "
+            "and could not be inferred from base/index and corona metadata."
+        )
+    when = obstime
+    if when is None:
+        when = model_obstime_from_base_index(model_dict) or contract.obstime
+    world = world_corners_from_geometry_contract(contract, obstime=when)
+    if world is None:
+        raise ValueError("Could not build world corners from geometry contract.")
+    return world
+
+
+@dataclass(frozen=True)
+class _ArrayShapeProxy:
+    """Shape-only stand-in for a large array (geometry inference never reads values)."""
+
+    shape: tuple[int, ...]
+
+    @property
+    def ndim(self) -> int:
+        return len(self.shape)
+
+
+def _model_context_from_open_h5(h5f: h5py.Group) -> dict[str, Any]:
+    ctx: dict[str, Any] = {}
+    base = h5f.get("base")
+    if isinstance(base, h5py.Group):
+        ctx["base"] = {}
+        for key in ("index", "index_header", "wcs_header"):
+            if key in base:
+                ctx["base"][key] = _decode_h5_string(base[key][()])
+    corona = h5f.get("corona")
+    if isinstance(corona, h5py.Group):
+        ctx["corona"] = {}
+        if "dr" in corona:
+            ctx["corona"]["dr"] = np.asarray(corona["dr"])
+        for key in ("bx", "by", "bz"):
+            if key in corona:
+                # Keep shape only — do not materialize the magnetic cube.
+                ctx["corona"][key] = _ArrayShapeProxy(tuple(corona[key].shape))
+                break
+    metadata = h5f.get("metadata")
+    if isinstance(metadata, h5py.Group):
+        ctx["metadata"] = {}
+        for key in metadata.keys():
+            item = metadata[key]
+            if isinstance(item, h5py.Group):
+                group_data = {}
+                for subkey in item.keys():
+                    value = item[subkey][()]
+                    if isinstance(value, (bytes, np.bytes_)):
+                        value = value.decode("utf-8", "ignore")
+                    group_data[subkey] = value
+                ctx["metadata"][key] = group_data
+            else:
+                value = item[()]
+                if isinstance(value, (bytes, np.bytes_)):
+                    value = value.decode("utf-8", "ignore")
+                ctx["metadata"][key] = value
+    return ctx
+
+
 def build_refmap_payload_for_model(
     smap,
     *,
-    model_obstime: str | Time | None,
+    model_obstime: str | Time | None = None,
+    box_corners_world: SkyCoord | None = None,
+    source_path: Path | None = None,
+    pad: float = 1.1,
+    pangle_policy: str = "auto",
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
+    # Deprecated legacy kwargs kept for call-site compatibility during migration.
     target_template=None,
     target_fov: tuple[SkyCoord, SkyCoord] | None = None,
-    source_path: Path | None = None,
     reproject_algorithm: str = "adaptive",
 ) -> dict[str, Any]:
-    """Build a refmap payload using pyAMPP's model-time alignment policy.
+    """Build a spatially cropped refmap payload at native map observer/time."""
 
-    Earth-line-of-sight maps are solar-rotated to the model time and remapped
-    onto a target FOV WCS. Non-Earth maps keep their native WCS and data so the
-    viewer can display them in their own spacecraft LOS mode.
+    if box_corners_world is None:
+        raise ValueError("box_corners_world is required for refmap embedding")
+    if target_fov is not None or target_template is not None:
+        raise ValueError(
+            "target_fov/target_template are no longer supported; pass box_corners_world instead."
+        )
+    _ = reproject_algorithm
+
+    from pyampp.io.refmap_crop import crop_refmap_spatial
+
+    source_obstime = _map_date_isot(smap)
+    result = crop_refmap_spatial(
+        smap=smap,
+        box_corners_world=box_corners_world,
+        model_obstime=model_obstime,
+        pad=pad,
+        pangle_policy=pangle_policy,
+    )
+    cropped = result.cropped_map
+    header_text = _refmap_wcs_header(
+        cropped,
+        source_path=source_path,
+        model_obstime=model_obstime or result.model_obstime,
+        source_obstime=source_obstime,
+        aligned_to_model=False,
+        data_dir=data_dir,
+        model_dir=model_dir,
+        gxmodel_dir=gxmodel_dir,
+    )
+    return {"data": np.asarray(cropped.data), "wcs_header": header_text}
+
+
+def apply_refmap_source_cards(
+    header: fits.Header,
+    source_path: PathLike,
+    *,
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
+) -> None:
+    """Write ``SRC_PATH`` and, when the file is under a known root, relative cards.
+
+    ``SRC_ROOT=data-dir`` means ``SRC_RELPATH`` is relative to ``--data-dir``
+    (the JSOC cache root). ``SRC_ROOT=model-dir`` means it is relative to the
+    model file's directory or ``--gxmodel-dir``. When the file is inside more
+    than one root, the longer root wins.
     """
 
-    aligned = smap
-    should_reproject = _is_earth_los_map(smap)
-    if should_reproject and model_obstime is not None:
-        header = _model_fov_header_for_refmap(
-            smap,
-            model_obstime=model_obstime,
-            target_template=target_template,
-            target_fov=target_fov,
-        )
-        if header is not None:
-            with propagate_with_solar_surface():
-                aligned = smap.reproject_to(
-                    header,
-                    algorithm=reproject_algorithm,
-                    roundtrip_coords=False,
-                )
-    elif target_template is not None and should_reproject:
-        aligned = _crop_to_template_footprint(smap, target_template)
+    source = _as_directory(source_path)
+    if source is None:
+        return
+    header[REFMAP_SRC_PATH_KEY] = str(source)
+    roots: list[tuple[str, Path]] = []
+    data_root = _as_directory(data_dir)
+    if data_root is not None:
+        roots.append((REFMAP_SRC_ROOT_DATA_DIR, data_root))
+    for candidate in (model_dir, gxmodel_dir):
+        model_root = _as_directory(candidate)
+        if model_root is not None:
+            roots.append((REFMAP_SRC_ROOT_MODEL_DIR, model_root))
+    best: tuple[int, str, str] | None = None
+    for label, root in roots:
+        relative = _relative_posix_under(source, root)
+        if relative is None:
+            continue
+        rank = len(str(root))
+        if best is None or rank > best[0]:
+            best = (rank, label, relative)
+    if best is None:
+        header.pop(REFMAP_SRC_RELPATH_KEY, None)
+        header.pop(REFMAP_SRC_ROOT_KEY, None)
+        return
+    _label, root_name, relative = best
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", VerifyWarning)
+        header[REFMAP_SRC_RELPATH_KEY] = relative
+    header[REFMAP_SRC_ROOT_KEY] = root_name
 
-    header_text = _refmap_wcs_header(
-        aligned,
-        source_path=source_path,
-        model_obstime=model_obstime,
-        source_obstime=_map_date_isot(smap),
-        aligned_to_model=bool(aligned is not smap and should_reproject),
-    )
-    return {"data": np.asarray(aligned.data), "wcs_header": header_text}
 
-
-def _model_fov_header_for_refmap(
-    smap,
+def resolve_embedded_refmap_source(
+    header: fits.Header | str,
     *,
-    model_obstime: str | Time,
-    target_template=None,
-    target_fov: tuple[SkyCoord, SkyCoord] | None = None,
-):
-    observer = _earth_like_observer(smap)
-    obs_time = Time(model_obstime)
-    if target_template is not None:
-        ny, nx = np.asarray(target_template.data).shape
-        bl = target_template.pixel_to_world(0 * u.pix, 0 * u.pix)
-        tr = target_template.pixel_to_world((nx - 1) * u.pix, (ny - 1) * u.pix)
-    elif target_fov is not None:
-        bl, tr = target_fov
-    else:
-        return None
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
+) -> Path | None:
+    """Resolve an embedded refmap's source FITS, or return None.
 
+    Order: ``SRC_RELPATH`` under the current root named by ``SRC_ROOT``,
+    then ``SRC_PATH``. A missing file is skipped.
+    """
+
+    parsed = _header_for_source_cards(header)
+    if parsed is None:
+        return None
+    relative = _header_card_text(parsed, REFMAP_SRC_RELPATH_KEY)
+    root_name = _header_card_text(parsed, REFMAP_SRC_ROOT_KEY)
+    if relative and root_name == REFMAP_SRC_ROOT_DATA_DIR:
+        found = _existing_file_under(data_dir, relative)
+        if found is not None:
+            return found
+    elif relative and root_name == REFMAP_SRC_ROOT_MODEL_DIR:
+        for root in (model_dir, gxmodel_dir):
+            found = _existing_file_under(root, relative)
+            if found is not None:
+                return found
+    absolute = _header_card_text(parsed, REFMAP_SRC_PATH_KEY)
+    if absolute:
+        try:
+            candidate = Path(absolute).expanduser()
+        except Exception:
+            candidate = None
+        if candidate is not None and candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _source_roots_from_model_context(model_ctx: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    metadata = model_ctx.get("metadata") if isinstance(model_ctx, Mapping) else None
+    execute = ""
+    if isinstance(metadata, Mapping):
+        execute = metadata.get("execute") or ""
+        if isinstance(execute, (bytes, np.bytes_)):
+            execute = _decode_h5_string(execute)
+    if not str(execute).strip():
+        return None, None
+    from pyampp.gxbox.gx_fov2box import _extract_execute_paths
+
+    data_dir, gxmodel_dir = _extract_execute_paths(str(execute))
+    return data_dir, gxmodel_dir
+
+
+def _as_directory(value: PathLike | None) -> Path | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
     try:
-        bl_hpc = bl.transform_to(Helioprojective(observer=observer, obstime=obs_time))
-        tr_hpc = tr.transform_to(Helioprojective(observer=observer, obstime=obs_time))
-        x0, x1 = sorted([bl_hpc.Tx.to_value(u.arcsec), tr_hpc.Tx.to_value(u.arcsec)])
-        y0, y1 = sorted([bl_hpc.Ty.to_value(u.arcsec), tr_hpc.Ty.to_value(u.arcsec)])
-        scale_x = abs(float(smap.scale.axis1.to_value(u.arcsec / u.pix)))
-        scale_y = abs(float(smap.scale.axis2.to_value(u.arcsec / u.pix)))
+        return Path(text).expanduser().resolve()
     except Exception:
         return None
-    if not all(np.isfinite(v) and v > 0 for v in (scale_x, scale_y)):
+
+
+def _relative_posix_under(source: Path, root: Path) -> str | None:
+    try:
+        relative = source.resolve().relative_to(root.resolve())
+    except Exception:
+        return None
+    if relative == Path("."):
+        return None
+    return relative.as_posix()
+
+
+def _existing_file_under(root: PathLike | None, relative: str) -> Path | None:
+    base = _as_directory(root)
+    if base is None or not str(relative).strip():
+        return None
+    try:
+        candidate = (base / relative).resolve()
+    except Exception:
+        return None
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        # Absolute paths or ``../`` segments must not escape the configured root.
+        return None
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def _header_for_source_cards(header: fits.Header | str) -> fits.Header | None:
+    if isinstance(header, fits.Header):
+        return header
+    text = str(header or "").replace("\\n", "\n")
+    if not text.strip():
+        return None
+    try:
+        return fits.Header.fromstring(text, sep="\n")
+    except Exception:
         return None
 
-    width = max(float(x1 - x0), scale_x)
-    height = max(float(y1 - y0), scale_y)
-    nx = max(2, int(np.ceil(width / scale_x)) + 1)
-    ny = max(2, int(np.ceil(height / scale_y)) + 1)
-    center = SkyCoord(
-        Tx=(0.5 * (x0 + x1)) * u.arcsec,
-        Ty=(0.5 * (y0 + y1)) * u.arcsec,
-        frame=Helioprojective(observer=observer, obstime=obs_time),
-    )
-    header = make_fitswcs_header(
-        np.empty((ny, nx), dtype=np.float32),
-        center,
-        scale=u.Quantity([scale_x, scale_y], u.arcsec / u.pix),
-    )
-    header["DATE-OBS"] = obs_time.isot
-    header["DATE_OBS"] = obs_time.isot
+
+def _header_card_text(header: fits.Header, key: str) -> str | None:
     try:
-        header["RSUN_REF"] = float(smap.rsun_meters.to_value(u.m))
+        value = header.get(key)
     except Exception:
-        pass
-    return header
-
-
-def _crop_to_template_footprint(smap, template):
-    ny, nx = np.asarray(template.data).shape
-    bottom_left = template.pixel_to_world(0 * u.pix, 0 * u.pix)
-    top_right = template.pixel_to_world((nx - 1) * u.pix, (ny - 1) * u.pix)
-    return smap.submap(
-        bottom_left.transform_to(smap.coordinate_frame),
-        top_right=top_right.transform_to(smap.coordinate_frame),
-    )
+        return None
+    if value in (None, ""):
+        return None
+    return str(value).strip() or None
 
 
 def _refmap_wcs_header(
@@ -448,6 +786,9 @@ def _refmap_wcs_header(
     model_obstime: str | Time | None = None,
     source_obstime: str | None = None,
     aligned_to_model: bool = False,
+    data_dir: PathLike | None = None,
+    model_dir: PathLike | None = None,
+    gxmodel_dir: PathLike | None = None,
 ) -> str:
     try:
         header = smap.wcs.to_header()
@@ -488,6 +829,13 @@ def _refmap_wcs_header(
         pass
     if source_path is not None:
         header["HISTORY"] = f"Embedded by pyampp.io.refmaps from {source_path}"
+        apply_refmap_source_cards(
+            header,
+            source_path,
+            data_dir=data_dir,
+            model_dir=model_dir,
+            gxmodel_dir=gxmodel_dir,
+        )
     if source_obstime:
         header["SRC_DATE"] = source_obstime
     if model_obstime is not None:
@@ -495,6 +843,7 @@ def _refmap_wcs_header(
             header["MODELT"] = Time(model_obstime).isot
         except Exception:
             header["MODELT"] = str(model_obstime)
+    header["PYEMBED"] = True
     header["PYALIGN"] = bool(aligned_to_model)
     return header.tostring(sep="\n", endcard=True)
 
@@ -504,28 +853,6 @@ def _map_date_isot(smap) -> str | None:
         return smap.date.isot
     except Exception:
         return None
-
-
-def _is_earth_los_map(smap) -> bool:
-    meta = getattr(smap, "meta", {}) or {}
-    telescope = str(_meta_get(meta, "TELESCOP") or "").upper()
-    instrument = str(_meta_get(meta, "INSTRUME") or "").upper()
-    if any(token in telescope or token in instrument for token in ("SDO", "AIA", "HMI", "EOVSA")):
-        return True
-    try:
-        obs = smap.observer_coordinate
-        lon = abs(float(obs.lon.to_value(u.deg)))
-        lat = abs(float(obs.lat.to_value(u.deg)))
-        return lon < 5.0 and lat < 10.0
-    except Exception:
-        return False
-
-
-def _earth_like_observer(smap):
-    try:
-        return smap.observer_coordinate
-    except Exception:
-        return "earth"
 
 
 def _resolve_map_id(
@@ -591,3 +918,13 @@ def _decode_h5_string(value) -> str:
     if isinstance(value, np.bytes_):
         return bytes(value).decode(errors="replace")
     return str(value)
+
+
+def _refmap_header_from_group(group: h5py.Group) -> fits.Header | None:
+    if "wcs_header" not in group:
+        return None
+    try:
+        text = _decode_h5_string(group["wcs_header"][()]).replace("\\n", "\n")
+        return fits.Header.fromstring(text, sep="\n")
+    except Exception:
+        return None

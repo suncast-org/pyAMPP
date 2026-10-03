@@ -192,12 +192,18 @@ def infer_box_dims(model_dict: dict[str, Any]) -> tuple[int, int, int] | None:
 
     for key in ("bx", "by", "bz"):
         if key in corona:
-            arr = np.asarray(corona[key])
-            if arr.ndim >= 3:
-                shape = arr.shape[:3]
+            raw = corona[key]
+            shape = getattr(raw, "shape", None)
+            ndim = getattr(raw, "ndim", None)
+            if shape is None or ndim is None:
+                arr = np.asarray(raw)
+                shape = arr.shape
+                ndim = arr.ndim
+            if int(ndim) >= 3:
+                shape3 = tuple(int(x) for x in shape[:3])
                 if axis_order == "zyx":
-                    return (int(shape[2]), int(shape[1]), int(shape[0]))
-                return (int(shape[0]), int(shape[1]), int(shape[2]))
+                    return (shape3[2], shape3[1], shape3[0])
+                return (shape3[0], shape3[1], shape3[2])
     return None
 
 

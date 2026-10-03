@@ -67,12 +67,16 @@ class SelectorSessionInput:
     allow_geometry_edit: bool = True
     map_ids: tuple[str, ...] = ()
     map_files: dict[str, str] | None = None
+    external_ref_map_paths: tuple[str, ...] = ()
     refmaps: dict[str, dict[str, Any]] | None = None
     base_maps: dict[str, Any] | None = None
     base_wcs_header: str | None = None
     base_geometry: "BoxGeometrySelection | None" = None
     map_source_mode: str = "auto"
     display_observer_key: str = "earth"
+    # Observer frame that defined the 2D FOV when no fov_box was persisted.
+    # Prefer fov_box.observer_key when present; otherwise this (or display_observer_key).
+    fov_definition_observer_key: str | None = None
     custom_observer_ephemeris: dict[str, Any] | None = None
     custom_observer_label: str | None = None
     custom_observer_source: str | None = None
@@ -80,6 +84,7 @@ class SelectorSessionInput:
     observer_availability_notice: str | None = None
     initial_map_id: str | None = None
     pad_frac: float | None = None
+    gxmodel_dir: str | None = None
 
 
 @dataclass(slots=True)
