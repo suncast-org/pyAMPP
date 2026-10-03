@@ -76,6 +76,12 @@ def test_sfq_corner_bounds_use_round_padding():
     # With matching platescales/CRVAL, 4x4 corners map near pixels 8..11 before pad.
     assert ysl.start <= 8 and ysl.stop >= 12
     assert xsl.start <= 8 and xsl.stop >= 12
-    # round+[-1,1] expands by at least one pixel beyond min/max rounded indices.
-    assert (ysl.stop - ysl.start) >= 4
-    assert (xsl.stop - xsl.start) >= 4
+    # round+[-1,1] expands by at least one pixel beyond the 4-pixel base.
+    assert (ysl.stop - ysl.start) >= 5
+    assert (xsl.stop - xsl.start) >= 5
+
+
+def test_sfq_sanitize_preserves_finite_values():
+    arr = np.linspace(-500.0, 500.0, 9).reshape(3, 3)
+    out = gx_fov2box._sfq_sanitize_hmi_array(arr, silent=True)
+    assert np.array_equal(out, arr)

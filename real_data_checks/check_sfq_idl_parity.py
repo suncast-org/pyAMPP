@@ -6,8 +6,9 @@ Requires:
   - IDL dump SAV from ``dump_idl_sfq.pro`` (default ``/tmp/sfq_parity_20240512/idl_sfq_dump.sav``)
 
 Exits non-zero if crop/pre-SFQ vector parity regresses; algorithm (post-SFQ)
-agreement is reported but does not fail the script by default (vit1-irk Python
-SFQ is not bit-identical to IDL on real HMI).
+agreement is reported but does not fail the script by default. Inputs are
+sanitized like IDL (NaN/sentinel→0) before SFQ so NaN pollution is not
+misreported as algorithm disagreement.
 """
 
 from __future__ import annotations
@@ -27,6 +28,19 @@ from pyampp.sfq import sfq_disambig
 
 def _angle_diff_deg(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return (a - b + 180.0) % 360.0 - 180.0
+
+
+def _finite_maxdiff(a: np.ndarray, b: np.ndarray) -> float:
+    """Max |a-b| on finite pairs; NaN-vs-finite counts as infinite disagreement."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    both = np.isfinite(a) & np.isfinite(b)
+    if not np.any(both):
+        return float("nan")
+    md = float(np.max(np.abs(a[both] - b[both])))
+    if np.any(~both & (np.isfinite(a) | np.isfinite(b))):
+        return float("inf")
+    return md
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -74,14 +88,24 @@ def main(argv: list[str] | None = None) -> int:
     map_az = load_sunpy_map_compat(az_path)
 
     # Crop using IDL pixel bounds (numpy [y, x] == readsav field_s layout).
-    field = np.asarray(map_field.data[y0 : y1 + 1, x0 : x1 + 1], dtype=float)
-    incl = np.asarray(map_incl.data[y0 : y1 + 1, x0 : x1 + 1], dtype=float)
-    az = np.asarray(map_az.data[y0 : y1 + 1, x0 : x1 + 1], dtype=float)
-    field_idl = np.asarray(idl["field_s"], dtype=float)
-    az_before_idl = np.asarray(idl["az_before"], dtype=float)
+    field = gx_fov2box._sfq_sanitize_hmi_array(
+        np.asarray(map_field.data[y0 : y1 + 1, x0 : x1 + 1], dtype=float), silent=True
+    )
+    incl = gx_fov2box._sfq_sanitize_hmi_array(
+        np.asarray(map_incl.data[y0 : y1 + 1, x0 : x1 + 1], dtype=float), silent=True
+    )
+    az = gx_fov2box._sfq_sanitize_hmi_array(
+        np.asarray(map_az.data[y0 : y1 + 1, x0 : x1 + 1], dtype=float), silent=True
+    )
+    field_idl = gx_fov2box._sfq_sanitize_hmi_array(
+        np.asarray(idl["field_s"], dtype=float), silent=True
+    )
+    az_before_idl = gx_fov2box._sfq_sanitize_hmi_array(
+        np.asarray(idl["az_before"], dtype=float), silent=True
+    )
 
-    crop_field_maxdiff = float(np.nanmax(np.abs(field - field_idl)))
-    crop_az_maxdiff = float(np.nanmax(np.abs(az - az_before_idl)))
+    crop_field_maxdiff = _finite_maxdiff(field, field_idl)
+    crop_az_maxdiff = _finite_maxdiff(az, az_before_idl)
 
     inc_rad = np.deg2rad(incl)
     az_rad = np.deg2rad(az)
@@ -95,9 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     bx0 = np.asarray(idl["bx0"], dtype=float)
     by0 = np.asarray(idl["by0"], dtype=float)
     bz0 = np.asarray(idl["bz0"], dtype=float)
-    pre_bx = float(np.nanmax(np.abs(bx - bx0)))
-    pre_by = float(np.nanmax(np.abs(by - by0)))
-    pre_bz = float(np.nanmax(np.abs(bz - bz0)))
+    pre_bx = _finite_maxdiff(bx, bx0)
+    pre_by = _finite_maxdiff(by, by0)
+    pre_bz = _finite_maxdiff(bz, bz0)
 
     rsun_py = gx_fov2box._sfq_rsun_arcsec(map_field)
 

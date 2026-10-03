@@ -91,6 +91,25 @@ def test_sfq_clean_filter_width_is_idl_size_not_radius():
     assert med3[2, 2] == 12.0
     sm = smooth_2d(arr, 3)
     assert sm.shape == arr.shape
+    # Width-1 is identity for median of this array's interior.
+    assert median_2d(arr, 1)[2, 2] == arr[2, 2]
+
+
+def test_sfq_sanitize_hmi_zeros_nan_and_sentinels():
+    from pyampp.gxbox import gx_fov2box
+
+    arr = np.array([[1.0, np.nan], [-2.1e7, 50.0]], dtype=float)
+    out = gx_fov2box._sfq_sanitize_hmi_array(arr, silent=True)
+    assert out.tolist() == [[1.0, 0.0], [0.0, 50.0]]
+
+
+def test_sfq_disambig_does_not_mutate_caller_arrays():
+    bx_ambig, by_ambig, bz, pos, rsun, *_ = _synthetic_magnetogram(nx=32, ny=32)
+    bx0 = bx_ambig.copy()
+    by0 = by_ambig.copy()
+    sfq_disambig(bx_ambig, by_ambig, bz, pos, rsun, silent=True)
+    assert np.array_equal(bx_ambig, bx0)
+    assert np.array_equal(by_ambig, by0)
 
 
 def test_sfq_public_exports():

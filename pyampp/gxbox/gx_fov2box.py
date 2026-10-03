@@ -223,15 +223,42 @@ def _sfq_rsun_arcsec(smap: Map) -> float:
     return float(IDL_HMI_RSUN_M / dsun_m * (180.0 / np.pi) * 3600.0)
 
 
+# Unphysical |value| for HMI field/angles after lost BLANK / DRMS scale
+# (off-limb sentinels land near 1e7; real field/inclination/azimuth are ≪ 1e4).
+_SFQ_HMI_ABS_SENTINEL = 1.0e6
+
+
+def _sfq_sanitize_hmi_array(arr: np.ndarray, *, label: str = "", silent: bool = False) -> np.ndarray:
+    """IDL ``where(finite(data,/nan)); data[ind]=0`` plus DRMS/BLANK sentinels → 0.
+
+    One NaN in the SFQ crop collapses the FFT potential; RICE NaNs and DRMS
+    paths that drop ``BLANK`` produce the same failure mode off-limb.
+    """
+    out = np.array(arr, dtype=float, copy=True)
+    bad = ~np.isfinite(out) | (np.abs(out) > _SFQ_HMI_ABS_SENTINEL)
+    n_bad = int(np.count_nonzero(bad))
+    if n_bad:
+        out[bad] = 0.0
+        if not silent:
+            tag = f" ({label})" if label else ""
+            print(f"SFQ: zeroed {n_bad} non-finite/sentinel pixel(s){tag}")
+    return out
+
+
 def _sfq_corner_hpc_and_bounds(
     smap: Map,
     bottom_wcs_header: Any,
 ) -> Tuple[np.ndarray, slice, slice]:
-    """Map model-base WCS corners to HMI pixels like IDL ``prepare_basemaps, /sfq``.
+    """Map model-base WCS footprint to HMI pixels like IDL ``prepare_basemaps, /sfq``.
+
+    Samples the four corners **and** edge midpoints so curved CEA edges are less
+    likely to fall outside the crop (IDL corners-only can miss a few % of base
+    centers). Still applies IDL ``round(minmax)+[-1,1]`` padding.
 
     Returns ``(pos, y_slice, x_slice)`` where ``pos`` is
-    ``[xmin, ymin, xmax, ymax]`` in helioprojective arcsec (IDL ``crd_ref``),
-    and slices index the full-disk ``smap.data`` array as ``[y, x]``.
+    ``[xmin, ymin, xmax, ymax]`` in helioprojective arcsec from the four
+    corners only (IDL ``crd_ref`` / ``pos``), and slices index ``smap.data``
+    as ``[y, x]``.
     """
     from astropy.wcs import WCS
 
@@ -241,17 +268,25 @@ def _sfq_corner_hpc_and_bounds(
     if nx < 2 or ny < 2:
         raise ValueError(f"SFQ base WCS has invalid NAXIS ({nx}, {ny}).")
 
-    # IDL wcs_get_coord on pixels [0,0], [0,ny-1], [nx-1,ny-1], [nx-1,0]
-    xs = np.array([0.0, 0.0, nx - 1.0, nx - 1.0])
-    ys = np.array([0.0, ny - 1.0, ny - 1.0, 0.0])
-    corners = WCS(header).pixel_to_world(xs, ys)
-    hpc = corners.transform_to(smap.coordinate_frame)
+    # Corners: IDL wcs_get_coord on [0,0], [0,ny-1], [nx-1,ny-1], [nx-1,0]
+    xs_c = np.array([0.0, 0.0, nx - 1.0, nx - 1.0])
+    ys_c = np.array([0.0, ny - 1.0, ny - 1.0, 0.0])
+    # Edge midpoints (extra coverage for CEA bulge; still ±1 IDL pad after).
+    xm = 0.5 * (nx - 1)
+    ym = 0.5 * (ny - 1)
+    xs = np.concatenate([xs_c, [xm, 0.0, nx - 1.0, xm]])
+    ys = np.concatenate([ys_c, [0.0, ym, ym, ny - 1.0]])
+
+    world = WCS(header).pixel_to_world(xs, ys)
+    hpc = world.transform_to(smap.coordinate_frame)
+    # IDL pos uses only the four corners.
+    hpc_corners = hpc[:4]
     pos = np.array(
         [
-            float(np.min(hpc.Tx.to_value(u.arcsec))),
-            float(np.min(hpc.Ty.to_value(u.arcsec))),
-            float(np.max(hpc.Tx.to_value(u.arcsec))),
-            float(np.max(hpc.Ty.to_value(u.arcsec))),
+            float(np.min(hpc_corners.Tx.to_value(u.arcsec))),
+            float(np.min(hpc_corners.Ty.to_value(u.arcsec))),
+            float(np.max(hpc_corners.Tx.to_value(u.arcsec))),
+            float(np.max(hpc_corners.Ty.to_value(u.arcsec))),
         ],
         dtype=float,
     )
@@ -280,21 +315,31 @@ def _apply_sfq_disambiguation(
     map_azimuth: Map,
     bottom_wcs_header: Any,
     *,
+    map_disambig: Optional[Map] = None,
+    outside_hmi_method: int = 2,
     silent: bool = False,
 ) -> Map:
     """Run Rudenko/Anfinogentov SFQ on a base-WCS FOV crop and write azimuth back.
 
-    Mirrors IDL ``prepare_basemaps, /sfq``: skip HMI disambig bits, crop using
-    model-base (CEA/TOP) WCS corners projected into the full-disk HMI frame,
-    call ``sfq_disambig`` with HMI parameters, then restore azimuth into the
-    full-disk map before ``hmi_b2ptr``.
+    Mirrors IDL ``prepare_basemaps, /sfq`` on the crop (NaN→0, skip HMI bits
+    inside the crop, CEA/TOP corners→HMI pixels, ``sfq_disambig, /hmi``).
+
+    Outside the crop, if ``map_disambig`` is provided, apply HMI disambiguation
+    bits (default method 2) so padded-FOV products such as Vert_current are not
+    left on raw ambiguous azimuth. Pure IDL leaves those pixels ambiguous; the
+    hybrid is intentional for full-disk/FOV consistency.
     """
     from pyampp.sfq import sfq_disambig
 
+    # IDL zeros NaNs on the full cube before cropping.
+    field_full = _sfq_sanitize_hmi_array(map_field.data, label="field", silent=silent)
+    incl_full = _sfq_sanitize_hmi_array(map_inclination.data, label="inclination", silent=silent)
+    az_full_ambig = _sfq_sanitize_hmi_array(map_azimuth.data, label="azimuth", silent=silent)
+
     pos, ysl, xsl = _sfq_corner_hpc_and_bounds(map_field, bottom_wcs_header)
-    field = np.asarray(map_field.data[ysl, xsl], dtype=float)
-    inclination = np.asarray(map_inclination.data[ysl, xsl], dtype=float)
-    azimuth = np.asarray(map_azimuth.data[ysl, xsl], dtype=float)
+    field = field_full[ysl, xsl]
+    inclination = incl_full[ysl, xsl]
+    azimuth = az_full_ambig[ysl, xsl]
 
     inc_rad = np.deg2rad(inclination)
     az_rad = np.deg2rad(azimuth)
@@ -315,10 +360,26 @@ def _apply_sfq_disambiguation(
     # IDL: by = -rotate(by,2); bx = rotate(bx,2); az = atan(bx,by)
     by = -np.rot90(by, 2)
     bx = np.rot90(bx, 2)
-    az_deg = np.rad2deg(np.arctan2(bx, by))
+    az_crop = np.rad2deg(np.arctan2(bx, by))
 
-    az_full = np.array(map_azimuth.data, dtype=float, copy=True)
-    az_full[ysl, xsl] = az_deg
+    if map_disambig is not None:
+        az_outside = hmi_disambig(
+            map_from_data_header_compat(az_full_ambig, map_azimuth.meta),
+            map_disambig,
+            method=outside_hmi_method,
+        )
+        az_full = np.array(az_outside.data, dtype=float, copy=True)
+        if not silent:
+            print(
+                "SFQ: HMI disambig bits applied outside crop "
+                f"(method={outside_hmi_method}); SFQ inside crop"
+            )
+    else:
+        az_full = az_full_ambig.copy()
+        if not silent:
+            print("SFQ: no disambig map; outside-crop azimuth left ambiguous (IDL)")
+
+    az_full[ysl, xsl] = az_crop
     return map_from_data_header_compat(az_full, map_azimuth.meta)
 
 
@@ -962,7 +1023,7 @@ def _prepare_observation_state(
     obs_time = requested_obs_time
     data_dir_path = Path(cfg.data_dir).expanduser().resolve()
     # Non-SFQ default matches prior pyAMPP practice (HMI radial-acute bit 2).
-    # SFQ skips HMI disambig bits entirely and runs Rudenko/Anfinogentov SFQ later.
+    # SFQ skips HMI bits inside the crop; outside-crop bits applied in _apply_sfq.
     disambig_method = 2
     print("Checking/downloading HMI/AIA data...")
     dl_t0 = time_mod.perf_counter()
@@ -1050,6 +1111,7 @@ def _prepare_observation_state(
                 maps["inclination"],
                 maps["azimuth"],
                 bottom_wcs_header,
+                map_disambig=maps.get("disambig"),
                 silent=False,
             )
 
@@ -2867,7 +2929,7 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("chromo_level_resolved", resolved_chromo_level, "Effective chromo level passed to line tracer (1 Mm / dx_km)"),
         ("euv", cfg.euv, "Download AIA EUV context maps"),
         ("uv", cfg.uv, "Download AIA UV context maps"),
-        ("sfq", cfg.sfq, "Use Rudenko/Anfinogentov SFQ on FOV crop (not HMI bit method 0)"),
+        ("sfq", cfg.sfq, "Use Rudenko/Anfinogentov SFQ on FOV crop; HMI bits outside crop"),
         ("jump2potential", cfg.jump2potential, "Start from entry box and jump to POT"),
         ("jump2bounds", cfg.jump2bounds, "Start from entry box and jump to BND"),
         ("jump2nlfff", cfg.jump2nlfff, "Start from entry box and jump to NAS"),
@@ -3295,7 +3357,7 @@ def main(
     sfq: bool = typer.Option(
         False,
         "--sfq",
-        help="Use Rudenko/Anfinogentov SFQ disambiguation on the FOV crop (skips HMI disambig bits)",
+        help="Use Rudenko/Anfinogentov SFQ on the FOV crop (HMI disambig bits outside crop)",
     ),
     observer_name: str = typer.Option("earth", "--observer-name", help="Observer identifier stored in output metadata"),
     fov_xc: Optional[float] = typer.Option(None, "--fov-xc", help="Observer/image FOV center X in arcsec"),

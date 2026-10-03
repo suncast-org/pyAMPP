@@ -184,8 +184,8 @@ def sfq_disambig(bx, by, bz, apos, rsun, mode=False, silent=False, acute=False):
     """Main entry point: resolves 180-degree azimuth ambiguity.
 
     Args:
-        bx: Ambiguous Bx transverse component (2D array, modified in place).
-        by: Ambiguous By transverse component (2D array, modified in place).
+        bx: Ambiguous Bx transverse component (2D array; not modified).
+        by: Ambiguous By transverse component (2D array; not modified).
         bz: LOS component of magnetic field (2D array).
         apos: Position [x_min, y_min, x_max, y_max] in arcsec.
         rsun: Solar radius in arcsec.
@@ -197,7 +197,10 @@ def sfq_disambig(bx, by, bz, apos, rsun, mode=False, silent=False, acute=False):
         Tuple (bx_disambig, by_disambig) - disambiguated transverse components.
     """
     t0 = time.time()
-    mag = get_str_mag(bx, by, bz, apos, rsun)
+    # Copy so in-place step1/clean flips do not mutate the caller's arrays.
+    mag = get_str_mag(np.array(bx, dtype=float, copy=True),
+                      np.array(by, dtype=float, copy=True),
+                      bz, apos, rsun)
 
     n_pixels = bx.size
     field_extent = apos[2] - apos[0]

@@ -1,9 +1,11 @@
 # SFQ in pyAMPP
 
-Python SFQ (Super Fast and Quality) azimuth disambiguation, vendored from
+Python SFQ (Super Fast and Quality) azimuth disambiguation, based on
 [Sergey-Anfinogentov/SFQ](https://github.com/Sergey-Anfinogentov/SFQ)
-(Python port by vit1-irk, merged upstream 2026-06-11). This is the same
-tree gx_simulator vendors as its `sfq` submodule.
+(Python port by vit1-irk, merged upstream 2026-06-11), with pyAMPP-local
+fixes for IDL parity (`sfq_clean` width, geometry-aware `pot_vmag`,
+image/`readsav` axis layout). Do **not** blindly re-sync from upstream or
+the gx_simulator `sfq` submodule — that would wipe these fixes.
 
 ## Citation
 

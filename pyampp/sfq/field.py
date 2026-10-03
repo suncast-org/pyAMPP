@@ -16,14 +16,11 @@ def _as_flat_mask(indin, shape):
     indin = np.asarray(indin)
     if indin.dtype == bool:
         return indin.reshape(shape)
-    mask = np.zeros(shape, dtype=bool)
+    mask = np.zeros(shape, dtype=bool).reshape(-1, order="F")
     flat = np.asarray(indin, dtype=np.int64)
-    # IDL WHERE is column-major; accept either layout for on-disk selection.
-    mask.reshape(-1, order="F")[flat] = True
-    # Also mark C-order indices if they fall in range (Python boolean dumps).
     valid = (flat >= 0) & (flat < mask.size)
-    mask.reshape(-1, order="C")[flat[valid]] = True
-    return mask
+    mask[flat[valid]] = True
+    return mask.reshape(shape, order="F")
 
 
 def _idl_fft_k(n, dtype=float):
@@ -270,8 +267,8 @@ def pot_vmag(mag, simple=True):
         Mag structure with potential ``t0/t1/t2`` components.
     """
     if not simple:
-        # Full odd-extension ``_Lfff_fft`` is unused by SFQ ``/simple``; keep
-        # Neumann path for both flags so callers stay IDL-SFQ compatible.
+        # Full odd-extension ``_Lfff_fft`` is unused by SFQ ``/simple``.
+        # Both flags use the Neumann path so callers stay IDL-SFQ compatible.
         pass
 
     l0 = b0 = p0 = 0.0

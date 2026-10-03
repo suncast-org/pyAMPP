@@ -24,6 +24,10 @@ SFQ / issue ``#42`` (toward ``1.1.1``):
   ``get_fftplane`` / ``_Lfff_fft_n``) into ``pyampp/sfq``, and align
   ``u_grid``/B-spline with image/``readsav`` axis layout. Matched-input
   full-pipeline transverse-sign agree vs IDL rises to ~0.998.
+- Harden ``--sfq`` wiring after independent review: NaN/sentinel→0 before
+  SFQ (IDL), HMI disambig bits outside the SFQ crop (Vert_current/FOV),
+  and CEA edge-midpoint sampling so curved bases are less often remapped
+  from ambiguous azimuth.
 
 1.1.0
 -----
