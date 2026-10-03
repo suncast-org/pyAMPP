@@ -4,6 +4,17 @@ Changelog
 Unreleased
 ----------
 
+1.1.0
+-----
+
+Release focus:
+
+- STEREO / reference-map display and embed workflow from PR ``#51``:
+  native-time spatial crops, context ``DATE-OBS`` display anchoring,
+  observer-LOS context drawing, and FOV persistence across observers.
+
+Highlights:
+
 - Anchor ``gxbox-view2d`` display time to the selected context refmap
   ``DATE-OBS`` (fallback: model time). The figure banner shows that
   observation time and Δt versus the model. The SDO display-LOS option is
@@ -50,6 +61,16 @@ Unreleased
   them with ``autoalign`` on the observer LOS context. Treating that
   heliographic plate scale as sky arcsec built a 32-pixel canvas and tore the
   overlay.
+
+Known limitations:
+
+- ``--sfq`` / GUI SFQ still only selects HMI disambiguation bit method ``0``
+  (potential acute). It does **not** run Rudenko/Anfinogentov SFQ
+  (issue ``#42``). Planned for ``1.1.1``.
+
+Packaging/versioning:
+
+- Bumped package version to ``1.1.0`` in packaging metadata.
 
 1.0.6
 -----
