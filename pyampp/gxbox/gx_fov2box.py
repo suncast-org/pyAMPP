@@ -215,65 +215,83 @@ def _is_offdisk_submap_nan_error(exc: Exception) -> bool:
     )
 
 
-def _fov_pixel_bounds(smap: Map, fov_bottom_left: SkyCoord, fov_top_right: SkyCoord) -> Tuple[slice, slice]:
-    """Map FOV corners to inclusive full-disk array slices (IDL prepare_basemaps style)."""
-    frame = smap.coordinate_frame
-    bl = fov_bottom_left.transform_to(frame)
-    tr = fov_top_right.transform_to(frame)
-    corners = SkyCoord(
-        Tx=[bl.Tx, bl.Tx, tr.Tx, tr.Tx],
-        Ty=[bl.Ty, tr.Ty, tr.Ty, bl.Ty],
-        frame=frame,
+def _sfq_rsun_arcsec(smap: Map) -> float:
+    """Solar radius in arcsec using IDL ``wcs_rsun()/dsun`` convention."""
+    dsun_m = float(u.Quantity(smap.dsun).to_value(u.m))
+    if not np.isfinite(dsun_m) or dsun_m <= 0:
+        return float(u.Quantity(smap.rsun_obs).to_value(u.arcsec))
+    return float(IDL_HMI_RSUN_M / dsun_m * (180.0 / np.pi) * 3600.0)
+
+
+def _sfq_corner_hpc_and_bounds(
+    smap: Map,
+    bottom_wcs_header: Any,
+) -> Tuple[np.ndarray, slice, slice]:
+    """Map model-base WCS corners to HMI pixels like IDL ``prepare_basemaps, /sfq``.
+
+    Returns ``(pos, y_slice, x_slice)`` where ``pos`` is
+    ``[xmin, ymin, xmax, ymax]`` in helioprojective arcsec (IDL ``crd_ref``),
+    and slices index the full-disk ``smap.data`` array as ``[y, x]``.
+    """
+    from astropy.wcs import WCS
+
+    header = dict(bottom_wcs_header)
+    nx = int(header.get("NAXIS1") or header.get("naxis1"))
+    ny = int(header.get("NAXIS2") or header.get("naxis2"))
+    if nx < 2 or ny < 2:
+        raise ValueError(f"SFQ base WCS has invalid NAXIS ({nx}, {ny}).")
+
+    # IDL wcs_get_coord on pixels [0,0], [0,ny-1], [nx-1,ny-1], [nx-1,0]
+    xs = np.array([0.0, 0.0, nx - 1.0, nx - 1.0])
+    ys = np.array([0.0, ny - 1.0, ny - 1.0, 0.0])
+    corners = WCS(header).pixel_to_world(xs, ys)
+    hpc = corners.transform_to(smap.coordinate_frame)
+    pos = np.array(
+        [
+            float(np.min(hpc.Tx.to_value(u.arcsec))),
+            float(np.min(hpc.Ty.to_value(u.arcsec))),
+            float(np.max(hpc.Tx.to_value(u.arcsec))),
+            float(np.max(hpc.Ty.to_value(u.arcsec))),
+        ],
+        dtype=float,
     )
-    ypix, xpix = smap.wcs.world_to_array_indices(corners)
-    ypix = np.asarray(ypix, dtype=float)
-    xpix = np.asarray(xpix, dtype=float)
-    ny, nx = smap.data.shape
-    # IDL: round(minmax(...))+[-1,1]
-    y0 = int(np.floor(np.min(ypix))) - 1
-    y1 = int(np.ceil(np.max(ypix))) + 1
-    x0 = int(np.floor(np.min(xpix))) - 1
-    x1 = int(np.ceil(np.max(xpix))) + 1
-    y0 = max(y0, 0)
+
+    yi, xi = smap.wcs.world_to_array_index(hpc)
+    yi = np.asarray(yi, dtype=float)
+    xi = np.asarray(xi, dtype=float)
+    ny_full, nx_full = smap.data.shape
+    # IDL: xrange = round(minmax(pix_ref[0,*]))+[-1,1]  (and same for y)
+    x0 = int(np.round(np.min(xi))) - 1
+    x1 = int(np.round(np.max(xi))) + 1
+    y0 = int(np.round(np.min(yi))) - 1
+    y1 = int(np.round(np.max(yi))) + 1
     x0 = max(x0, 0)
-    y1 = min(y1, ny - 1)
-    x1 = min(x1, nx - 1)
+    y0 = max(y0, 0)
+    x1 = min(x1, nx_full - 1)
+    y1 = min(y1, ny_full - 1)
     if y1 < y0 or x1 < x0:
         raise ValueError("SFQ FOV crop produced an empty pixel range.")
-    return slice(y0, y1 + 1), slice(x0, x1 + 1)
-
-
-def _helioprojective_arcsec_pos(fov_bottom_left: SkyCoord, fov_top_right: SkyCoord) -> np.ndarray:
-    """Return [xmin, ymin, xmax, ymax] in arcsec for SFQ ``apos``."""
-    xs = np.array(
-        [fov_bottom_left.Tx.to_value(u.arcsec), fov_top_right.Tx.to_value(u.arcsec)],
-        dtype=float,
-    )
-    ys = np.array(
-        [fov_bottom_left.Ty.to_value(u.arcsec), fov_top_right.Ty.to_value(u.arcsec)],
-        dtype=float,
-    )
-    return np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=float)
+    return pos, slice(y0, y1 + 1), slice(x0, x1 + 1)
 
 
 def _apply_sfq_disambiguation(
     map_field: Map,
     map_inclination: Map,
     map_azimuth: Map,
-    fov_bottom_left: SkyCoord,
-    fov_top_right: SkyCoord,
+    bottom_wcs_header: Any,
     *,
     silent: bool = False,
 ) -> Map:
-    """Run Rudenko/Anfinogentov SFQ on an FOV crop and write azimuth back.
+    """Run Rudenko/Anfinogentov SFQ on a base-WCS FOV crop and write azimuth back.
 
-    Mirrors IDL ``prepare_basemaps, /sfq``: skip HMI disambig bits, crop the
-    ambiguous transverse field, call ``sfq_disambig`` with HMI parameters, then
-    restore azimuth into the full-disk map before ``hmi_b2ptr``.
+    Mirrors IDL ``prepare_basemaps, /sfq``: skip HMI disambig bits, crop using
+    model-base (CEA/TOP) WCS corners projected into the full-disk HMI frame,
+    call ``sfq_disambig`` with HMI parameters, then restore azimuth into the
+    full-disk map before ``hmi_b2ptr``.
     """
     from pyampp.sfq import sfq_disambig
 
-    ysl, xsl = _fov_pixel_bounds(map_field, fov_bottom_left, fov_top_right)
+    pos, ysl, xsl = _sfq_corner_hpc_and_bounds(map_field, bottom_wcs_header)
     field = np.asarray(map_field.data[ysl, xsl], dtype=float)
     inclination = np.asarray(map_inclination.data[ysl, xsl], dtype=float)
     azimuth = np.asarray(map_azimuth.data[ysl, xsl], dtype=float)
@@ -289,8 +307,7 @@ def _apply_sfq_disambiguation(
     by = np.rot90(by, 2)
     bz = np.rot90(bz, 2)
 
-    pos = _helioprojective_arcsec_pos(fov_bottom_left, fov_top_right)
-    rsun_arcsec = float(u.Quantity(map_field.rsun_obs).to_value(u.arcsec))
+    rsun_arcsec = _sfq_rsun_arcsec(map_field)
 
     # IDL /hmi sets solis=1 → Python mode=True
     bx, by = sfq_disambig(bx, by, bz, pos, rsun_arcsec, mode=True, silent=silent)
@@ -1032,8 +1049,7 @@ def _prepare_observation_state(
                 maps["field"],
                 maps["inclination"],
                 maps["azimuth"],
-                fov_coords[0],
-                fov_coords[1],
+                bottom_wcs_header,
                 silent=False,
             )
 

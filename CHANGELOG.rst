@@ -11,9 +11,12 @@ SFQ / issue ``#42`` (toward ``1.1.1``):
 - Wire ``gx_fov2box --sfq`` to skip HMI disambiguation bits, run SFQ on the
   FOV crop (IDL ``prepare_basemaps, /sfq`` shape), then continue
   ``hmi_b2ptr`` / remap.
+- Crop SFQ using model-base (CEA/TOP) WCS corners projected into the HMI
+  frame (not the padded helioprojective context FOV), matching IDL.
 - Correct CLI/``--info`` wording that previously claimed SFQ was HMI bit
   method ``0``.
-- Add synthetic SFQ unit smoke tests.
+- Add synthetic SFQ unit smoke tests and a real-data IDL crop/rotate parity
+  checker (``real_data_checks/check_sfq_idl_parity.py``).
 
 1.1.0
 -----
