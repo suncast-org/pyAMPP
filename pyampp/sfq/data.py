@@ -23,6 +23,7 @@ def get_str_mag(bx, by, bz, apos, rsun):
     bz = np.asarray(bz, dtype=float)
     apos = np.asarray(apos, dtype=float)
 
+    # bx is image layout (ny, nx); u_grid n=[nx, ny] yields the same shape.
     ny, nx = bx.shape
     gr = u_grid(apos[:2], apos[2:] - apos[:2], [nx, ny])
 

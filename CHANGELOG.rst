@@ -20,6 +20,10 @@ SFQ / issue ``#42`` (toward ``1.1.1``):
 - Fix vendored SFQ ``sfq_clean`` filter width: IDL ``median/smooth(arr, s)``
   uses neighborhood size ``s``, not radius ``2*s+1`` (was the dominant
   post-SFQ disagreement vs IDL after matched inputs).
+- Port IDL geometry-aware ``pot_vmag`` (``SOL_crd`` / ``a_field`` /
+  ``get_fftplane`` / ``_Lfff_fft_n``) into ``pyampp/sfq``, and align
+  ``u_grid``/B-spline with image/``readsav`` axis layout. Matched-input
+  full-pipeline transverse-sign agree vs IDL rises to ~0.998.
 
 1.1.0
 -----
