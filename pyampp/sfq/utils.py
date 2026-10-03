@@ -142,21 +142,29 @@ def _b_spl_k_2d(a):
     return h / 256.0
 
 
-def smooth_2d(arr, radius):
-    """Box-car smoothing with edge truncation."""
-    size = int(radius) * 2 + 1
-    return uniform_filter(arr.astype(float), size=size, mode='constant', cval=0.0)
+def smooth_2d(arr, width):
+    """Box-car smoothing matching IDL ``smooth(arr, width, /edge_truncate)``.
+
+    ``width`` is the IDL neighborhood size (not a radius).
+    """
+    size = max(int(width), 1)
+    # IDL /edge_truncate copies edge values; nearest is the closest ndimage mode.
+    return uniform_filter(arr.astype(float), size=size, mode="nearest")
 
 
-def median_2d(arr, radius):
-    """Median filter."""
-    size = int(radius) * 2 + 1
-    return median_filter(arr.astype(float), size=size, mode='constant', cval=0.0)
+def median_2d(arr, width):
+    """Median filter matching IDL ``median(arr, width, /even)``.
+
+    ``width`` is the IDL neighborhood size (not a radius).
+    """
+    size = max(int(width), 1)
+    return median_filter(arr.astype(float), size=size, mode="nearest")
 
 
 def gauss_smooth(arr, sigma):
     """Gaussian smoothing."""
-    return gaussian_filter(arr.astype(float), sigma=sigma, mode='constant', cval=0.0)
+    return gaussian_filter(arr.astype(float), sigma=sigma, mode="nearest")
+
 
 
 def stoem(th, ph, p):

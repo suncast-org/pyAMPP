@@ -17,6 +17,9 @@ SFQ / issue ``#42`` (toward ``1.1.1``):
   method ``0``.
 - Add synthetic SFQ unit smoke tests and a real-data IDL crop/rotate parity
   checker (``real_data_checks/check_sfq_idl_parity.py``).
+- Fix vendored SFQ ``sfq_clean`` filter width: IDL ``median/smooth(arr, s)``
+  uses neighborhood size ``s``, not radius ``2*s+1`` (was the dominant
+  post-SFQ disagreement vs IDL after matched inputs).
 
 1.1.0
 -----

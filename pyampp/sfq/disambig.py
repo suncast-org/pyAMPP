@@ -75,7 +75,7 @@ def _clean_iterative(bx, by, s, use_gauss=False, use_median=False):
 
     Args:
         bx, by: Transverse field components (modified in place).
-        s: Smoothing scale.
+        s: IDL filter width / scale (same meaning as in ``sfq_clean.pro``).
         use_gauss: Use Gaussian smoothing.
         use_median: Use median filtering.
     """
@@ -91,12 +91,16 @@ def _clean_iterative(bx, by, s, use_gauss=False, use_median=False):
             mbx = median_2d(bx, s)
             mby = median_2d(by, s)
         else:
+            # IDL: smooth(bx,s,/edge_tr) - bx/float(s^2)
             mbx = smooth_2d(bx, s) - bx / float(s ** 2)
             mby = smooth_2d(by, s) - by / float(s ** 2)
 
         dot = mbx * bx + mby * by
         ind = dot < 0
-        threshold = max(len(bx.ravel()) * 0.0001, 5)
+        # Match IDL intent: stop when remaining flips are a tiny fraction.
+        # IDL uses a boolean expression that effectively stops near ~0 flips for
+        # typical FOVs; keep a small absolute floor for stability.
+        threshold = max(bx.size * 0.0001, 5)
         if np.sum(ind) < threshold:
             break
         bx[ind] = -bx[ind]
