@@ -16,8 +16,10 @@ This note summarizes code changes and comparison results performed to align Pyth
 - Removed `roundtrip_coords=False` where it was passed to `reproject_exact`.
 
 ### HMI disambiguation parity
-- IDL uses `hmi_disambig, ..., 0`.
-- Python now calls `hmi_disambig(..., method=0)` in `pyampp/gxbox/gx_fov2box.py`.
+- IDL non-SFQ path uses `hmi_disambig, ..., 0`.
+- Python non-SFQ path uses `hmi_disambig(..., method=2)` (radial acute; historical pyAMPP default).
+- Python `--sfq` skips HMI bits and runs Rudenko/Anfinogentov SFQ on the FOV crop
+  (issue #42; toward 1.1.1).
 
 ### Component mapping parity
 - IDL base convention: `BX=BP`, `BY=-BT`, `BZ=BR`.

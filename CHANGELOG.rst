@@ -4,6 +4,17 @@ Changelog
 Unreleased
 ----------
 
+SFQ / issue ``#42`` (toward ``1.1.1``):
+
+- Replace the incomplete in-tree ``pyampp/sfq`` stub with the Sergey/vit1-irk
+  Python SFQ package (same source gx_simulator vendors).
+- Wire ``gx_fov2box --sfq`` to skip HMI disambiguation bits, run SFQ on the
+  FOV crop (IDL ``prepare_basemaps, /sfq`` shape), then continue
+  ``hmi_b2ptr`` / remap.
+- Correct CLI/``--info`` wording that previously claimed SFQ was HMI bit
+  method ``0``.
+- Add synthetic SFQ unit smoke tests.
+
 1.1.0
 -----
 

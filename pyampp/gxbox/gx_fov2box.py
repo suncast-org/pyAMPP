@@ -215,6 +215,96 @@ def _is_offdisk_submap_nan_error(exc: Exception) -> bool:
     )
 
 
+def _fov_pixel_bounds(smap: Map, fov_bottom_left: SkyCoord, fov_top_right: SkyCoord) -> Tuple[slice, slice]:
+    """Map FOV corners to inclusive full-disk array slices (IDL prepare_basemaps style)."""
+    frame = smap.coordinate_frame
+    bl = fov_bottom_left.transform_to(frame)
+    tr = fov_top_right.transform_to(frame)
+    corners = SkyCoord(
+        Tx=[bl.Tx, bl.Tx, tr.Tx, tr.Tx],
+        Ty=[bl.Ty, tr.Ty, tr.Ty, bl.Ty],
+        frame=frame,
+    )
+    ypix, xpix = smap.wcs.world_to_array_indices(corners)
+    ypix = np.asarray(ypix, dtype=float)
+    xpix = np.asarray(xpix, dtype=float)
+    ny, nx = smap.data.shape
+    # IDL: round(minmax(...))+[-1,1]
+    y0 = int(np.floor(np.min(ypix))) - 1
+    y1 = int(np.ceil(np.max(ypix))) + 1
+    x0 = int(np.floor(np.min(xpix))) - 1
+    x1 = int(np.ceil(np.max(xpix))) + 1
+    y0 = max(y0, 0)
+    x0 = max(x0, 0)
+    y1 = min(y1, ny - 1)
+    x1 = min(x1, nx - 1)
+    if y1 < y0 or x1 < x0:
+        raise ValueError("SFQ FOV crop produced an empty pixel range.")
+    return slice(y0, y1 + 1), slice(x0, x1 + 1)
+
+
+def _helioprojective_arcsec_pos(fov_bottom_left: SkyCoord, fov_top_right: SkyCoord) -> np.ndarray:
+    """Return [xmin, ymin, xmax, ymax] in arcsec for SFQ ``apos``."""
+    xs = np.array(
+        [fov_bottom_left.Tx.to_value(u.arcsec), fov_top_right.Tx.to_value(u.arcsec)],
+        dtype=float,
+    )
+    ys = np.array(
+        [fov_bottom_left.Ty.to_value(u.arcsec), fov_top_right.Ty.to_value(u.arcsec)],
+        dtype=float,
+    )
+    return np.array([xs.min(), ys.min(), xs.max(), ys.max()], dtype=float)
+
+
+def _apply_sfq_disambiguation(
+    map_field: Map,
+    map_inclination: Map,
+    map_azimuth: Map,
+    fov_bottom_left: SkyCoord,
+    fov_top_right: SkyCoord,
+    *,
+    silent: bool = False,
+) -> Map:
+    """Run Rudenko/Anfinogentov SFQ on an FOV crop and write azimuth back.
+
+    Mirrors IDL ``prepare_basemaps, /sfq``: skip HMI disambig bits, crop the
+    ambiguous transverse field, call ``sfq_disambig`` with HMI parameters, then
+    restore azimuth into the full-disk map before ``hmi_b2ptr``.
+    """
+    from pyampp.sfq import sfq_disambig
+
+    ysl, xsl = _fov_pixel_bounds(map_field, fov_bottom_left, fov_top_right)
+    field = np.asarray(map_field.data[ysl, xsl], dtype=float)
+    inclination = np.asarray(map_inclination.data[ysl, xsl], dtype=float)
+    azimuth = np.asarray(map_azimuth.data[ysl, xsl], dtype=float)
+
+    inc_rad = np.deg2rad(inclination)
+    az_rad = np.deg2rad(azimuth)
+    bz = field * np.cos(inc_rad)
+    bx = field * np.sin(inc_rad) * np.sin(az_rad)
+    by = -field * np.sin(inc_rad) * np.cos(az_rad)
+
+    # IDL rotate(*, 2) == 180° rotation
+    bx = np.rot90(bx, 2)
+    by = np.rot90(by, 2)
+    bz = np.rot90(bz, 2)
+
+    pos = _helioprojective_arcsec_pos(fov_bottom_left, fov_top_right)
+    rsun_arcsec = float(u.Quantity(map_field.rsun_obs).to_value(u.arcsec))
+
+    # IDL /hmi sets solis=1 → Python mode=True
+    bx, by = sfq_disambig(bx, by, bz, pos, rsun_arcsec, mode=True, silent=silent)
+
+    # IDL: by = -rotate(by,2); bx = rotate(bx,2); az = atan(bx,by)
+    by = -np.rot90(by, 2)
+    bx = np.rot90(bx, 2)
+    az_deg = np.rad2deg(np.arctan2(bx, by))
+
+    az_full = np.array(map_azimuth.data, dtype=float, copy=True)
+    az_full[ysl, xsl] = az_deg
+    return map_from_data_header_compat(az_full, map_azimuth.meta)
+
+
 def _submap_with_fov_safe(smap: Map, fov_bottom_left: SkyCoord, fov_top_right: SkyCoord) -> Map:
     frame = smap.coordinate_frame
     try:
@@ -854,7 +944,9 @@ def _prepare_observation_state(
 
     obs_time = requested_obs_time
     data_dir_path = Path(cfg.data_dir).expanduser().resolve()
-    disambig_method = 0 if cfg.sfq else 2
+    # Non-SFQ default matches prior pyAMPP practice (HMI radial-acute bit 2).
+    # SFQ skips HMI disambig bits entirely and runs Rudenko/Anfinogentov SFQ later.
+    disambig_method = 2
     print("Checking/downloading HMI/AIA data...")
     dl_t0 = time_mod.perf_counter()
     maps, download_info = _load_hmi_maps_from_downloader(
@@ -868,6 +960,7 @@ def _prepare_observation_state(
         hmi_time_window=cfg.hmi_time_window,
         aia_time_window=cfg.aia_time_window,
         disambig_method=disambig_method,
+        apply_hmi_disambig=not cfg.sfq,
         strict_required=(_last_stage_tag(cfg.stop_after) != "DL"),
     )
     dl_elapsed = time_mod.perf_counter() - dl_t0
@@ -932,6 +1025,22 @@ def _prepare_observation_state(
     (
         rsun, observer, box_origin, bottom_wcs_header, projection_tag, fov_coords, box_corners_world,
     ) = run_logged_step("Preparing observer and box geometry", _prepare_geometry)
+
+    if cfg.sfq:
+        def _run_sfq():
+            return _apply_sfq_disambiguation(
+                maps["field"],
+                maps["inclination"],
+                maps["azimuth"],
+                fov_coords[0],
+                fov_coords[1],
+                silent=False,
+            )
+
+        maps["azimuth"] = run_logged_step(
+            "Running SFQ azimuth disambiguation on FOV crop",
+            _run_sfq,
+        )
 
     map_bp, map_bt, map_br = run_logged_step(
         "Converting HMI vector field components",
@@ -2742,7 +2851,7 @@ def _print_info(cfg: Fov2BoxConfig) -> None:
         ("chromo_level_resolved", resolved_chromo_level, "Effective chromo level passed to line tracer (1 Mm / dx_km)"),
         ("euv", cfg.euv, "Download AIA EUV context maps"),
         ("uv", cfg.uv, "Download AIA UV context maps"),
-        ("sfq", cfg.sfq, "Use SFQ disambiguation (method=0)"),
+        ("sfq", cfg.sfq, "Use Rudenko/Anfinogentov SFQ on FOV crop (not HMI bit method 0)"),
         ("jump2potential", cfg.jump2potential, "Start from entry box and jump to POT"),
         ("jump2bounds", cfg.jump2bounds, "Start from entry box and jump to BND"),
         ("jump2nlfff", cfg.jump2nlfff, "Start from entry box and jump to NAS"),
@@ -2780,6 +2889,7 @@ def _load_hmi_maps_from_downloader(
     hmi_time_window: float = 720,
     aia_time_window: float = 12,
     disambig_method: int = 2,
+    apply_hmi_disambig: bool = True,
     strict_required: bool = True,
 ) -> tuple[Dict[str, Map], dict]:
     import time as time_mod
@@ -2859,7 +2969,8 @@ def _load_hmi_maps_from_downloader(
     map_conti = load_sunpy_map_compat(files["continuum"])
     map_losma = load_sunpy_map_compat(files["magnetogram"])
 
-    map_azimuth = hmi_disambig(map_azimuth, map_disambig, method=disambig_method)
+    if apply_hmi_disambig:
+        map_azimuth = hmi_disambig(map_azimuth, map_disambig, method=disambig_method)
 
     maps = {
         "field": map_field,
@@ -3165,7 +3276,11 @@ def main(
     ),
     euv: bool = typer.Option(False, "--euv", help="Download AIA EUV maps"),
     uv: bool = typer.Option(False, "--uv", help="Download AIA UV maps"),
-    sfq: bool = typer.Option(False, "--sfq", help="Use SFQ disambiguation (method=0)"),
+    sfq: bool = typer.Option(
+        False,
+        "--sfq",
+        help="Use Rudenko/Anfinogentov SFQ disambiguation on the FOV crop (skips HMI disambig bits)",
+    ),
     observer_name: str = typer.Option("earth", "--observer-name", help="Observer identifier stored in output metadata"),
     fov_xc: Optional[float] = typer.Option(None, "--fov-xc", help="Observer/image FOV center X in arcsec"),
     fov_yc: Optional[float] = typer.Option(None, "--fov-yc", help="Observer/image FOV center Y in arcsec"),
