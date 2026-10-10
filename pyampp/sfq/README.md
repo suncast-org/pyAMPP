@@ -1,16 +1,29 @@
-# SFQ In pyAMPP
+# SFQ in pyAMPP
 
-This folder contains the Python rewrite of SFQ (Super Fast and Quality) magnetic-field disambiguation routines used by AMPP/GX workflows.
+Python SFQ (Super Fast and Quality) azimuth disambiguation, based on
+[Sergey-Anfinogentov/SFQ](https://github.com/Sergey-Anfinogentov/SFQ)
+(Python port by vit1-irk, merged upstream 2026-06-11), with pyAMPP-local
+fixes for IDL parity (`sfq_clean` width, geometry-aware `pot_vmag`,
+image/`readsav` axis layout). Do **not** blindly re-sync from upstream or
+the gx_simulator `sfq` submodule — that would wipe these fixes.
 
-## Source And Attribution
+## Citation
 
-The SFQ method and reference implementation come from the IDL package maintained by Sergey Anfinogentov.
+Rudenko, G. V. & Anfinogentov, S. A. (2014), Solar Physics, 289, 1499–1516.
 
-- Original source repository: https://github.com/Sergey-Anfinogentov
-- Authors: George Rudenko, Sergey Anfinogentov
+## Entry point
 
-Please cite the original SFQ work and repository when using these routines in scientific outputs.
+```python
+from pyampp.sfq import sfq_disambig
 
-## Integration Note
+bx_out, by_out = sfq_disambig(bx, by, bz, pos, rsun, mode=True)  # mode=True ≈ IDL /hmi
+```
 
-The current implementation is incremental and parity-focused. Some low-level geometry/FFT backends are still injected as callables while their native Python implementations are finalized.
+`gx_fov2box --sfq` uses this path on an FOV crop of ambiguous HMI azimuth
+(see issue [#42](https://github.com/suncast-org/pyAMPP/issues/42)).
+
+## Potential field
+
+``pot_vmag`` is the IDL geometry-aware path (local sbox remap + Neumann
+LFFF FFT), not a planar FFT from Bz alone. Arrays use image layout
+(axis0=y, axis1=x), matching FITS/`scipy.io.readsav` inputs.

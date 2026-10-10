@@ -4,6 +4,35 @@ Changelog
 Unreleased
 ----------
 
+SFQ / issue ``#42`` (toward ``1.1.1``):
+
+- Replace the incomplete in-tree ``pyampp/sfq`` stub with the Sergey/vit1-irk
+  Python SFQ package (same source gx_simulator vendors).
+- Wire ``gx_fov2box --sfq`` to skip HMI disambiguation bits, run SFQ on the
+  FOV crop (IDL ``prepare_basemaps, /sfq`` shape), then continue
+  ``hmi_b2ptr`` / remap.
+- Crop SFQ using model-base (CEA/TOP) WCS corners projected into the HMI
+  frame (not the padded helioprojective context FOV), matching IDL.
+- Correct CLI/``--info`` wording that previously claimed SFQ was HMI bit
+  method ``0``.
+- Add synthetic SFQ unit smoke tests and a real-data IDL crop/rotate parity
+  checker (``real_data_checks/check_sfq_idl_parity.py``).
+- Fix vendored SFQ ``sfq_clean`` filter width: IDL ``median/smooth(arr, s)``
+  uses neighborhood size ``s``, not radius ``2*s+1`` (was the dominant
+  post-SFQ disagreement vs IDL after matched inputs).
+- Port IDL geometry-aware ``pot_vmag`` (``SOL_crd`` / ``a_field`` /
+  ``get_fftplane`` / ``_Lfff_fft_n``) into ``pyampp/sfq``, and align
+  ``u_grid``/B-spline with image/``readsav`` axis layout. Matched-input
+  full-pipeline transverse-sign agree vs IDL rises to ~0.998.
+- Harden ``--sfq`` wiring after independent review: NaN/sentinel→0 before
+  SFQ (IDL), HMI disambig bits outside the SFQ crop (Vert_current/FOV),
+  and CEA edge-midpoint sampling so curved bases are less often remapped
+  from ambiguous azimuth.
+- Copilot review follow-up: reject unsupported large-FOV ``pex_bl`` path
+  instead of a no-op branch; restore ``pex_bl``/``pex_bl_`` import shims;
+  recompute SFQ ``pos`` from the final crop; copy inputs in ``sfq_clean``;
+  create IDL dump outdir; tighten clean-width unit coverage.
+
 1.1.0
 -----
 
