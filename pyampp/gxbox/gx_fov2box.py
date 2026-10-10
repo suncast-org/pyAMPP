@@ -256,9 +256,10 @@ def _sfq_corner_hpc_and_bounds(
     centers). Still applies IDL ``round(minmax)+[-1,1]`` padding.
 
     Returns ``(pos, y_slice, x_slice)`` where ``pos`` is
-    ``[xmin, ymin, xmax, ymax]`` in helioprojective arcsec from the four
-    corners only (IDL ``crd_ref`` / ``pos``), and slices index ``smap.data``
-    as ``[y, x]``.
+    ``[xmin, ymin, xmax, ymax]`` in helioprojective arcsec for the **final
+    crop** (so ``get_str_mag`` pixel scale matches the cropped array when
+    midpoints widen the bounds beyond the four CEA corners), and slices index
+    ``smap.data`` as ``[y, x]``.
     """
     from astropy.wcs import WCS
 
@@ -279,17 +280,6 @@ def _sfq_corner_hpc_and_bounds(
 
     world = WCS(header).pixel_to_world(xs, ys)
     hpc = world.transform_to(smap.coordinate_frame)
-    # IDL pos uses only the four corners.
-    hpc_corners = hpc[:4]
-    pos = np.array(
-        [
-            float(np.min(hpc_corners.Tx.to_value(u.arcsec))),
-            float(np.min(hpc_corners.Ty.to_value(u.arcsec))),
-            float(np.max(hpc_corners.Tx.to_value(u.arcsec))),
-            float(np.max(hpc_corners.Ty.to_value(u.arcsec))),
-        ],
-        dtype=float,
-    )
 
     yi, xi = smap.wcs.world_to_array_index(hpc)
     yi = np.asarray(yi, dtype=float)
@@ -306,6 +296,21 @@ def _sfq_corner_hpc_and_bounds(
     y1 = min(y1, ny_full - 1)
     if y1 < y0 or x1 < x0:
         raise ValueError("SFQ FOV crop produced an empty pixel range.")
+
+    # Recompute pos from the crop rectangle so midpoints/pad cannot leave
+    # get_str_mag spanning corner-only arcsec over a larger pixel array.
+    crop_y = np.array([y0, y0, y1, y1], dtype=int)
+    crop_x = np.array([x0, x1, x1, x0], dtype=int)
+    crop_hpc = smap.wcs.array_index_to_world(crop_y, crop_x)
+    pos = np.array(
+        [
+            float(np.min(crop_hpc.Tx.to_value(u.arcsec))),
+            float(np.min(crop_hpc.Ty.to_value(u.arcsec))),
+            float(np.max(crop_hpc.Tx.to_value(u.arcsec))),
+            float(np.max(crop_hpc.Ty.to_value(u.arcsec))),
+        ],
+        dtype=float,
+    )
     return pos, slice(y0, y1 + 1), slice(x0, x1 + 1)
 
 

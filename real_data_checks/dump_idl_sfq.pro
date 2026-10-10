@@ -2,6 +2,7 @@
 pro dump_idl_sfq
   compile_opt idl2
   outdir = '/tmp/sfq_parity_20240512'
+  if ~file_test(outdir, /directory) then file_mkdir, outdir
   file_field = '/Users/gelu/jsoc_cache/2024-05-11/hmi.B_720s.20240512_000000_TAI.field.fits'
   file_inclination = '/Users/gelu/jsoc_cache/2024-05-11/hmi.B_720s.20240512_000000_TAI.inclination.fits'
   file_azimuth = '/Users/gelu/jsoc_cache/2024-05-11/hmi.B_720s.20240512_000000_TAI.azimuth.fits'

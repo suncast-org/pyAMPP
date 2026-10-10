@@ -28,6 +28,10 @@ SFQ / issue ``#42`` (toward ``1.1.1``):
   SFQ (IDL), HMI disambig bits outside the SFQ crop (Vert_current/FOV),
   and CEA edge-midpoint sampling so curved bases are less often remapped
   from ambiguous azimuth.
+- Copilot review follow-up: reject unsupported large-FOV ``pex_bl`` path
+  instead of a no-op branch; restore ``pex_bl``/``pex_bl_`` import shims;
+  recompute SFQ ``pos`` from the final crop; copy inputs in ``sfq_clean``;
+  create IDL dump outdir; tighten clean-width unit coverage.
 
 1.1.0
 -----

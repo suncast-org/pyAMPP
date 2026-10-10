@@ -16,7 +16,7 @@ Please cite that paper and the upstream repository when publishing work
 that uses these routines.
 """
 
-from .disambig import sfq_clean, sfq_disambig, sfq_frame, sfq_step1
+from .disambig import pex_bl, pex_bl_, sfq_clean, sfq_disambig, sfq_frame, sfq_step1
 from .data import get_str_mag
 from .field import pot_vmag
 
@@ -27,4 +27,6 @@ __all__ = [
     "sfq_clean",
     "get_str_mag",
     "pot_vmag",
+    "pex_bl",
+    "pex_bl_",
 ]

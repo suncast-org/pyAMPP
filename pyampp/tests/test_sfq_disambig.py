@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy.ndimage import gaussian_filter
 
 from pyampp.sfq import sfq_disambig
@@ -85,14 +86,43 @@ def test_sfq_clean_filter_width_is_idl_size_not_radius():
     """IDL ``median/smooth(arr, s)`` uses neighborhood size ``s``, not ``2*s+1``."""
     from pyampp.sfq.utils import median_2d, smooth_2d
 
-    arr = np.arange(25, dtype=float).reshape(5, 5)
+    # Impulse: size-3 and the old radius-as-size mistake (7) must disagree.
+    arr = np.zeros((9, 9), dtype=float)
+    arr[4, 4] = 100.0
     med3 = median_2d(arr, 3)
-    # Size-3 median of center 3x3 block [6,7,8,11,12,13,16,17,18] = 12
-    assert med3[2, 2] == 12.0
-    sm = smooth_2d(arr, 3)
-    assert sm.shape == arr.shape
+    med7 = median_2d(arr, 7)
+    assert med3[4, 4] == 0.0  # 3x3 neighborhood is mostly zeros
+    assert med7[4, 4] == 0.0
+    # Off-center pixel: size-3 still sees the impulse; size-7 does too, but
+    # a far pixel distinguishes widths via smooth mean dilution.
+    sm3 = smooth_2d(arr, 3)
+    sm7 = smooth_2d(arr, 7)
+    assert sm3.shape == arr.shape
+    assert sm3[4, 4] == pytest.approx(100.0 / 9.0)
+    assert sm7[4, 4] == pytest.approx(100.0 / 49.0)
+    assert sm3[4, 4] != sm7[4, 4]
     # Width-1 is identity for median of this array's interior.
-    assert median_2d(arr, 1)[2, 2] == arr[2, 2]
+    assert median_2d(arr, 1)[4, 4] == arr[4, 4]
+
+
+def test_sfq_disambig_rejects_unsupported_large_fov():
+    bx = np.ones((1024, 1024), dtype=float)
+    by = np.ones((1024, 1024), dtype=float)
+    bz = np.ones((1024, 1024), dtype=float)
+    pos = np.array([-500.0, -500.0, 500.0, 500.0])  # extent >= 0.5*rsun
+    with pytest.raises(ValueError, match="large-FOV"):
+        sfq_disambig(bx, by, bz, pos, rsun=960.0, silent=True)
+
+
+def test_sfq_clean_does_not_mutate_caller_arrays():
+    from pyampp.sfq.disambig import sfq_clean
+
+    bx = np.array([[1.0, -2.0], [3.0, -4.0]], dtype=float)
+    by = np.array([[-1.0, 2.0], [-3.0, 4.0]], dtype=float)
+    bx0, by0 = bx.copy(), by.copy()
+    sfq_clean(bx, by, silent=True)
+    assert np.array_equal(bx, bx0)
+    assert np.array_equal(by, by0)
 
 
 def test_sfq_sanitize_hmi_zeros_nan_and_sentinels():
@@ -118,7 +148,14 @@ def test_sfq_public_exports():
 
     assert callable(sfq.sfq_disambig)
     assert callable(boxutils.sfq_disambig)
-    assert not hasattr(sfq, "pex_bl")
+    assert callable(sfq.pex_bl)
+    assert callable(sfq.pex_bl_)
+    assert callable(boxutils.pex_bl)
+    assert callable(boxutils.pex_bl_)
+    with pytest.raises(NotImplementedError, match="pex_bl"):
+        sfq.pex_bl({})
+    with pytest.raises(NotImplementedError, match="pex_bl"):
+        boxutils.pex_bl_({})
 
 
 def test_load_hmi_maps_skips_disambig_when_sfq():

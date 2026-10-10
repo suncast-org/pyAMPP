@@ -1461,6 +1461,8 @@ def update_line_seeds_h5(filename, line_seeds):
 
 # Backward-compatible SFQ exports (Sergey/vit1-irk Python package).
 from pyampp.sfq import get_str_mag as get_str_mag
+from pyampp.sfq import pex_bl as pex_bl
+from pyampp.sfq import pex_bl_ as pex_bl_
 from pyampp.sfq import pot_vmag as pot_vmag
 from pyampp.sfq import sfq_clean as sfq_clean
 from pyampp.sfq import sfq_disambig as sfq_disambig

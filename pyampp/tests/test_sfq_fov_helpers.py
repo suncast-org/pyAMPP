@@ -79,6 +79,20 @@ def test_sfq_corner_bounds_use_round_padding():
     # round+[-1,1] expands by at least one pixel beyond the 4-pixel base.
     assert (ysl.stop - ysl.start) >= 5
     assert (xsl.stop - xsl.start) >= 5
+    # pos must match the final crop rectangle (not corner-only FOV arcsec).
+    crop_hpc = smap.wcs.array_index_to_world(
+        [ysl.start, ysl.start, ysl.stop - 1, ysl.stop - 1],
+        [xsl.start, xsl.stop - 1, xsl.stop - 1, xsl.start],
+    )
+    expect = np.array(
+        [
+            float(np.min(crop_hpc.Tx.to_value("arcsec"))),
+            float(np.min(crop_hpc.Ty.to_value("arcsec"))),
+            float(np.max(crop_hpc.Tx.to_value("arcsec"))),
+            float(np.max(crop_hpc.Ty.to_value("arcsec"))),
+        ]
+    )
+    assert pos == pytest.approx(expect, rel=0, abs=1e-9)
 
 
 def test_sfq_sanitize_preserves_finite_values():

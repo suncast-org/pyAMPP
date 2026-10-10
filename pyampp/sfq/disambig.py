@@ -7,6 +7,22 @@ from .data import get_str_mag
 from .field import pot_vmag
 from .utils import gauss_smooth, gaussf, median_2d, smooth_2d
 
+_PEX_BL_REMOVED = (
+    "pex_bl / pex_bl_ large-FOV tiling is not included in this vendored SFQ "
+    "package; AMPP uses FOV crops with sfq_frame. Use sfq_disambig on a crop, "
+    "or the upstream Sergey-Anfinogentov/SFQ package for full-disk tiling."
+)
+
+
+def pex_bl_(*_args, **_kwargs):
+    """Compatibility stub for the pre-1.1.1 export (large-FOV tiling removed)."""
+    raise NotImplementedError(_PEX_BL_REMOVED)
+
+
+def pex_bl(*_args, **_kwargs):
+    """Compatibility stub for the pre-1.1.1 export (large-FOV tiling removed)."""
+    raise NotImplementedError(_PEX_BL_REMOVED)
+
 
 def sfq_step1(mag, pot, silent=False, acute=False):
     """Preliminary disambiguation step.
@@ -119,9 +135,9 @@ def sfq_clean(bx, by, mode=False, silent=False):
     if not silent:
         print("Starting SFQ cleaning")
 
-    # Make copies to avoid modifying originals directly in recursion
-    bx = np.asarray(bx, dtype=float)
-    by = np.asarray(by, dtype=float)
+    # Explicit copies: np.asarray does not copy existing float ndarrays.
+    bx = np.array(bx, dtype=float, copy=True)
+    by = np.array(by, dtype=float, copy=True)
 
     # Multi-scale cleaning cascade
     _clean_iterative(bx, by, 3, use_median=True)
@@ -203,18 +219,18 @@ def sfq_disambig(bx, by, bz, apos, rsun, mode=False, silent=False, acute=False):
                       bz, apos, rsun)
 
     n_pixels = bx.size
-    field_extent = apos[2] - apos[0]
+    field_extent = float(apos[2] - apos[0])
 
-    # For small fields: full-frame processing
-    if field_extent < 0.5 * rsun or n_pixels < 1024 * 1024:
-        mag = sfq_frame(mag, mode=mode, silent=silent, acute=acute)
-        if not silent:
-            print(f"Full SFQ disambiguation complete in {time.time() - t0:.2f} seconds")
-        return mag['t1'].copy(), mag['t2'].copy()
+    # IDL large-FOV path uses pex_bl tiling. This vendored package only ships
+    # full-frame sfq_frame (AMPPbox FOV crops). Reject unsupported large inputs
+    # instead of claiming a reduced-grid / block path that does not exist.
+    if field_extent >= 0.5 * float(rsun) and n_pixels >= 1024 * 1024:
+        raise ValueError(
+            "SFQ large-FOV block processing (pex_bl tiling) is not implemented; "
+            f"got extent={field_extent:.1f}\" (>= 0.5*rsun) and "
+            f"{n_pixels} pixels (>= 1024^2). Crop to an AMPP FOV first."
+        )
 
-    # For large fields: use full-frame with reduced grid (simplified block processing)
-    if not silent:
-        print("Large field of view detected, using direct potential field computation")
     mag = sfq_frame(mag, mode=mode, silent=silent, acute=acute)
     if not silent:
         print(f"Full SFQ disambiguation complete in {time.time() - t0:.2f} seconds")
