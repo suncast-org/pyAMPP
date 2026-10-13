@@ -1,28 +1,32 @@
-"""SFQ (Super Fast and Quality) disambiguation package for pyAMPP.
+"""SFQ (Super Fast and Quality) azimuth disambiguation for pyAMPP.
 
-Source attribution:
-- George Rudenko
-- Sergey Anfinogentov
-- Original IDL package: https://github.com/Sergey-Anfinogentov
+Vendored from the Python port in Sergey Anfinogentov's SFQ repository
+(vit1-irk contribution, merged upstream), with pyAMPP-local IDL-parity
+fixes (clean width, geometry-aware ``pot_vmag``, image-axis layout).
+Re-syncing from upstream SFQ or gx_simulator's ``sfq`` submodule would
+overwrite those fixes — treat this tree as intentionally divergent.
+
+  https://github.com/Sergey-Anfinogentov/SFQ
+
+Reference: Rudenko, G. V. & Anfinogentov, S. A. (2014),
+"Very Fast and Accurate Azimuth Disambiguation of Vector Magnetograms",
+Solar Physics, Volume 289, Issue 5, pp. 1499-1516.
+
+Please cite that paper and the upstream repository when publishing work
+that uses these routines.
 """
 
-from .clean import sfq_clean
-from .frame import sfq_frame
-from .potential import get_str_mag, pex_bl, pex_bl_, pot_vmag
-from .step import sfq_step1
-from .utils import idl_where, norm_vec, u_grid, u_grid_box, u_str_add
+from .disambig import pex_bl, pex_bl_, sfq_clean, sfq_disambig, sfq_frame, sfq_step1
+from .data import get_str_mag
+from .field import pot_vmag
 
 __all__ = [
-    "get_str_mag",
+    "sfq_disambig",
     "sfq_frame",
     "sfq_step1",
     "sfq_clean",
+    "get_str_mag",
     "pot_vmag",
     "pex_bl",
     "pex_bl_",
-    "idl_where",
-    "u_grid",
-    "u_grid_box",
-    "u_str_add",
-    "norm_vec",
 ]
