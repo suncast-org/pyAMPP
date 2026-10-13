@@ -4,7 +4,15 @@ Changelog
 Unreleased
 ----------
 
-SFQ / issue ``#42`` (toward ``1.1.1``):
+1.1.1
+-----
+
+Release focus:
+
+- SFQ / issue ``#42`` from PR ``#52``: real ``--sfq`` path with IDL-parity
+  FOV crop and geometry-aware ``pot_vmag``.
+
+Highlights:
 
 - Replace the incomplete in-tree ``pyampp/sfq`` stub with the Sergey/vit1-irk
   Python SFQ package (same source gx_simulator vendors).
@@ -37,6 +45,10 @@ SFQ / issue ``#42`` (toward ``1.1.1``):
 with the AMPP FOV path. A later release may switch to a dependency on the
 upstream SFQ package once the needed parity fixes are available there
 (preferably via PyPI).
+
+Packaging/versioning:
+
+- Bumped package version to ``1.1.1`` in packaging metadata.
 
 1.1.0
 -----
