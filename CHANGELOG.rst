@@ -33,6 +33,11 @@ SFQ / issue ``#42`` (toward ``1.1.1``):
   recompute SFQ ``pos`` from the final crop; copy inputs in ``sfq_clean``;
   create IDL dump outdir; tighten clean-width unit coverage.
 
+**Note:** The SFQ code in this release is vendored and patched for IDL parity
+with the AMPP FOV path. A later release may switch to a dependency on the
+upstream SFQ package once the needed parity fixes are available there
+(preferably via PyPI).
+
 1.1.0
 -----
 

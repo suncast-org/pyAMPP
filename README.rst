@@ -151,6 +151,11 @@ pyAMPP exposes one main GUI and three focused command-line tools:
    - runs the command,
    - opens the follow-up viewers when needed.
 2. **gx-fov2box** – Headless model generator (IDL ``gx_fov2box`` equivalent).
+   ``--sfq`` runs Rudenko/Anfinogentov SFQ on the FOV crop. **Note:** The SFQ
+   code in this release is vendored and patched for IDL parity with the AMPP
+   FOV path. A later release may switch to a dependency on the upstream SFQ
+   package once the needed parity fixes are available there (preferably via
+   PyPI).
 3. **gxbox-view2d** – 2D FOV / box selector for existing ``.h5`` or ``.sav`` models.
 4. **gxbox-view3d** – 3D viewer for existing model HDF5 files.
 5. **gxrefmap-view** – 2D browser for base maps and reference maps stored in model HDF5 files.
