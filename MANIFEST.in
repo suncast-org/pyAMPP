@@ -5,3 +5,4 @@
 prune pyampp/_dev
 include pyampp/gx_chromo/sav_precomputed/*.sav
 recursive-include pyampp/gxbox/UI *.ui *.svg
+recursive-include pyampp/gxbox/icons *.svg
