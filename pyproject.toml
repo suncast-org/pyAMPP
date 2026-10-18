@@ -76,6 +76,9 @@ docs = [
 zip-safe = false
 include-package-data = true
 
+[tool.setuptools.package-data]
+"pyampp.gxbox" = ["icons/*.svg"]
+
 [tool.setuptools.packages.find]
 include = ["pyampp*"]
 exclude = ["build*", "docs*", "examples*", "reports*"]

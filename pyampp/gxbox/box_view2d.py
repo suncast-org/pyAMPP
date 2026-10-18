@@ -495,7 +495,9 @@ class MapBoxDisplayWidget(QWidget):
     @staticmethod
     def _resolve_svg_dir() -> Path:
         here = Path(__file__).resolve()
+        # Packaged icons first so a wheel does not depend on repo-root docs/svg.
         candidates = [
+            here.parent / "icons",
             here.parents[2] / "docs" / "svg",
             here.parents[1] / "docs" / "svg",
             Path.cwd() / "docs" / "svg",
